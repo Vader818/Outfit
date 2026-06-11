@@ -5,6 +5,7 @@ import {
   Database,
   ExternalLink,
   MapPin,
+  Play,
   RefreshCw,
   Save,
   Settings,
@@ -15,11 +16,25 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { deleteGarment, getGarments, getRecommendations, getWeather, importTaobaoBatch, updateGarment, type ImportSummary } from "./api";
+import {
+  deleteGarment,
+  getGarments,
+  getRecommendations,
+  getWeather,
+  importTaobaoBatch,
+  readLatestTaobaoCapture,
+  recordWearLog,
+  startTaobaoItemCapture,
+  startTaobaoOrderCapture,
+  updateGarment,
+  type CaptureStartResult,
+  type ImportSummary
+} from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { Garment, RecommendationResult, WeatherSnapshot } from "./shared/types";
+import type { Garment, OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "settings";
+type WearLogFeedback = { outfitId: string; message: string };
 
 const CATEGORY_LABELS: Record<Garment["category"], string> = {
   top: "上装",
@@ -37,7 +52,14 @@ const WARMTH_LABELS: Record<Garment["warmth"], string> = {
   heavy: "厚重"
 };
 
-const OCCASIONS = ["casual", "smart-casual", "formal", "sport"];
+const OCCASIONS = ["casual", "smart-casual", "formal", "sport"] as const;
+
+const OCCASION_LABELS: Record<(typeof OCCASIONS)[number], string> = {
+  casual: "休闲",
+  "smart-casual": "商务休闲",
+  formal: "正装",
+  sport: "运动"
+};
 const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
 
 export function App() {
@@ -46,8 +68,12 @@ export function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
+  const [captureUrl, setCaptureUrl] = useState("");
+  const [captureResult, setCaptureResult] = useState<CaptureStartResult | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
+  const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [occasion, setOccasion] = useState("casual");
   const [latitude, setLatitude] = useState(() => localStorage.getItem("outfit.latitude") || "39.9042");
   const [longitude, setLongitude] = useState(() => localStorage.getItem("outfit.longitude") || "116.4074");
@@ -86,6 +112,46 @@ export function App() {
 
   async function copyBookmarklet() {
     await navigator.clipboard.writeText(bookmarklet);
+  }
+
+  async function startOrdersCapture() {
+    setBusy(true);
+    setError("");
+    setCaptureResult(null);
+    try {
+      setCaptureResult(await startTaobaoOrderCapture({ maxPages: 3, loginWait: 60 }));
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : "启动采集失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startItemCapture() {
+    setBusy(true);
+    setError("");
+    setCaptureResult(null);
+    try {
+      setCaptureResult(await startTaobaoItemCapture({ url: captureUrl.trim(), loginWait: 60 }));
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : "启动采集失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function readLatestCapture() {
+    setBusy(true);
+    setError("");
+    try {
+      const latest = await readLatestTaobaoCapture();
+      setImportResult(null);
+      setImportText(latest.jsonText || JSON.stringify(latest.payload, null, 2));
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : "读取采集产物失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
@@ -151,6 +217,20 @@ export function App() {
     }
   }
 
+  async function recordRecommendationWear(outfit: OutfitRecommendation) {
+    setError("");
+    setWearLogFeedback(null);
+    setRecordingOutfitId(outfit.id);
+    try {
+      await recordWearLog(buildRecommendationWearLogInput(outfit, occasion, weather ?? recommendations?.weather ?? null));
+      setWearLogFeedback({ outfitId: outfit.id, message: "已标记已穿" });
+    } catch (wearLogError) {
+      setError(wearLogError instanceof Error ? wearLogError.message : "标记已穿失败");
+    } finally {
+      setRecordingOutfitId(null);
+    }
+  }
+
   function saveSettings() {
     localStorage.setItem("outfit.latitude", latitude);
     localStorage.setItem("outfit.longitude", longitude);
@@ -184,9 +264,12 @@ export function App() {
             latitude={latitude}
             longitude={longitude}
             busy={busy}
+            recordingOutfitId={recordingOutfitId}
+            wearLogFeedback={wearLogFeedback}
             onOccasion={setOccasion}
             onFetchWeather={fetchForecast}
             onGenerate={generateRecommendations}
+            onRecordWearLog={recordRecommendationWear}
           />
         )}
         {tab === "wardrobe" && (
@@ -206,10 +289,16 @@ export function App() {
             bookmarklet={bookmarklet}
             importText={importText}
             importResult={importResult}
+            captureUrl={captureUrl}
+            captureResult={captureResult}
             busy={busy}
             onCopyBookmarklet={copyBookmarklet}
             onImportText={setImportText}
             onImport={runImport}
+            onCaptureUrl={setCaptureUrl}
+            onStartOrdersCapture={startOrdersCapture}
+            onStartItemCapture={startItemCapture}
+            onReadLatestCapture={readLatestCapture}
           />
         )}
         {tab === "settings" && (
@@ -237,14 +326,20 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
   );
 }
 
-function ImportView(props: {
+export function ImportView(props: {
   bookmarklet: string;
   importText: string;
   importResult: ImportSummary | null;
+  captureUrl: string;
+  captureResult: CaptureStartResult | null;
   busy: boolean;
   onCopyBookmarklet: () => void;
   onImportText: (value: string) => void;
   onImport: () => void;
+  onCaptureUrl: (value: string) => void;
+  onStartOrdersCapture: () => void;
+  onStartItemCapture: () => void;
+  onReadLatestCapture: () => void;
 }) {
   return (
     <section className="view">
@@ -268,6 +363,29 @@ function ImportView(props: {
         <span>2 打开已买到或商品详情</span>
         <span>3 粘贴 JSON 导入</span>
       </div>
+      <div className="panel selenium-panel">
+        <label>Selenium 采集</label>
+        <div className="selenium-controls">
+          <button className="secondary" disabled={props.busy} onClick={props.onStartOrdersCapture}>
+            <Play size={18} />
+            采集订单页
+          </button>
+          <input
+            value={props.captureUrl}
+            onChange={(event) => props.onCaptureUrl(event.target.value)}
+            placeholder="https://item.taobao.com/item.htm?id=..."
+          />
+          <button className="primary" disabled={props.busy || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
+            <Play size={18} />
+            采集商品详情
+          </button>
+        </div>
+        {props.captureResult ? (
+          <div className="capture-status">
+            已启动 {props.captureResult.mode === "orders" ? "订单页采集" : "商品详情采集"}，PID {props.captureResult.pid}，输出目录 {props.captureResult.outputDir}
+          </div>
+        ) : null}
+      </div>
       <div className="grid two">
         <div className="panel">
           <label>书签脚本</label>
@@ -290,10 +408,16 @@ function ImportView(props: {
             onChange={(event) => props.onImportText(event.target.value)}
             placeholder='{"source":"taobao-bookmarklet","items":[]}'
           />
-          <button className="primary" disabled={props.busy || !props.importText.trim()} onClick={props.onImport}>
-            <Upload size={18} />
-            导入
-          </button>
+          <div className="import-actions">
+            <button className="secondary" disabled={props.busy} onClick={props.onReadLatestCapture}>
+              <Database size={18} />
+              读取产物
+            </button>
+            <button className="primary" disabled={props.busy || !props.importText.trim()} onClick={props.onImport}>
+              <Upload size={18} />
+              导入
+            </button>
+          </div>
         </div>
       </div>
       {props.importResult ? (
@@ -381,16 +505,19 @@ function WardrobeView(props: {
   );
 }
 
-function RecommendationView(props: {
+export function RecommendationView(props: {
   weather: WeatherSnapshot | null;
   recommendations: RecommendationResult | null;
   occasion: string;
   latitude: string;
   longitude: string;
   busy: boolean;
+  recordingOutfitId: string | null;
+  wearLogFeedback: WearLogFeedback | null;
   onOccasion: (value: string) => void;
   onFetchWeather: () => void;
   onGenerate: () => void;
+  onRecordWearLog: (outfit: OutfitRecommendation) => void;
 }) {
   return (
     <section className="view">
@@ -413,7 +540,7 @@ function RecommendationView(props: {
       <div className="toolbar">
         {OCCASIONS.map((value) => (
           <button className={props.occasion === value ? "chip active" : "chip"} key={value} onClick={() => props.onOccasion(value)}>
-            {value}
+            {OCCASION_LABELS[value]}
           </button>
         ))}
       </div>
@@ -444,6 +571,13 @@ function RecommendationView(props: {
               ))}
             </ul>
             {outfit.alternatives.length ? <p className="alt">可替换：{outfit.alternatives.map((item) => item.name).join(" / ")}</p> : null}
+            <div className="outfit-actions">
+              <button className="secondary" disabled={props.recordingOutfitId === outfit.id} onClick={() => props.onRecordWearLog(outfit)}>
+                <Check size={16} />
+                {props.recordingOutfitId === outfit.id ? "标记中" : "标记已穿"}
+              </button>
+              {props.wearLogFeedback?.outfitId === outfit.id ? <span className="wear-log-feedback">{props.wearLogFeedback.message}</span> : null}
+            </div>
           </article>
         ))}
       </div>
@@ -511,4 +645,15 @@ function Metric({ label, value }: { label: string; value: number }) {
 
 function splitList(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+export function buildRecommendationWearLogInput(outfit: OutfitRecommendation, occasion: string, weather: WeatherSnapshot | null) {
+  return {
+    garmentIds: outfit.items.map((item) => item.id),
+    context: {
+      outfitId: outfit.id,
+      occasion,
+      weather
+    }
+  };
 }

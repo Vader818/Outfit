@@ -125,6 +125,149 @@ describe("database import", () => {
     });
   });
 
+  it("applies a later detail capture to every purchased SKU variant for the same item", () => {
+    const db = createDatabase(":memory:");
+
+    const orderPayload = {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      capturedAt: "2026-06-11T08:00:00.000Z",
+      pageUrl: "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+      items: [
+        {
+          itemId: "1018415883889",
+          orderId: "9000000000000000001",
+          title: "UTIMUS 纯棉短袖T恤",
+          sku: "颜色: 黑色; 尺码: S",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+          imageUrl: "https://img.alicdn.com/order-black.jpg"
+        },
+        {
+          itemId: "1018415883889",
+          orderId: "9000000000000000002",
+          title: "UTIMUS 纯棉短袖T恤",
+          sku: "颜色: 白色; 尺码: S",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+          imageUrl: "https://img.alicdn.com/order-white.jpg"
+        }
+      ]
+    };
+
+    const first = importTaobaoBatchIntoDb(db, orderPayload);
+    const second = importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+      items: [
+        {
+          itemId: "1018415883889",
+          detailUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+          detailTitle: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+          detailProps: [
+            { name: "品牌", value: "UTIMUS" },
+            { name: "材质成分", value: "棉100%" }
+          ],
+          detailImages: ["https://img.alicdn.com/detail-tee.jpg"],
+          detailDescription: "液氨纯棉，夏季短袖。"
+        }
+      ]
+    });
+
+    const sources = db.prepare(`
+      SELECT sku, detail_title, detail_images
+      FROM source_order_items
+      WHERE item_id = ?
+      ORDER BY sku
+    `).all("1018415883889") as Array<{ sku: string; detail_title: string; detail_images: string }>;
+    const garments = listGarments(db);
+
+    expect(first.summary.createdGarments).toBe(2);
+    expect(second.summary.createdGarments).toBe(0);
+    expect(sources).toHaveLength(2);
+    expect(sources.map((source) => source.detail_title)).toEqual([
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣"
+    ]);
+    expect(sources.map((source) => JSON.parse(source.detail_images))).toEqual([
+      ["https://img.alicdn.com/detail-tee.jpg"],
+      ["https://img.alicdn.com/detail-tee.jpg"]
+    ]);
+    expect(garments).toHaveLength(2);
+    expect(garments.map((garment) => garment.color).sort()).toEqual(["black", "white"]);
+    expect(garments.map((garment) => garment.imageUrl)).toEqual([
+      "https://img.alicdn.com/detail-tee.jpg",
+      "https://img.alicdn.com/detail-tee.jpg"
+    ]);
+  });
+
+  it("uses an existing detail capture to enrich purchased SKU variants imported later", () => {
+    const db = createDatabase(":memory:");
+
+    const detailPayload = {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+      items: [
+        {
+          itemId: "1018415883889",
+          detailUrl: "https://item.taobao.com/item.htm?id=1018415883889",
+          detailTitle: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+          detailProps: [
+            { name: "品牌", value: "UTIMUS" },
+            { name: "材质成分", value: "棉100%" }
+          ],
+          detailImages: ["https://img.alicdn.com/detail-tee.jpg"],
+          detailDescription: "液氨纯棉，夏季短袖。"
+        }
+      ]
+    };
+
+    importTaobaoBatchIntoDb(db, detailPayload);
+    const second = importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      pageUrl: "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+      items: [
+        {
+          itemId: "1018415883889",
+          orderId: "9000000000000000001",
+          title: "UTIMUS 纯棉短袖T恤",
+          sku: "颜色: 黑色; 尺码: S",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=1018415883889"
+        },
+        {
+          itemId: "1018415883889",
+          orderId: "9000000000000000002",
+          title: "UTIMUS 纯棉短袖T恤",
+          sku: "颜色: 白色; 尺码: S",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=1018415883889"
+        }
+      ]
+    });
+
+    const sourceRows = db.prepare(`
+      SELECT sku, detail_title
+      FROM source_order_items
+      WHERE item_id = ? AND COALESCE(sku, '') <> ''
+      ORDER BY sku
+    `).all("1018415883889") as Array<{ sku: string; detail_title: string }>;
+    const garments = listGarments(db);
+    const activeGarments = garments.filter((garment) => garment.owned && !garment.excluded);
+
+    expect(second.summary.createdGarments).toBe(2);
+    expect(sourceRows).toHaveLength(2);
+    expect(sourceRows.map((source) => source.detail_title)).toEqual([
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣"
+    ]);
+    expect(activeGarments).toHaveLength(2);
+    expect(activeGarments.map((garment) => garment.color).sort()).toEqual(["black", "white"]);
+  });
+
   it("adds detail columns when migrating an existing source_order_items table", () => {
     const db = new DatabaseSync(":memory:");
     db.exec(`

@@ -222,7 +222,7 @@ class TaobaoSeleniumCaptureTests(unittest.TestCase):
             self.assertIn("::1", entries)
             self.assertEqual(os.environ["no_proxy"], os.environ["NO_PROXY"])
 
-    def test_create_chrome_driver_uses_persistent_profile_dir(self):
+    def test_create_chrome_driver_uses_absolute_persistent_profile_dir(self):
         profile_dir = Path("output/chrome-taobao-profile")
 
         with patch("selenium.webdriver.chrome.options.Options") as options_factory:
@@ -230,7 +230,7 @@ class TaobaoSeleniumCaptureTests(unittest.TestCase):
                 create_chrome_driver(profile_dir=profile_dir)
 
         options = options_factory.return_value
-        options.add_argument.assert_any_call(f"--user-data-dir={profile_dir}")
+        options.add_argument.assert_any_call(f"--user-data-dir={profile_dir.resolve()}")
         chrome.assert_called_once_with(options=options)
 
     def test_scroll_for_lazy_content_uses_bounded_jitter_between_steps(self):

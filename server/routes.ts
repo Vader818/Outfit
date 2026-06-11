@@ -1,7 +1,8 @@
 import express, { type Request, type Response } from "express";
 import type { AppDatabase, GarmentUpdate } from "./db";
-import { deleteGarment, getCachedWeather, importTaobaoBatchIntoDb, listGarments, saveRecommendationRun, saveWeatherCache, updateGarment } from "./db";
+import { deleteGarment, getCachedWeather, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
 import { recommendOutfits } from "./services/recommend";
+import { readLatestTaobaoCapture, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
 import { fetchWeather } from "./services/weather";
 
 export function createApiApp(db: AppDatabase): express.Express {
@@ -14,6 +15,18 @@ export function createApiApp(db: AppDatabase): express.Express {
 
   app.post("/api/import/taobao-batch", (request, response) => {
     handle(response, () => importTaobaoBatchIntoDb(db, request.body));
+  });
+
+  app.post("/api/capture/taobao-orders", (request, response) => {
+    handle(response, () => startTaobaoOrderCapture(request.body));
+  });
+
+  app.post("/api/capture/taobao-item", (request, response) => {
+    handle(response, () => startTaobaoItemCapture(request.body));
+  });
+
+  app.get("/api/capture/taobao-latest", (_request, response) => {
+    handle(response, () => readLatestTaobaoCapture());
   });
 
   app.get("/api/garments", (_request, response) => {
@@ -31,6 +44,17 @@ export function createApiApp(db: AppDatabase): express.Express {
     } catch (error) {
       sendError(response, error);
     }
+  });
+
+  app.post("/api/wear-logs", (request, response) => {
+    handle(response, () => {
+      const garmentIds = normalizeGarmentIds(request.body.garmentIds);
+      if (!garmentIds.length) {
+        throw new Error("garmentIds 必须是非空数字数组");
+      }
+      saveWearLog(db, garmentIds, request.body.context ?? null);
+      return { ok: true };
+    });
   });
 
   app.get("/api/weather", async (request, response) => {
@@ -57,11 +81,15 @@ export function createApiApp(db: AppDatabase): express.Express {
   app.post("/api/recommendations", (request, response) => {
     handle(response, () => {
       const garments = listGarments(db).filter((garment) => garment.owned && !garment.excluded);
+      const recentlyWornGarmentIds = Array.from(new Set([
+        ...normalizeGarmentIds(request.body.recentlyWornGarmentIds),
+        ...listRecentlyWornGarmentIds(db)
+      ]));
       const result = recommendOutfits({
         garments,
         weather: request.body.weather,
         occasion: request.body.occasion || "casual",
-        recentlyWornGarmentIds: request.body.recentlyWornGarmentIds || []
+        recentlyWornGarmentIds
       });
       saveRecommendationRun(db, request.body, result);
       return result;
@@ -82,4 +110,9 @@ function handle<T>(response: Response, callback: () => T): void {
 function sendError(response: Response, error: unknown): void {
   const message = error instanceof Error ? error.message : "服务器错误";
   response.status(400).json({ error: message });
+}
+
+function normalizeGarmentIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((id): id is number => Number.isInteger(id) && id > 0)));
 }

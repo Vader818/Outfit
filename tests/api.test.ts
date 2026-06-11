@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
 
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn()
+}));
+
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
+const spawnMock = vi.mocked(spawn);
 
 const payload = {
   source: "taobao-bookmarklet",
@@ -36,7 +42,22 @@ const payload = {
   ]
 };
 
+const recommendationWeather = {
+  date: "2026-05-03",
+  temperature: 20,
+  apparentTemperature: 20,
+  precipitationProbability: 10,
+  windSpeed: 8,
+  weatherCode: 1,
+  summary: "晴"
+};
+
+beforeEach(() => {
+  spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn() } as never);
+});
+
 afterEach(async () => {
+  spawnMock.mockClear();
   vi.restoreAllMocks();
   await Promise.all(
     servers.splice(0).map(
@@ -49,6 +70,72 @@ afterEach(async () => {
 });
 
 describe("API routes", () => {
+  it("starts Taobao Selenium captures without waiting for the browser run", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const ordersResponse = await fetch(`${baseUrl}/api/capture/taobao-orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ maxPages: 2, loginWait: 45 })
+    });
+    expect(ordersResponse.status).toBe(200);
+    expect(await ordersResponse.json()).toMatchObject({
+      started: true,
+      mode: "orders",
+      pid: 4321,
+      outputDir: "output/taobao-captures"
+    });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      "python",
+      ["scripts/taobao_order_selenium_capture.py", "--max-pages", "2", "--login-wait", "45"],
+      expect.objectContaining({ cwd: process.cwd(), detached: true, stdio: "ignore" })
+    );
+
+    const itemResponse = await fetch(`${baseUrl}/api/capture/taobao-item`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://item.taobao.com/item.htm?id=808", loginWait: 30 })
+    });
+    expect(itemResponse.status).toBe(200);
+    expect(await itemResponse.json()).toMatchObject({
+      started: true,
+      mode: "item-detail",
+      pid: 4321,
+      outputDir: "output/taobao-captures"
+    });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      "python",
+      ["scripts/taobao_selenium_capture.py", "--url", "https://item.taobao.com/item.htm?id=808", "--login-wait", "30"],
+      expect.objectContaining({ cwd: process.cwd(), detached: true, stdio: "ignore" })
+    );
+  });
+
+  it("rejects item Selenium capture requests without an item URL", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/capture/taobao-item`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "not a url" })
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "请输入有效的淘宝或天猫商品链接" });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("imports Taobao items, updates garments, and returns recommendations", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
@@ -131,6 +218,95 @@ describe("API routes", () => {
     const afterDelete = (await afterDeleteResponse.json()) as Array<{ id: number }>;
     expect(afterDelete).toHaveLength(3);
     expect(afterDelete.some((item) => item.id === deletedId)).toBe(false);
+  });
+
+  it("records wear logs with context", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        garmentIds: [1, 2, 3],
+        context: {
+          outfitId: "outfit-1",
+          occasion: "casual",
+          weather: recommendationWeather
+        }
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    const row = db.prepare("SELECT garment_ids, context FROM wear_logs").get() as { garment_ids: string; context: string };
+    expect(JSON.parse(row.garment_ids)).toEqual([1, 2, 3]);
+    expect(JSON.parse(row.context)).toMatchObject({ outfitId: "outfit-1", occasion: "casual" });
+  });
+
+  it("rejects invalid wear log payloads", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ garmentIds: [] })
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "garmentIds 必须是非空数字数组" });
+  });
+
+  it("uses recent wear logs when ranking recommendations", async () => {
+    const db = createDatabase(":memory:");
+    const insert = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run("常穿黑色T恤", "top", "black", "medium", JSON.stringify(["spring", "summer"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.99, "");
+    insert.run("干净白色T恤", "top", "white", "medium", JSON.stringify(["spring", "summer"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.4, "");
+    insert.run("深蓝直筒牛仔裤", "bottom", "blue", "medium", JSON.stringify(["spring", "autumn"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.8, "");
+    insert.run("白色运动鞋", "shoes", "white", "light", JSON.stringify(["spring", "summer"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.8, "");
+
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ garmentIds: [1], context: { outfitId: "outfit-previous" } })
+    });
+
+    const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        occasion: "casual",
+        weather: recommendationWeather
+      })
+    });
+    const recommendation = await recommendationResponse.json();
+
+    expect(recommendation.outfits[0].items.some((item: { id: number }) => item.id === 1)).toBe(false);
+    expect(recommendation.outfits[0].items.some((item: { id: number }) => item.id === 2)).toBe(true);
+    expect(recommendation.outfits[0].reasons.join(" ")).toMatch(/最近|重复|换穿/);
   });
 
   it("accepts detail captures and returns detail links on garments", async () => {

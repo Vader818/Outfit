@@ -1,5 +1,21 @@
 import type { Garment, RecommendationResult, WeatherSnapshot } from "./shared/types";
 
+export interface CaptureStartResult {
+  started: true;
+  mode: "orders" | "item-detail";
+  pid: number;
+  outputDir: string;
+  message: string;
+}
+
+export interface LatestTaobaoCaptureResult {
+  outputDir: string;
+  fileName: string;
+  path: string;
+  jsonText: string;
+  payload: unknown;
+}
+
 export interface ImportSummary {
   batchId: string;
   summary: {
@@ -15,6 +31,26 @@ export async function importTaobaoBatch(payload: unknown): Promise<ImportSummary
   return request<ImportSummary>("/api/import/taobao-batch", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function startTaobaoOrderCapture(options: { maxPages?: number; loginWait?: number } = {}): Promise<CaptureStartResult> {
+  return request<CaptureStartResult>("/api/capture/taobao-orders", {
+    method: "POST",
+    body: JSON.stringify(options)
+  });
+}
+
+export async function startTaobaoItemCapture(options: { url: string; loginWait?: number }): Promise<CaptureStartResult> {
+  return request<CaptureStartResult>("/api/capture/taobao-item", {
+    method: "POST",
+    body: JSON.stringify(options)
+  });
+}
+
+export async function readLatestTaobaoCapture(): Promise<LatestTaobaoCaptureResult> {
+  return request<LatestTaobaoCaptureResult>("/api/capture/taobao-latest", {
+    method: "GET"
   });
 }
 
@@ -45,6 +81,16 @@ export async function getRecommendations(input: {
   recentlyWornGarmentIds?: number[];
 }): Promise<RecommendationResult> {
   return request<RecommendationResult>("/api/recommendations", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function recordWearLog(input: {
+  garmentIds: number[];
+  context?: Record<string, unknown>;
+}): Promise<unknown> {
+  return request<unknown>("/api/wear-logs", {
     method: "POST",
     body: JSON.stringify(input)
   });

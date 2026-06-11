@@ -2,10 +2,9 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Garment } from "../src/shared/types";
-import type { WeatherSnapshot } from "../src/shared/types";
+import type { Garment, TaobaoDetailProp, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
-import { normalizeTaobaoBatch } from "./services/importTaobao";
+import { normalizeTaobaoBatch, type SourceOrderItemDraft } from "./services/importTaobao";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -36,6 +35,24 @@ export interface GarmentUpdate {
   confirmed?: boolean;
   excluded?: boolean;
   notes?: string;
+}
+
+interface PurchasedSourceRow {
+  id: number;
+  title: string;
+  sku: string;
+  image_url: string | null;
+  is_refunded: number;
+}
+
+interface StoredDetailRow {
+  id: number;
+  detail_url: string | null;
+  detail_title: string | null;
+  detail_props: string | null;
+  detail_description: string | null;
+  detail_images: string | null;
+  detail_raw_text: string | null;
 }
 
 export function defaultDatabasePath(): string {
@@ -171,7 +188,47 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
       imported_at = CURRENT_TIMESTAMP
   `);
   const selectSourceId = db.prepare("SELECT id FROM source_order_items WHERE external_key = ?");
-  const selectSourceByItemId = db.prepare("SELECT id, external_key FROM source_order_items WHERE item_id = ? ORDER BY id DESC LIMIT 1");
+  const selectPurchasedSourcesByItemId = db.prepare(`
+    SELECT id, title, sku, image_url, is_refunded
+    FROM source_order_items
+    WHERE item_id = ?
+      AND (page_type = 'order-list' OR COALESCE(order_id, '') <> '' OR COALESCE(sku, '') <> '')
+    ORDER BY id ASC
+  `);
+  const selectStandaloneDetailByItemId = db.prepare(`
+    SELECT id, detail_url, detail_title, detail_props, detail_description, detail_images, detail_raw_text
+    FROM source_order_items
+    WHERE item_id = ?
+      AND page_type = 'item-detail'
+      AND COALESCE(sku, '') = ''
+      AND COALESCE(order_id, '') = ''
+    ORDER BY id DESC
+    LIMIT 1
+  `);
+  const updateSourceDetailsFromDetail = db.prepare(`
+    UPDATE source_order_items
+    SET page_type = 'item-detail',
+      detail_url = COALESCE(NULLIF(?, ''), detail_url),
+      detail_title = COALESCE(NULLIF(?, ''), detail_title),
+      detail_props = COALESCE(NULLIF(?, '[]'), detail_props),
+      detail_description = COALESCE(NULLIF(?, ''), detail_description),
+      detail_images = COALESCE(NULLIF(?, '[]'), detail_images),
+      detail_raw_text = COALESCE(NULLIF(?, ''), detail_raw_text),
+      imported_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+  const excludeStandaloneDetailGarments = db.prepare(`
+    UPDATE garments
+    SET owned = 0, excluded = 1, updated_at = CURRENT_TIMESTAMP
+    WHERE source_order_item_id IN (
+      SELECT id
+      FROM source_order_items
+      WHERE item_id = ?
+        AND page_type = 'item-detail'
+        AND COALESCE(sku, '') = ''
+        AND COALESCE(order_id, '') = ''
+    )
+  `);
   const excludeRefundedGarment = db.prepare(`
     UPDATE garments
     SET owned = 0, excluded = 1, updated_at = CURRENT_TIMESTAMP
@@ -191,14 +248,105 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
     WHERE source_order_item_id = ?
   `);
 
+  function upsertGarmentForSource(sourceItemId: number, sourceItem: SourceOrderItemDraft): number {
+    if (sourceItem.isRefunded) {
+      excludeRefundedGarment.run(sourceItemId);
+      return 0;
+    }
+    if (!sourceItem.isApparel) return 0;
+
+    const classification = classifyGarment(sourceItem.detailTitle || sourceItem.title, [
+      sourceItem.sku,
+      sourceItem.detailProps.map((prop) => `${prop.name} ${prop.value}`).join(" "),
+      sourceItem.detailDescription
+    ].filter(Boolean).join(" "));
+    if (!classification) return 0;
+    const garmentName = sourceItem.detailTitle || sourceItem.title;
+    const garmentImage = sourceItem.detailImages[0] || sourceItem.imageUrl;
+    const garmentNotes = sourceItem.detailProps.length || sourceItem.detailDescription
+      ? [
+          sourceItem.detailProps.map((prop) => `${prop.name}: ${prop.value}`).join("; "),
+          sourceItem.detailDescription
+        ].filter(Boolean).join("\n")
+      : "";
+
+    const existingGarment = selectGarmentBySource.get(sourceItemId) as { id: number } | undefined;
+    if (existingGarment) {
+      updateGarmentFromSource.run(
+        garmentName,
+        classification.category,
+        classification.color,
+        classification.warmth,
+        JSON.stringify(classification.seasons),
+        JSON.stringify(classification.styles),
+        classification.formality,
+        garmentImage,
+        classification.confidence,
+        garmentNotes,
+        sourceItemId
+      );
+      return 0;
+    }
+
+    const garmentResult = insertGarment.run(
+      sourceItemId,
+      garmentName,
+      classification.category,
+      classification.color,
+      classification.warmth,
+      JSON.stringify(classification.seasons),
+      JSON.stringify(classification.styles),
+      classification.formality,
+      garmentImage,
+      1,
+      0,
+      0,
+      classification.confidence,
+      garmentNotes
+    );
+    return Number(garmentResult.changes);
+  }
+
+  function applyDetailToPurchasedSources(detailItem: SourceOrderItemDraft): number | null {
+    if (!isStandaloneDetailItem(detailItem)) return null;
+    const purchasedSources = selectPurchasedSourcesByItemId.all(detailItem.itemId) as unknown as PurchasedSourceRow[];
+    if (!purchasedSources.length) return null;
+
+    let created = 0;
+    for (const purchasedSource of purchasedSources) {
+      updateSourceDetailsFromDetail.run(
+        detailItem.detailUrl,
+        detailItem.detailTitle,
+        JSON.stringify(detailItem.detailProps),
+        detailItem.detailDescription,
+        JSON.stringify(detailItem.detailImages),
+        detailItem.detailRawText,
+        purchasedSource.id
+      );
+      created += upsertGarmentForSource(purchasedSource.id, {
+        ...detailItem,
+        title: purchasedSource.title || detailItem.title,
+        sku: purchasedSource.sku || detailItem.sku,
+        imageUrl: purchasedSource.image_url || detailItem.imageUrl,
+        isRefunded: Boolean(purchasedSource.is_refunded)
+      });
+    }
+    excludeStandaloneDetailGarments.run(detailItem.itemId);
+    return created;
+  }
+
   let createdGarments = 0;
-    db.exec("BEGIN");
+  db.exec("BEGIN");
   try {
-    for (const sourceItem of normalized.sourceItems) {
-      const existingByItemId = sourceItem.itemId && sourceItem.pageType === "item-detail" && !sourceItem.sku
-        ? (selectSourceByItemId.get(sourceItem.itemId) as { id: number; external_key: string } | undefined)
-        : undefined;
-      const externalKey = existingByItemId?.external_key || sourceItem.externalKey;
+    for (const normalizedItem of normalized.sourceItems) {
+      const appliedDetailCount = applyDetailToPurchasedSources(normalizedItem);
+      if (appliedDetailCount !== null) {
+        createdGarments += appliedDetailCount;
+        continue;
+      }
+
+      const sourceItem = withStoredStandaloneDetail(normalizedItem, selectStandaloneDetailByItemId);
+      const externalKey = sourceItem.externalKey;
       upsertSource.run(
         externalKey,
         sourceItem.source,
@@ -227,62 +375,10 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
 
       const row = selectSourceId.get(externalKey) as { id: number } | undefined;
       if (!row) continue;
-      if (sourceItem.isRefunded) {
-        excludeRefundedGarment.run(row.id);
-        continue;
+      createdGarments += upsertGarmentForSource(row.id, sourceItem);
+      if (sourceItem.itemId && hasDetailData(sourceItem) && !isStandaloneDetailItem(sourceItem)) {
+        excludeStandaloneDetailGarments.run(sourceItem.itemId);
       }
-      if (!sourceItem.isApparel) continue;
-
-      const classification = classifyGarment(sourceItem.detailTitle || sourceItem.title, [
-        sourceItem.sku,
-        sourceItem.detailProps.map((prop) => `${prop.name} ${prop.value}`).join(" "),
-        sourceItem.detailDescription
-      ].filter(Boolean).join(" "));
-      if (!classification) continue;
-      const garmentName = sourceItem.detailTitle || sourceItem.title;
-      const garmentImage = sourceItem.detailImages[0] || sourceItem.imageUrl;
-      const garmentNotes = sourceItem.detailProps.length || sourceItem.detailDescription
-        ? [
-            sourceItem.detailProps.map((prop) => `${prop.name}: ${prop.value}`).join("; "),
-            sourceItem.detailDescription
-          ].filter(Boolean).join("\n")
-        : "";
-
-      const existingGarment = selectGarmentBySource.get(row.id) as { id: number } | undefined;
-      if (existingGarment) {
-        updateGarmentFromSource.run(
-          garmentName,
-          classification.category,
-          classification.color,
-          classification.warmth,
-          JSON.stringify(classification.seasons),
-          JSON.stringify(classification.styles),
-          classification.formality,
-          garmentImage,
-          classification.confidence,
-          garmentNotes,
-          row.id
-        );
-        continue;
-      }
-
-      const garmentResult = insertGarment.run(
-        row.id,
-        garmentName,
-        classification.category,
-        classification.color,
-        classification.warmth,
-        JSON.stringify(classification.seasons),
-        JSON.stringify(classification.styles),
-        classification.formality,
-        garmentImage,
-        1,
-        0,
-        0,
-        classification.confidence,
-        garmentNotes
-      );
-      createdGarments += Number(garmentResult.changes);
     }
     db.exec("COMMIT");
   } catch (error) {
@@ -367,6 +463,29 @@ export function deleteGarment(db: AppDatabase, id: number): void {
   }
 }
 
+export function saveWearLog(db: AppDatabase, garmentIds: number[], context: unknown = null): void {
+  db.prepare("INSERT INTO wear_logs (garment_ids, context) VALUES (?, ?)").run(
+    JSON.stringify(garmentIds),
+    context == null ? null : JSON.stringify(context)
+  );
+}
+
+export function listRecentlyWornGarmentIds(db: AppDatabase, limit = 8): number[] {
+  const rows = db.prepare(`
+    SELECT garment_ids
+    FROM wear_logs
+    ORDER BY worn_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<{ garment_ids: string }>;
+  const seen = new Set<number>();
+  for (const row of rows) {
+    for (const id of safeJson<number[]>(row.garment_ids, [])) {
+      if (Number.isFinite(id)) seen.add(id);
+    }
+  }
+  return Array.from(seen);
+}
+
 export function saveRecommendationRun(db: AppDatabase, input: unknown, result: unknown): void {
   db.prepare("INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, ?)").run(
     JSON.stringify(input),
@@ -446,6 +565,67 @@ function ensureColumn(db: AppDatabase, tableName: string, columnName: string, de
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
   if (rows.some((row) => row.name === columnName)) return;
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+}
+
+function isStandaloneDetailItem(item: SourceOrderItemDraft): boolean {
+  return item.pageType === "item-detail" && Boolean(item.itemId) && !item.sku && !item.orderId;
+}
+
+function hasDetailData(item: SourceOrderItemDraft): boolean {
+  return Boolean(
+    item.detailUrl ||
+    item.detailTitle ||
+    item.detailProps.length ||
+    item.detailDescription ||
+    item.detailImages.length ||
+    item.detailRawText
+  );
+}
+
+function hasStoredDetail(row: StoredDetailRow | undefined): row is StoredDetailRow {
+  if (!row) return false;
+  return Boolean(
+    row.detail_url ||
+    row.detail_title ||
+    (row.detail_props && row.detail_props !== "[]") ||
+    row.detail_description ||
+    (row.detail_images && row.detail_images !== "[]") ||
+    row.detail_raw_text
+  );
+}
+
+function withStoredStandaloneDetail(
+  item: SourceOrderItemDraft,
+  selectStandaloneDetailByItemId: { get: (itemId: string) => unknown }
+): SourceOrderItemDraft {
+  if (!item.itemId || isStandaloneDetailItem(item) || hasDetailData(item)) {
+    return item;
+  }
+
+  const storedDetail = selectStandaloneDetailByItemId.get(item.itemId) as StoredDetailRow | undefined;
+  if (!hasStoredDetail(storedDetail)) {
+    return item;
+  }
+
+  const detailProps = safeJson<TaobaoDetailProp[]>(storedDetail.detail_props || "[]", []);
+  const detailImages = safeJson<string[]>(storedDetail.detail_images || "[]", []);
+  const detailTitle = storedDetail.detail_title || item.detailTitle;
+  const isApparel = item.isApparel || Boolean(classifyGarment(detailTitle || item.title, [
+    item.sku,
+    detailProps.map((prop) => `${prop.name} ${prop.value}`).join(" "),
+    storedDetail.detail_description || ""
+  ].filter(Boolean).join(" ")));
+
+  return {
+    ...item,
+    detailUrl: storedDetail.detail_url || item.detailUrl,
+    detailTitle,
+    detailProps,
+    detailDescription: storedDetail.detail_description || item.detailDescription,
+    detailImages,
+    detailRawText: storedDetail.detail_raw_text || item.detailRawText,
+    isApparel
+  };
 }
 
 function safeJson<T>(value: string, fallback: T): T {

@@ -480,13 +480,14 @@ def create_chrome_driver(profile_dir: Path | None = DEFAULT_PROFILE_DIR) -> Any:
     from selenium.webdriver.chrome.options import Options
 
     ensure_local_webdriver_bypasses_proxy()
+    profile_path = profile_dir.resolve() if profile_dir is not None else None
     if profile_dir is not None:
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_path.mkdir(parents=True, exist_ok=True)
     options = Options()
     options.add_argument("--lang=zh-CN")
     options.add_argument("--start-maximized")
-    if profile_dir is not None:
-        options.add_argument(f"--user-data-dir={profile_dir}")
+    if profile_path is not None:
+        options.add_argument(f"--user-data-dir={profile_path}")
     return webdriver.Chrome(options=options)
 
 

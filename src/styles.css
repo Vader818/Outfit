@@ -218,6 +218,26 @@ button:disabled {
   font-weight: 650;
 }
 
+.selenium-panel {
+  gap: 12px;
+}
+
+.selenium-controls {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.capture-status {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+  font-weight: 650;
+}
+
 label {
   color: #334155;
   font-weight: 650;
@@ -264,6 +284,13 @@ select:focus {
 }
 
 .bookmarklet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.import-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -424,6 +451,18 @@ ul {
   color: #9a3412;
 }
 
+.outfit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.wear-log-feedback {
+  color: #166534;
+  font-weight: 650;
+}
+
 .banner {
   max-width: 1180px;
   margin-bottom: 14px;
@@ -476,7 +515,8 @@ ul {
 
   .grid.two,
   .outfit-grid,
-  .metric-strip {
+  .metric-strip,
+  .selenium-controls {
     grid-template-columns: 1fr;
   }
 
