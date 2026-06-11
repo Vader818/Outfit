@@ -31,7 +31,7 @@ import {
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { Garment, OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "./shared/types";
+import type { Garment, OutfitRecommendation, RecommendationResult, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "settings";
 type WearLogFeedback = { outfitId: string; message: string };
@@ -90,12 +90,17 @@ const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
 const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
 const SEASON_OPTIONS = toOptions(SEASON_LABELS);
 
+export function buildTaobaoOrderCaptureOptions() {
+  return { maxPages: 15, loginWait: 60 };
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>("recommend");
   const [garments, setGarments] = useState<Garment[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
+  const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
   const [captureResult, setCaptureResult] = useState<CaptureStartResult | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
@@ -129,6 +134,7 @@ export function App() {
       const result = await importTaobaoBatch(payload);
       setImportResult(result);
       setImportText("");
+      setCaptureFilterSummary(null);
       await refreshGarments();
       setTab("wardrobe");
     } catch (importError) {
@@ -147,7 +153,7 @@ export function App() {
     setError("");
     setCaptureResult(null);
     try {
-      setCaptureResult(await startTaobaoOrderCapture({ maxPages: 3, loginWait: 60 }));
+      setCaptureResult(await startTaobaoOrderCapture(buildTaobaoOrderCaptureOptions()));
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "启动采集失败");
     } finally {
@@ -172,14 +178,20 @@ export function App() {
     setBusy(true);
     setError("");
     try {
-      const latest = await readLatestTaobaoCapture();
+      const latest = await readLatestTaobaoCapture({ wardrobeOnly: true });
       setImportResult(null);
+      setCaptureFilterSummary(latest.filterSummary ?? null);
       setImportText(latest.jsonText || JSON.stringify(latest.payload, null, 2));
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "读取采集产物失败");
     } finally {
       setBusy(false);
     }
+  }
+
+  function updateImportText(value: string) {
+    setImportText(value);
+    setCaptureFilterSummary(null);
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
@@ -317,11 +329,12 @@ export function App() {
             bookmarklet={bookmarklet}
             importText={importText}
             importResult={importResult}
+            filterSummary={captureFilterSummary}
             captureUrl={captureUrl}
             captureResult={captureResult}
             busy={busy}
             onCopyBookmarklet={copyBookmarklet}
-            onImportText={setImportText}
+            onImportText={updateImportText}
             onImport={runImport}
             onCaptureUrl={setCaptureUrl}
             onStartOrdersCapture={startOrdersCapture}
@@ -358,6 +371,7 @@ export function ImportView(props: {
   bookmarklet: string;
   importText: string;
   importResult: ImportSummary | null;
+  filterSummary: TaobaoWardrobeFilterSummary | null;
   captureUrl: string;
   captureResult: CaptureStartResult | null;
   busy: boolean;
@@ -446,6 +460,11 @@ export function ImportView(props: {
               导入
             </button>
           </div>
+          {props.filterSummary ? (
+            <div className="capture-status">
+              已从 {props.filterSummary.originalItems} 条订单中保留 {props.filterSummary.keptItems} 条衣服/鞋候选，退款过滤 {props.filterSummary.skippedRefunded} 条，非服饰过滤 {props.filterSummary.skippedNonApparel} 条。
+            </div>
+          ) : null}
         </div>
       </div>
       {props.importResult ? (

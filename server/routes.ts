@@ -1,9 +1,10 @@
 import express, { type Request, type Response } from "express";
 import type { AppDatabase, GarmentUpdate } from "./db";
+import type { WeatherSnapshot } from "../src/shared/types";
 import { deleteGarment, getCachedWeather, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
 import { recommendOutfits } from "./services/recommend";
 import { readLatestTaobaoCapture, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
-import { fetchWeather } from "./services/weather";
+import { buildEstimatedWeather, fetchWeather } from "./services/weather";
 
 export function createApiApp(db: AppDatabase): express.Express {
   const app = express();
@@ -25,8 +26,10 @@ export function createApiApp(db: AppDatabase): express.Express {
     handle(response, () => startTaobaoItemCapture(request.body));
   });
 
-  app.get("/api/capture/taobao-latest", (_request, response) => {
-    handle(response, () => readLatestTaobaoCapture());
+  app.get("/api/capture/taobao-latest", (request, response) => {
+    handle(response, () => readLatestTaobaoCapture(undefined, undefined, {
+      wardrobeOnly: isTruthyQueryFlag(request.query.wardrobeOnly)
+    }));
   });
 
   app.get("/api/garments", (_request, response) => {
@@ -70,7 +73,17 @@ export function createApiApp(db: AppDatabase): express.Express {
         response.json(cached);
         return;
       }
-      const weather = await fetchWeather(latitude, longitude);
+      let weather: WeatherSnapshot;
+      try {
+        weather = await fetchWeather(latitude, longitude);
+      } catch {
+        const staleCached = getCachedWeather(db, latitude, longitude, Number.POSITIVE_INFINITY);
+        if (staleCached) {
+          response.json(staleCached);
+          return;
+        }
+        weather = buildEstimatedWeather(latitude, longitude);
+      }
       saveWeatherCache(db, latitude, longitude, weather);
       response.json(weather);
     } catch (error) {
@@ -115,4 +128,8 @@ function sendError(response: Response, error: unknown): void {
 function normalizeGarmentIds(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.filter((id): id is number => Number.isInteger(id) && id > 0)));
+}
+
+function isTruthyQueryFlag(value: unknown): boolean {
+  return value === "1" || value === "true";
 }

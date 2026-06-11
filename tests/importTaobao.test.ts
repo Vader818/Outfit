@@ -376,4 +376,107 @@ describe("normalizeTaobaoBatch", () => {
       name: "小方领蓝色短袖衬衫 夏季通勤上衣"
     });
   });
+
+  it("only creates wardrobe drafts for clothing and shoes from noisy order captures", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "1001",
+          orderId: "9000000000000001001",
+          title: "2026-06-01 UTIMUS 订单详情 交易成功 UTIMUS纯棉短袖T恤男女同款夏季透气上衣 [交易快照] 黑色;M",
+          status: "交易成功"
+        },
+        {
+          itemId: "1002",
+          orderId: "9000000000000001002",
+          title: "2026-06-01 BOSIE 订单详情 交易成功 BOSIE宽松直筒牛仔裤春秋通勤长裤 [交易快照] 蓝色;M",
+          status: "交易成功"
+        },
+        {
+          itemId: "1003",
+          orderId: "9000000000000001003",
+          title: "2026-06-01 COS 订单详情 交易成功 COS羊毛大衣女秋冬厚款通勤外套 [交易快照] 黑色;S",
+          status: "交易成功"
+        },
+        {
+          itemId: "1004",
+          orderId: "9000000000000001004",
+          title: "2026-06-01 TANZ 订单详情 交易成功 TANZ男鞋运动鞋夏季轻便跑步休闲鞋 [交易快照] 灰色;42",
+          status: "交易成功"
+        },
+        {
+          itemId: "2001",
+          orderId: "9000000000000002001",
+          title: "2026-06-01 李哥钱排三华李果园 订单详情 交易成功 现摘李子新鲜水果红心李大果 坏单包退",
+          status: "交易成功"
+        },
+        {
+          itemId: "2002",
+          orderId: "9000000000000002002",
+          title: "2026-06-01 讯迪旗舰店 订单详情 交易成功 适用红米手机壳保护套全包镜头防摔外壳",
+          status: "交易成功"
+        },
+        {
+          itemId: "2003",
+          orderId: "9000000000000002003",
+          title: "2026-06-01 ogg旗舰店 订单详情 交易成功 适用Redmi Buds保护套蓝牙耳机保护壳",
+          status: "交易成功"
+        },
+        {
+          itemId: "2004",
+          orderId: "9000000000000002004",
+          title: "2026-06-01 良品铺子 订单详情 交易成功 老卤鸭脖甜辣熟食卤味小吃休闲零食小包装",
+          status: "交易成功"
+        },
+        {
+          itemId: "2005",
+          orderId: "9000000000000002005",
+          title: "2026-06-01 可悠然 订单详情 交易成功 沐浴露自然留香氨基酸清洁滋润保湿",
+          status: "交易成功"
+        },
+        {
+          itemId: "2006",
+          orderId: "9000000000000002006",
+          title: "2026-06-01 清风 订单详情 交易成功 抽纸丝柔臻品餐巾纸面巾纸整箱",
+          status: "交易成功"
+        },
+        {
+          itemId: "2007",
+          orderId: "9000000000000002007",
+          title: "2026-06-01 雅格太格尔 订单详情 交易成功 台灯宿舍灯护眼学习专用床头阅读灯",
+          status: "交易成功"
+        },
+        {
+          itemId: "2008",
+          orderId: "9000000000000002008",
+          title: "2026-06-01 配饰店 订单详情 交易成功 羊毛围巾秋冬保暖柔软百搭",
+          status: "交易成功"
+        },
+        {
+          itemId: "2009",
+          orderId: "9000000000000002009",
+          title: "2026-06-01 哈维乐园 订单详情 交易成功 羽绒服收纳袋抽绳束口旅行便携行李箱衣物服压缩整理收纳包",
+          status: "交易成功"
+        },
+        {
+          itemId: "2010",
+          orderId: "9000000000000002010",
+          title: "2026-06-01 官方国货甄选 订单详情 交易成功 可伸缩衣柜收纳分层神器置物架衣服柜内空间利用橱柜抽拉隔板鞋架",
+          status: "交易成功"
+        }
+      ]
+    });
+
+    expect(result.summary.totalItems).toBe(14);
+    expect(result.summary.createdGarments).toBe(4);
+    expect(result.garmentDrafts.map((item) => item.category).sort()).toEqual(["bottom", "outerwear", "shoes", "top"]);
+    expect(result.garmentDrafts.map((item) => item.name)).toEqual([
+      "纯棉短袖T恤男女同款夏季透气上衣",
+      "宽松直筒牛仔裤春秋通勤长裤",
+      "羊毛大衣女秋冬厚款通勤外套",
+      "男鞋运动鞋夏季轻便跑步休闲鞋"
+    ]);
+  });
 });

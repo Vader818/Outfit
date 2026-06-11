@@ -1,4 +1,4 @@
-import type { Garment, RecommendationResult, WeatherSnapshot } from "./shared/types";
+import type { Garment, RecommendationResult, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -14,6 +14,7 @@ export interface LatestTaobaoCaptureResult {
   path: string;
   jsonText: string;
   payload: unknown;
+  filterSummary?: TaobaoWardrobeFilterSummary;
 }
 
 export interface ImportSummary {
@@ -48,8 +49,9 @@ export async function startTaobaoItemCapture(options: { url: string; loginWait?:
   });
 }
 
-export async function readLatestTaobaoCapture(): Promise<LatestTaobaoCaptureResult> {
-  return request<LatestTaobaoCaptureResult>("/api/capture/taobao-latest", {
+export async function readLatestTaobaoCapture(options: { wardrobeOnly?: boolean } = {}): Promise<LatestTaobaoCaptureResult> {
+  const query = options.wardrobeOnly ? "?wardrobeOnly=1" : "";
+  return request<LatestTaobaoCaptureResult>(`/api/capture/taobao-latest${query}`, {
     method: "GET"
   });
 }

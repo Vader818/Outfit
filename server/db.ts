@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { Garment, TaobaoDetailProp, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
-import { buildGarmentDisplayInfo, isTrustedProductImage, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
+import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -280,7 +280,7 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
       sourceItem.detailProps.map((prop) => `${prop.name} ${prop.value}`).join(" "),
       sourceItem.detailDescription
     ].filter(Boolean).join(" "));
-    if (!classification) return 0;
+    if (!classification || !isWardrobeImportCategory(classification.category)) return 0;
     const garmentImage = preferredImage(sourceItem);
     const garmentNotes = sourceItem.detailProps.length || sourceItem.detailDescription
       ? [

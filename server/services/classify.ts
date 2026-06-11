@@ -15,7 +15,7 @@ const CATEGORY_KEYWORDS: Array<[GarmentCategory, RegExp]> = [
   ["outerwear", /外套|大衣|羽绒服|棉服|夹克|西装|风衣|开衫|马甲|coat|jacket|blazer|parka/i],
   ["bottom", /牛仔裤|休闲裤|西裤|长裤|短裤|半身裙|裙裤|打底裤|裤|skirt|pants|jeans|trousers|shorts/i],
   ["shoes", /短靴|长靴|运动鞋|帆布鞋|皮鞋|凉鞋|拖鞋|鞋|boots?|sneakers?|shoes?|loafer/i],
-  ["accessory", /围巾|帽|腰带|包|袜|手套|领带|项链|耳环|scarf|hat|belt|bag|socks?|gloves?/i],
+  ["accessory", /围巾|帽子?|腰带|背包|包包|手提包|斜挎包|单肩包|袜子?|短袜|长袜|手套|领带|项链|耳环|scarf|hat|belt|bag|socks?|gloves?/i],
   ["top", /T恤|t恤|衬衫|毛衣|针织|卫衣|上衣|背心|吊带|polo|shirt|sweater|hoodie|tee|blouse/i]
 ];
 
@@ -33,8 +33,14 @@ const COLOR_KEYWORDS: Array<[string, RegExp]> = [
   ["purple", /紫|purple/i]
 ];
 
+const NON_WEARABLE_PRODUCT_PATTERN = /手机壳|保护套|保护壳|蓝牙耳机|耳机|牙刷|水果|李子|零食|饼干|鸭脖|沐浴露|洗面奶|面霜|爽肤水|纸巾|抽纸|饮用水|香皂|肥皂|台灯|收纳袋|收纳盒|置物架|鞋架|衣柜|衣服柜|橱柜|隔板|行李箱|流量卡/i;
+
 export function classifyGarment(title: string, sku = ""): Classification | null {
   const text = `${title} ${sku}`.trim();
+  if (NON_WEARABLE_PRODUCT_PATTERN.test(text)) {
+    return null;
+  }
+
   const category = detectCategory(title) ?? detectCategory(text);
   if (!category) {
     return null;

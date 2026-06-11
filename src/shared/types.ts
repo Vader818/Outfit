@@ -85,3 +85,10 @@ export interface TaobaoCapturedBatch {
   pageUrl?: string;
   items?: TaobaoCapturedItem[];
 }
+
+export interface TaobaoWardrobeFilterSummary {
+  originalItems: number;
+  keptItems: number;
+  skippedRefunded: number;
+  skippedNonApparel: number;
+}

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { TaobaoWardrobeFilterSummary } from "../../src/shared/types";
+import { filterTaobaoBatchForWardrobe } from "./importTaobao";
 
 export type TaobaoCaptureMode = "orders" | "item-detail";
 
@@ -18,12 +20,17 @@ export interface TaobaoLatestCaptureResult {
   path: string;
   jsonText: string;
   payload: unknown;
+  filterSummary?: TaobaoWardrobeFilterSummary;
 }
 
 export interface CaptureFileSystem {
   readdirSync(path: string): string[];
   statSync(path: string): { mtimeMs: number; isFile: () => boolean };
   readFileSync(path: string, encoding: BufferEncoding): string;
+}
+
+export interface ReadLatestTaobaoCaptureOptions {
+  wardrobeOnly?: boolean;
 }
 
 const OUTPUT_DIR = "output/taobao-captures";
@@ -59,7 +66,7 @@ export function startTaobaoItemCapture(input: unknown): TaobaoCaptureStartResult
   ]);
 }
 
-export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: CaptureFileSystem = fs): TaobaoLatestCaptureResult {
+export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: CaptureFileSystem = fs, options: ReadLatestTaobaoCaptureOptions = {}): TaobaoLatestCaptureResult {
   const fileNames = readCaptureDirectory(outputDir, fileSystem);
   const candidates = fileNames
     .filter((fileName) => fileName.toLowerCase().endsWith(".json"))
@@ -82,6 +89,18 @@ export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: Capt
     payload = JSON.parse(jsonText);
   } catch {
     throw new Error(`最新 Selenium 采集产物不是有效 JSON：${latest.fileName}`);
+  }
+
+  if (options.wardrobeOnly) {
+    const filtered = filterTaobaoBatchForWardrobe(payload);
+    return {
+      outputDir,
+      fileName: latest.fileName,
+      path: latest.filePath,
+      jsonText: JSON.stringify(filtered.payload, null, 2),
+      payload: filtered.payload,
+      filterSummary: filtered.filterSummary
+    };
   }
 
   return {

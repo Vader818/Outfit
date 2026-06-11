@@ -33,6 +33,7 @@ describe("App", () => {
         bookmarklet="https://example.com/bookmarklet"
         importText=""
         importResult={null}
+        filterSummary={null}
         captureUrl=""
         captureResult={null}
         busy={false}
@@ -47,6 +48,45 @@ describe("App", () => {
     );
 
     expect(markup).toContain("读取产物");
+  });
+
+  it("renders the wardrobe-only capture filter summary in the import view", () => {
+    const markup = renderToStaticMarkup(
+      <ImportView
+        bookmarklet="https://example.com/bookmarklet"
+        importText="{}"
+        importResult={null}
+        filterSummary={{
+          originalItems: 8,
+          keptItems: 3,
+          skippedRefunded: 1,
+          skippedNonApparel: 4
+        }}
+        captureUrl=""
+        captureResult={null}
+        busy={false}
+        onCopyBookmarklet={vi.fn()}
+        onImportText={vi.fn()}
+        onImport={vi.fn()}
+        onCaptureUrl={vi.fn()}
+        onStartOrdersCapture={vi.fn()}
+        onStartItemCapture={vi.fn()}
+        onReadLatestCapture={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("已从 8 条订单中保留 3 条衣服/鞋候选");
+    expect(markup).toContain("退款过滤 1 条");
+    expect(markup).toContain("非服饰过滤 4 条");
+  });
+
+  it("uses fifteen pages for Taobao order capture", async () => {
+    const appModule = await import("../src/App");
+    const buildTaobaoOrderCaptureOptions = (appModule as {
+      buildTaobaoOrderCaptureOptions?: () => { maxPages: number; loginWait: number };
+    }).buildTaobaoOrderCaptureOptions;
+
+    expect(buildTaobaoOrderCaptureOptions?.()).toEqual({ maxPages: 15, loginWait: 60 });
   });
 
   it("builds a wear log payload from a recommendation outfit", async () => {

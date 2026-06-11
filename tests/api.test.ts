@@ -59,6 +59,7 @@ beforeEach(() => {
 afterEach(async () => {
   spawnMock.mockClear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -382,5 +383,68 @@ describe("API routes", () => {
     expect(await first.json()).toMatchObject({ summary: "小雨" });
     expect(await second.json()).toMatchObject({ summary: "小雨" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns estimated weather when Open-Meteo fails before anything is cached", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response("Bad Gateway", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      weatherCode: 3,
+      summary: expect.stringContaining("估算")
+    });
+    expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns stale cached weather when Open-Meteo fails after the cache expires", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        current: {
+          time: "2026-01-03T09:00",
+          temperature_2m: 6,
+          apparent_temperature: 4,
+          precipitation: 1,
+          weather_code: 61,
+          wind_speed_10m: 22
+        },
+        daily: {
+          time: ["2026-01-03"],
+          precipitation_probability_max: [78],
+          weather_code: [61]
+        }
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("Bad Gateway", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const first = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    expect(first.status).toBe(200);
+    db.prepare("UPDATE weather_cache SET fetched_at = ?").run("2020-01-01T00:00:00.000Z");
+
+    const second = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ summary: "小雨" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

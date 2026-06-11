@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Garment, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoPageType } from "../../src/shared/types";
+import type { Garment, GarmentCategory, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoPageType, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
 import { classifyGarment } from "./classify";
 
 export interface SourceOrderItemDraft {
@@ -43,12 +43,18 @@ export interface NormalizedTaobaoBatch {
   };
 }
 
+export interface TaobaoWardrobeFilteredBatch {
+  payload: TaobaoCapturedBatch;
+  filterSummary: TaobaoWardrobeFilterSummary;
+}
+
 export interface GarmentDisplayInfo {
   brand: string;
   name: string;
   rawName: string;
 }
 
+const WARDROBE_IMPORT_CATEGORIES: readonly GarmentCategory[] = ["top", "bottom", "dress", "outerwear", "shoes"];
 const REFUND_PATTERN = /退款成功|退货退款|交易关闭|已退款|售后成功|退款退货成功|订单关闭/i;
 const GENERIC_DETAIL_TITLE_PATTERN = /^(宝贝描述|商品详情|图文详情|参数|参数信息|尺码|尺码信息|详情|描述)$/i;
 const ORDER_STATUS_TEXT = "(?:Pending receipt|Pending review|Completed|交易成功|交易关闭|买家已付款|卖家已发货|待付款|待发货|待收货|待评价|已完成)";
@@ -96,13 +102,13 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
     const statusText = `${sourceItem.status} ${sourceItem.refundText} ${sourceItem.rawText}`;
     sourceItem.isRefunded = REFUND_PATTERN.test(statusText);
     const classification = classifyGarment(displayTitle(sourceItem), classificationContext(sourceItem));
-    sourceItem.isApparel = Boolean(classification);
+    sourceItem.isApparel = Boolean(classification && isWardrobeImportCategory(classification.category));
     sourceItems.push(sourceItem);
     if (sourceItem.isRefunded) {
       skippedRefunded += 1;
       continue;
     }
-    if (!classification) {
+    if (!classification || !isWardrobeImportCategory(classification.category)) {
       skippedNonApparel += 1;
       continue;
     }
@@ -144,6 +150,30 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   };
 }
 
+export function filterTaobaoBatchForWardrobe(payload: unknown): TaobaoWardrobeFilteredBatch {
+  const batch = assertBatch(payload);
+  const normalized = normalizeTaobaoBatch(batch);
+  const keptItems = normalized.sourceItems
+    .filter((item) => item.isApparel && !item.isRefunded)
+    .map(sourceItemToCapturedItem);
+
+  return {
+    payload: {
+      source: batch.source || "taobao-bookmarklet",
+      pageType: batch.pageType || guessPageType(batch.pageUrl || ""),
+      capturedAt: normalized.capturedAt,
+      pageUrl: normalized.pageUrl,
+      items: keptItems
+    },
+    filterSummary: {
+      originalItems: batch.items?.length || 0,
+      keptItems: keptItems.length,
+      skippedRefunded: normalized.summary.skippedRefunded,
+      skippedNonApparel: normalized.summary.skippedNonApparel
+    }
+  };
+}
+
 function assertBatch(payload: unknown): TaobaoCapturedBatch {
   if (!payload || typeof payload !== "object") {
     throw new Error("导入内容必须是 JSON 对象");
@@ -153,6 +183,39 @@ function assertBatch(payload: unknown): TaobaoCapturedBatch {
     throw new Error("导入内容缺少 items 数组");
   }
   return batch;
+}
+
+export function isWardrobeImportCategory(category: GarmentCategory): boolean {
+  return WARDROBE_IMPORT_CATEGORIES.includes(category);
+}
+
+function sourceItemToCapturedItem(item: SourceOrderItemDraft): TaobaoCapturedItem {
+  return {
+    pageType: item.pageType,
+    itemId: optionalText(item.itemId),
+    orderId: optionalText(item.orderId),
+    orderTime: optionalText(item.orderTime),
+    title: optionalText(item.title),
+    sku: optionalText(item.sku),
+    quantity: item.quantity,
+    payment: item.payment ?? undefined,
+    status: optionalText(item.status),
+    refundText: optionalText(item.refundText),
+    itemUrl: optionalText(item.itemUrl),
+    imageUrl: optionalText(item.imageUrl),
+    rawText: optionalText(item.rawText),
+    detailUrl: optionalText(item.detailUrl),
+    detailTitle: optionalText(item.detailTitle),
+    detailProps: item.detailProps.length ? item.detailProps : undefined,
+    detailDescription: optionalText(item.detailDescription),
+    detailImages: item.detailImages.length ? item.detailImages : undefined,
+    detailRawText: optionalText(item.detailRawText)
+  };
+}
+
+function optionalText(value: string): string | undefined {
+  const cleaned = cleanText(value);
+  return cleaned || undefined;
 }
 
 function stableKey(item: TaobaoCapturedItem): string {

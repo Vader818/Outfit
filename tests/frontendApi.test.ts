@@ -71,6 +71,38 @@ describe("frontend API client", () => {
     }));
   });
 
+  it("requests wardrobe-only filtering for the latest Taobao capture when asked", async () => {
+    const payload = { source: "taobao-selenium-order-list", items: [{ itemId: "808" }] };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      outputDir: "output/taobao-captures",
+      fileName: "taobao-orders-20260611-152934.json",
+      path: "output/taobao-captures/taobao-orders-20260611-152934.json",
+      jsonText: JSON.stringify(payload, null, 2),
+      payload,
+      filterSummary: {
+        originalItems: 8,
+        keptItems: 3,
+        skippedRefunded: 1,
+        skippedNonApparel: 4
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(readLatestTaobaoCapture({ wardrobeOnly: true })).resolves.toMatchObject({
+      payload,
+      filterSummary: {
+        originalItems: 8,
+        keptItems: 3,
+        skippedRefunded: 1,
+        skippedNonApparel: 4
+      }
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/capture/taobao-latest?wardrobeOnly=1", expect.objectContaining({
+      method: "GET"
+    }));
+  });
+
   it("posts wear logs with garment ids and optional context", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 15 }), { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
