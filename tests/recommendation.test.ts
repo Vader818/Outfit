@@ -156,6 +156,18 @@ describe("recommendOutfits", () => {
     expect(result.outfits[0].items.some((item) => item.category === "shoes")).toBe(true);
     expect(result.outfits[0].reasons.join(" ")).toMatch(/降雨|雨|保暖|低温/);
     expect(result.outfits[0].score).toBeGreaterThan(result.outfits[2].score);
+    expect(result.weatherScenario).toBe("cold_windy");
+    expect(result.outfits[0].matchPercent).toBeGreaterThanOrEqual(0);
+    expect(result.outfits[0].matchPercent).toBeLessThanOrEqual(100);
+    expect(result.outfits[0].scoreBreakdown).toMatchObject({
+      weatherComfort: expect.any(Number),
+      season: expect.any(Number),
+      occasion: expect.any(Number),
+      colorHarmony: expect.any(Number),
+      recentWear: expect.any(Number),
+      itemConfidence: expect.any(Number),
+      userPreference: expect.any(Number)
+    });
     expect(result.outfits[0].alternatives.length).toBeGreaterThan(0);
   });
 
@@ -229,6 +241,31 @@ describe("recommendOutfits", () => {
     expect(result.outfits[0].items.some((item) => item.id === 1)).toBe(false);
     expect(result.outfits[0].items.some((item) => item.id === 4)).toBe(true);
     expect(result.outfits[0].reasons.join(" ")).toMatch(/最近|重复|换穿/);
+  });
+
+  it("uses lightweight user preferences in scoring explanations", () => {
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "黑色薄衬衫", category: "top", color: "black", warmth: "light", seasons: ["spring"] }),
+        garment({ id: 2, name: "深蓝直筒牛仔裤", category: "bottom", color: "blue", warmth: "medium", seasons: ["spring"] }),
+        garment({ id: 3, name: "白色运动鞋", category: "shoes", color: "white", warmth: "light", seasons: ["spring"] }),
+        garment({ id: 4, name: "红色针织衫", category: "top", color: "red", warmth: "warm", seasons: ["spring"] })
+      ],
+      weather: weather({ apparentTemperature: 16 }),
+      occasion: "casual",
+      userProfile: {
+        temperatureSensitivity: "runs-cold",
+        preferredColors: ["red"],
+        avoidedColors: ["black"],
+        preferredStyles: ["casual"]
+      }
+    });
+
+    const outfit = result.outfits[0];
+    expect(outfit.items.some((item) => item.id === 4)).toBe(true);
+    expect(outfit.scoreBreakdown).toBeDefined();
+    expect(outfit.scoreBreakdown!.userPreference).toBeGreaterThan(0);
+    expect(outfit.reasons.join(" ")).toMatch(/偏好|怕冷|颜色/);
   });
 
   it("sorts alternatives by replacement compatibility", () => {

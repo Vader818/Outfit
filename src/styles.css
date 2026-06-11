@@ -238,6 +238,15 @@ button:disabled {
   font-weight: 650;
 }
 
+.empty-state {
+  padding: 18px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #64748b;
+  font-weight: 650;
+}
+
 label {
   color: #334155;
   font-weight: 650;
@@ -318,6 +327,33 @@ select:focus {
 .metric strong {
   margin-top: 6px;
   font-size: 26px;
+}
+
+.preview-panel {
+  gap: 14px;
+}
+
+.preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.preview-list span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #dbe3ef;
+}
+
+.filter-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 10px;
 }
 
 .wardrobe-list {
@@ -581,6 +617,7 @@ ul {
   .grid.two,
   .outfit-grid,
   .metric-strip,
+  .filter-bar,
   .selenium-controls {
     grid-template-columns: 1fr;
   }

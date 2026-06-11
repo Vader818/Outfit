@@ -1,16 +1,18 @@
-import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, RecommendationResult, Season, WeatherSnapshot } from "../../src/shared/types";
+import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, RecommendationResult, RecommendationScoreBreakdown, Season, UserPreferenceProfile, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
 
 export interface RecommendInput {
   garments: Garment[];
   weather: WeatherSnapshot;
   occasion: string;
   recentlyWornGarmentIds?: number[];
+  userProfile?: UserPreferenceProfile;
 }
 
 interface Candidate {
   items: Garment[];
   score: number;
   reasons: string[];
+  scoreBreakdown: RecommendationScoreBreakdown;
 }
 
 const NEUTRALS = new Set(["black", "white", "gray", "beige", "brown", "blue", "unknown"]);
@@ -66,9 +68,11 @@ export function recommendOutfits(input: RecommendInput): RecommendationResult {
   }
 
   const sorted = candidates.sort((left, right) => right.score - left.score);
-  const outfits = selectDiverseCandidates(sorted, available, input).map((candidate, index) => ({
+  const outfits = selectDiverseCandidates(sorted).map((candidate, index) => ({
     id: `outfit-${index + 1}`,
     score: Number(candidate.score.toFixed(1)),
+    matchPercent: normalizeMatchPercent(candidate.score),
+    scoreBreakdown: normalizeBreakdown(candidate.scoreBreakdown),
     items: candidate.items,
     reasons: candidate.reasons,
     alternatives: findAlternatives(available, candidate.items, input)
@@ -76,12 +80,13 @@ export function recommendOutfits(input: RecommendInput): RecommendationResult {
 
   return {
     weather: input.weather,
+    weatherScenario: classifyWeatherScenario(input.weather),
     occasion: input.occasion,
     outfits
   };
 }
 
-function selectDiverseCandidates(candidates: Candidate[], available: Garment[], input: RecommendInput): OutfitRecommendation[] {
+function selectDiverseCandidates(candidates: Candidate[]): Candidate[] {
   const selected: Candidate[] = [];
   const seenCoreSignatures = new Set<string>();
 
@@ -98,29 +103,25 @@ function selectDiverseCandidates(candidates: Candidate[], available: Garment[], 
     if (!selected.includes(candidate)) selected.push(candidate);
   }
 
-  return selected.slice(0, 3).map((candidate, index) => ({
-    id: `candidate-${index + 1}`,
-    score: candidate.score,
-    items: candidate.items,
-    reasons: candidate.reasons,
-    alternatives: findAlternatives(available, candidate.items, input)
-  }));
+  return selected.slice(0, 3);
 }
 
 function scoreCandidate(items: Garment[], input: RecommendInput): Candidate {
   const reasons: string[] = [];
-  let score = 50;
+  const scoreBreakdown: RecommendationScoreBreakdown = {
+    slotCompleteness: slotCompletenessScore(items, reasons),
+    weatherComfort: weatherComfortScore(items, input.weather, reasons),
+    season: seasonScore(items, input.weather, reasons),
+    occasion: occasionScore(items, input.occasion as Formality, reasons),
+    pairCompatibility: pairwiseCompatibilityScore(items),
+    colorHarmony: colorHarmonyScore(items, reasons),
+    recentWear: recentWearScore(items, input.recentlyWornGarmentIds ?? [], reasons),
+    itemConfidence: itemConfidenceScore(items),
+    userPreference: userPreferenceScore(items, input.userProfile, input.weather, reasons)
+  };
+  const score = 50 + Object.values(scoreBreakdown).reduce((total, value) => total + value, 0);
 
-  score += slotCompletenessScore(items, reasons);
-  score += weatherComfortScore(items, input.weather, reasons);
-  score += seasonScore(items, input.weather, reasons);
-  score += occasionScore(items, input.occasion as Formality, reasons);
-  score += pairwiseCompatibilityScore(items);
-  score += colorHarmonyScore(items, reasons);
-  score += recentWearScore(items, input.recentlyWornGarmentIds ?? [], reasons);
-  score += itemConfidenceScore(items);
-
-  return { items, score, reasons: reasons.slice(0, 6) };
+  return { items, score, reasons: reasons.slice(0, 6), scoreBreakdown };
 }
 
 function slotCompletenessScore(items: Garment[], reasons: string[]): number {
@@ -317,6 +318,76 @@ function recentWearScore(items: Garment[], recentlyWornGarmentIds: number[], rea
 
 function itemConfidenceScore(items: Garment[]): number {
   return items.reduce((score, item) => score + (item.confirmed ? 2 : 0) + item.confidence * 2, 0);
+}
+
+function userPreferenceScore(items: Garment[], profile: UserPreferenceProfile | undefined, weather: WeatherSnapshot, reasons: string[]): number {
+  if (!profile) return 0;
+  let score = 0;
+  const preferredColors = new Set((profile.preferredColors ?? []).map((color) => color.toLowerCase()));
+  const avoidedColors = new Set((profile.avoidedColors ?? []).map((color) => color.toLowerCase()));
+  const preferredStyles = new Set((profile.preferredStyles ?? []).map((style) => style.toLowerCase()));
+  let matchedPreference = false;
+  let avoidedPenalty = false;
+
+  for (const item of items) {
+    const color = item.color.toLowerCase();
+    if (preferredColors.has(color)) {
+      score += CORE_CATEGORIES.has(item.category) ? 8 : 3;
+      matchedPreference = true;
+    }
+    if (avoidedColors.has(color)) {
+      score -= CORE_CATEGORIES.has(item.category) ? 12 : 4;
+      avoidedPenalty = true;
+    }
+    if (item.styles.some((style) => preferredStyles.has(style.toLowerCase()))) {
+      score += 2;
+      matchedPreference = true;
+    }
+  }
+
+  if (profile.temperatureSensitivity === "runs-cold" && weather.apparentTemperature <= 18) {
+    const warmItems = items.filter((item) => item.warmth === "warm" || item.warmth === "heavy").length;
+    score += warmItems * 6;
+    if (warmItems) {
+      addReason(reasons, "已按怕冷偏好提高保暖单品排序。");
+      matchedPreference = true;
+    }
+  }
+  if (profile.temperatureSensitivity === "runs-hot" && weather.apparentTemperature >= 18) {
+    const heavyItems = items.filter((item) => item.warmth === "warm" || item.warmth === "heavy").length;
+    const lightItems = items.filter((item) => item.warmth === "light").length;
+    score += lightItems * 5 - heavyItems * 7;
+    if (lightItems) {
+      addReason(reasons, "已按怕热偏好提高轻薄单品排序。");
+      matchedPreference = true;
+    }
+  }
+  if (matchedPreference) addReason(reasons, "颜色或风格更贴近你的偏好。");
+  if (avoidedPenalty) addReason(reasons, "包含偏好中避开的颜色，已降低排序。");
+  return score;
+}
+
+function normalizeMatchPercent(score: number): number {
+  return Math.max(0, Math.min(100, Math.round((score / 140) * 100)));
+}
+
+function normalizeBreakdown(scoreBreakdown: RecommendationScoreBreakdown): RecommendationScoreBreakdown {
+  return Object.fromEntries(
+    Object.entries(scoreBreakdown).map(([key, value]) => [key, Number(value.toFixed(1))])
+  ) as unknown as RecommendationScoreBreakdown;
+}
+
+export function classifyWeatherScenario(weather: WeatherSnapshot): WeatherScenario {
+  const apparent = weather.apparentTemperature;
+  const rainy = weather.precipitationProbability >= 50 || [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(weather.weatherCode);
+  const windy = weather.windSpeed >= 20;
+  if (apparent <= 10 && windy) return "cold_windy";
+  if (apparent <= 10) return "cold_dry";
+  if (apparent >= 28 && rainy) return "hot_humid";
+  if (apparent >= 28) return "hot_dry";
+  if (rainy) return "rainy_mild";
+  if (weather.precipitationProbability <= 20 && weather.windSpeed < 16) return "dry_sunny";
+  return "mild";
 }
 
 function outerwearOptions(outerwear: Garment[], weather: WeatherSnapshot): Array<Garment | undefined> {

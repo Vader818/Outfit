@@ -1,0 +1,158 @@
+# Outfit
+
+Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单页或商品详情页采集服饰候选，导入到本地 SQLite 衣橱库，再结合天气、场合、最近穿着记录生成可解释的搭配建议。
+
+项目当前定位是个人本地应用，不是多用户账号系统，也不是云端导购平台。淘宝采集、衣橱数据、推荐历史默认都保存在本机工作目录下。
+
+## 技术栈
+
+- 前端：React + Vite + TypeScript
+- 后端：Express + Node 内置 `node:sqlite`
+- 数据库：`data/outfit.sqlite`
+- 采集：Python + Selenium，默认按采集任务输出 JSON 到 `output/taobao-captures/<jobId>`
+- 天气：Open-Meteo API，失败时回退到本地估算天气
+
+## 环境要求
+
+- Node.js 24 或更新版本。后端依赖 `node:sqlite`，旧版 Node 可能无法启动。
+- npm
+- Python 3.13 或兼容版本
+- Chrome 浏览器。只有运行 Selenium 淘宝采集时需要。
+
+安装依赖：
+
+```powershell
+npm ci
+python -m pip install -r requirements.txt
+python -m pip install pytest
+```
+
+## 启动方式
+
+同时启动 API 与前端：
+
+```powershell
+npm run dev
+```
+
+默认地址：
+
+- 前端：`http://127.0.0.1:5174`
+- API：`http://127.0.0.1:8788`
+
+单独启动：
+
+```powershell
+npm run dev:web
+npm run dev:api
+```
+
+生产式本地启动 API：
+
+```powershell
+$env:PORT = "8788"
+npm run start
+```
+
+前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8788`。
+
+## 测试与构建
+
+Node/TypeScript 测试：
+
+```powershell
+npm test
+```
+
+Python 采集脚本测试：
+
+```powershell
+python -m pytest -q
+```
+
+TypeScript 类型检查与 Vite 构建：
+
+```powershell
+npm run build
+```
+
+GitHub Actions 会执行同样的 Node 测试、Python pytest 和 TypeScript build。
+
+## 淘宝采集与导入流程
+
+### 方式一：应用内启动 Selenium 订单采集
+
+1. 运行 `npm run dev` 并打开前端。
+2. 进入「导入淘宝订单」。
+3. 点击「采集订单页」。
+4. 在弹出的 Chrome 中登录淘宝或处理验证。
+5. 应用会创建一个采集任务，任务产物写入 `output/taobao-captures/<jobId>`。
+6. 回到应用点击「读取产物」，如果本次会话已有采集任务，应用会按 `jobId` 读取该任务产物；旧版“读取最新 JSON”接口仍保留作兼容。
+7. 点击「预览」可先查看候选衣物、退款项、非服饰项、重复项和自动分类置信度。
+8. 点击「导入」写入本地 SQLite。
+
+等价 CLI：
+
+```powershell
+python scripts/taobao_order_selenium_capture.py --max-pages 3 --login-wait 60
+```
+
+### 方式二：应用内启动 Selenium 商品详情采集
+
+1. 在「导入淘宝订单」中粘贴淘宝或天猫商品详情 URL。
+2. 点击「采集商品详情」。
+3. 在 Chrome 中登录或处理验证。
+4. 应用会创建一个采集任务，任务产物写入 `output/taobao-captures/<jobId>`。
+5. 点击「读取产物」「预览」和「导入」。
+
+等价 CLI：
+
+```powershell
+python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.htm?id=..." --login-wait 60
+```
+
+### 方式三：书签脚本采集
+
+1. 在应用中复制「Outfit 淘宝采集」书签脚本。
+2. 在浏览器中新建书签，把脚本放入书签地址。
+3. 打开淘宝订单页或商品详情页后点击该书签。
+4. 脚本会把采集 JSON 复制到剪贴板；如果剪贴板不可用，会弹出可复制的文本框。
+5. 将 JSON 粘贴到应用的「采集 JSON」文本框并导入。
+
+## 导入规则
+
+- 输入必须是 `TaobaoCapturedBatch`，并包含 `items` 数组。
+- 同一商品会按 `itemId + sku` 等稳定键去重。
+- 退款或售后候选会被标记并跳过衣橱草稿创建。
+- 当前自动衣橱导入会为 `top`、`bottom`、`dress`、`outerwear`、`shoes`、`accessory` 创建衣橱草稿；配饰在推荐中作为可选增强项，不作为完整搭配的必需核心单品。
+- 导入预览不会写入数据库，可用于在正式导入前检查自动分类、置信度、重复项和跳过原因。
+- 商品详情采集可以补充品牌、商品名、详情图、参数和描述；后导入的详情会合并到已购 SKU。
+- 导入后的条目可以在应用中手动确认、编辑、排除或标记为未拥有。
+
+## 隐私边界
+
+- API 只监听 `127.0.0.1`，默认不对局域网开放。
+- 淘宝账号、密码、Cookie、浏览器凭据不会被应用 API 保存。
+- 书签脚本只读取当前页面可见 DOM、页面脚本中的商品字段和图片 URL，不读取 `document.cookie`、`localStorage`、`sessionStorage` 或密码字段。
+- Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；该目录在本机保存。
+- 采集 JSON 位于 `output/taobao-captures`，SQLite 位于 `data/outfit.sqlite`，两者可能包含购买商品信息。
+- 天气接口会向 Open-Meteo 发送经纬度。前端会把经纬度保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`。
+- `.gitignore` 已忽略 `data/*.sqlite*`、`output/`、`logs/`、`node_modules/` 和 `dist/`，不要把本地采集产物或数据库提交到仓库。
+
+## 文档
+
+- [API 文档](docs/api.md)
+- [数据库与类型 Schema](docs/schema.md)
+
+## 故障排查
+
+- `Cannot find module 'node:sqlite'` 或 API 无法启动：升级到 Node.js 24 或更新版本。
+- 前端能打开但接口失败：确认 `npm run dev:api` 正在运行，且 API 地址是 `http://127.0.0.1:8788`。
+- 端口占用：修改 API 端口可使用 `$env:PORT = "8789"; npm run start`。开发模式下还需要同步调整 Vite 代理配置。
+- `python` 命令不可用：安装 Python，或在启动 Node API 前设置 `$env:PYTHON = "python3"` 指向可用解释器。
+- Selenium 没有打开 Chrome：确认已安装 Chrome，并重新安装 `selenium` 依赖。
+- 淘宝页面停在登录、滑块或风险验证：在打开的 Chrome 中手动完成验证后等待采集继续；必要时再次运行采集。
+- 「读取产物」提示找不到 JSON：先确认对应采集任务已生成产物；旧版最新产物读取则检查 `output/taobao-captures` 或其子目录中是否有 `.json` 文件。
+- 导入后没有新增衣服：检查 JSON 是否包含 `items`，以及候选是否被退款、非服饰或无有效标题过滤。
+- 天气接口失败：服务会优先使用缓存，缓存也不可用时返回估算天气。
+- SQLite 被占用：关闭其他正在访问 `data/outfit.sqlite` 的进程后重试。

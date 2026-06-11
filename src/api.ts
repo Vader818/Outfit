@@ -1,4 +1,4 @@
-import type { Garment, RecommendationResult, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
+import type { CaptureArtifact, CaptureJob, CaptureJobMode, Garment, RecommendationResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, UserPreferenceProfile, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -28,6 +28,13 @@ export interface ImportSummary {
   };
 }
 
+export async function previewTaobaoImport(payload: unknown): Promise<TaobaoImportPreview> {
+  return request<TaobaoImportPreview>("/api/import/taobao-preview", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function importTaobaoBatch(payload: unknown): Promise<ImportSummary> {
   return request<ImportSummary>("/api/import/taobao-batch", {
     method: "POST",
@@ -46,6 +53,37 @@ export async function startTaobaoItemCapture(options: { url: string; loginWait?:
   return request<CaptureStartResult>("/api/capture/taobao-item", {
     method: "POST",
     body: JSON.stringify(options)
+  });
+}
+
+export async function startCaptureJob(options: {
+  mode: CaptureJobMode;
+  maxPages?: number;
+  loginWait?: number;
+  url?: string;
+}): Promise<CaptureJob> {
+  return request<CaptureJob>("/api/capture/jobs", {
+    method: "POST",
+    body: JSON.stringify(options)
+  });
+}
+
+export async function getCaptureJob(id: string): Promise<CaptureJob> {
+  return request<CaptureJob>(`/api/capture/jobs/${id}`, {
+    method: "GET"
+  });
+}
+
+export async function cancelCaptureJob(id: string): Promise<CaptureJob> {
+  return request<CaptureJob>(`/api/capture/jobs/${id}/cancel`, {
+    method: "POST"
+  });
+}
+
+export async function getCaptureJobArtifact(id: string, options: { wardrobeOnly?: boolean } = {}): Promise<CaptureArtifact> {
+  const query = options.wardrobeOnly ? "?wardrobeOnly=1" : "";
+  return request<CaptureArtifact>(`/api/capture/jobs/${id}/artifact${query}`, {
+    method: "GET"
   });
 }
 
@@ -81,6 +119,7 @@ export async function getRecommendations(input: {
   weather: WeatherSnapshot;
   occasion: string;
   recentlyWornGarmentIds?: number[];
+  userProfile?: UserPreferenceProfile;
 }): Promise<RecommendationResult> {
   return request<RecommendationResult>("/api/recommendations", {
     method: "POST",
@@ -108,7 +147,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || "请求失败");
+    const message = typeof data.error === "string"
+      ? data.error
+      : data.error?.message || "请求失败";
+    throw new Error(message);
   }
   return data as T;
 }

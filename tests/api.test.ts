@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
@@ -53,7 +55,7 @@ const recommendationWeather = {
 };
 
 beforeEach(() => {
-  spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn() } as never);
+  spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn(), kill: vi.fn(), on: vi.fn() } as never);
 });
 
 afterEach(async () => {
@@ -133,8 +135,135 @@ describe("API routes", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: "请输入有效的淘宝或天猫商品链接" });
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "请输入有效的淘宝或天猫商品链接"
+      }
+    });
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("starts capture jobs and reads artifacts by job id", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "orders", maxPages: 2, loginWait: 45 })
+    });
+    const job = await startResponse.json() as { id: string; status: string; outputDir: string; pid: number };
+
+    expect(startResponse.status).toBe(200);
+    expect(job).toMatchObject({
+      status: "running",
+      pid: 4321,
+      outputDir: expect.stringContaining("output/taobao-captures/")
+    });
+    expect(job.id).toMatch(/^cap_/);
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      "python",
+      expect.arrayContaining(["scripts/taobao_order_selenium_capture.py", "--max-pages", "2", "--login-wait", "45", "--output-dir", job.outputDir]),
+      expect.objectContaining({ cwd: process.cwd(), stdio: expect.anything() })
+    );
+
+    mkdirSync(job.outputDir, { recursive: true });
+    const payload = {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "1",
+          title: "UTIMUS纯棉短袖T恤男女同款夏季透气上衣",
+          status: "交易成功"
+        }
+      ]
+    };
+    writeFileSync(path.join(job.outputDir, "capture.json"), JSON.stringify(payload), "utf8");
+
+    const artifactResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}/artifact?wardrobeOnly=1`);
+    const artifact = await artifactResponse.json();
+
+    expect(artifactResponse.status).toBe(200);
+    expect(artifact).toMatchObject({
+      jobId: job.id,
+      fileName: "capture.json",
+      payload: {
+        items: [expect.objectContaining({ itemId: "1" })]
+      },
+      filterSummary: {
+        keptItems: 1
+      }
+    });
+  });
+
+  it("previews a Taobao import without writing garments", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/import/taobao-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: "taobao-selenium-order-list",
+        items: [
+          {
+            itemId: "1001",
+            title: "UTIMUS纯棉短袖T恤男女同款夏季透气上衣",
+            status: "交易成功"
+          },
+          {
+            itemId: "1002",
+            title: "羊毛围巾秋冬保暖柔软百搭",
+            status: "交易成功"
+          },
+          {
+            itemId: "2001",
+            title: "手机壳保护套",
+            status: "交易成功"
+          },
+          {
+            itemId: "3001",
+            title: "黑色直筒牛仔裤",
+            status: "退款成功",
+            refundText: "退款成功"
+          }
+        ]
+      })
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      summary: {
+        totalItems: 4,
+        uniqueItems: 4,
+        skippedRefunded: 1,
+        skippedNonApparel: 1,
+        createdGarments: 2
+      },
+      duplicateCount: 0,
+      candidates: [
+        expect.objectContaining({ name: expect.stringContaining("T恤"), category: "top", confidence: expect.any(Number) }),
+        expect.objectContaining({ name: expect.stringContaining("围巾"), category: "accessory", confidence: expect.any(Number) })
+      ],
+      skipped: [
+        expect.objectContaining({ reason: "non-apparel" }),
+        expect.objectContaining({ reason: "refunded" })
+      ]
+    });
+
+    expect(await (await fetch(`${baseUrl}/api/garments`)).json()).toEqual([]);
   });
 
   it("imports Taobao items, updates garments, and returns recommendations", async () => {
@@ -169,6 +298,19 @@ describe("API routes", () => {
     const updatedGarment = await updateResponse.json();
     expect(updatedGarment).toMatchObject({ confirmed: true });
     expect(updatedGarment.itemUrl || updatedGarment.detailUrl).toBeTruthy();
+
+    const invalidUpdate = await fetch(`${baseUrl}/api/garments/${linkedGarment?.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ category: "hat" })
+    });
+    expect(invalidUpdate.status).toBe(400);
+    expect(await invalidUpdate.json()).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: expect.stringContaining("category")
+      }
+    });
 
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
@@ -266,7 +408,12 @@ describe("API routes", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: "garmentIds 必须是非空数字数组" });
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "garmentIds 必须是非空数字数组"
+      }
+    });
   });
 
   it("uses recent wear logs when ranking recommendations", async () => {

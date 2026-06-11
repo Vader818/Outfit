@@ -470,13 +470,39 @@ describe("normalizeTaobaoBatch", () => {
     });
 
     expect(result.summary.totalItems).toBe(14);
-    expect(result.summary.createdGarments).toBe(4);
-    expect(result.garmentDrafts.map((item) => item.category).sort()).toEqual(["bottom", "outerwear", "shoes", "top"]);
+    expect(result.summary.createdGarments).toBe(5);
+    expect(result.garmentDrafts.map((item) => item.category).sort()).toEqual(["accessory", "bottom", "outerwear", "shoes", "top"]);
     expect(result.garmentDrafts.map((item) => item.name)).toEqual([
       "纯棉短袖T恤男女同款夏季透气上衣",
       "宽松直筒牛仔裤春秋通勤长裤",
       "羊毛大衣女秋冬厚款通勤外套",
-      "男鞋运动鞋夏季轻便跑步休闲鞋"
+      "男鞋运动鞋夏季轻便跑步休闲鞋",
+      "羊毛围巾秋冬保暖柔软百搭"
     ]);
+  });
+
+  it("imports wardrobe accessories as optional recommendation enhancers", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "3001",
+          orderId: "9000000000000003001",
+          title: "配饰店 订单详情 交易成功 羊毛围巾秋冬保暖柔软百搭",
+          sku: "颜色分类: 灰色",
+          status: "交易成功"
+        }
+      ]
+    });
+
+    expect(result.summary.createdGarments).toBe(1);
+    expect(result.garmentDrafts[0]).toMatchObject({
+      category: "accessory",
+      warmth: "heavy",
+      color: "gray",
+      owned: true,
+      confirmed: false
+    });
   });
 });

@@ -1,0 +1,522 @@
+# API 文档
+
+本文档描述当前 `server/routes.ts` 实际暴露的本地 API。默认 Base URL：
+
+```text
+http://127.0.0.1:8788
+```
+
+请求和响应均使用 JSON。请求体大小限制为 `5mb`。业务错误使用统一结构，校验错误通常返回 HTTP 400：
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "category 必须是以下值之一：top, bottom, dress, outerwear, shoes, accessory",
+    "details": {
+      "field": "category"
+    }
+  }
+}
+```
+
+不存在的采集任务会返回 HTTP 404，错误码为 `NOT_FOUND`。
+
+## GET /api/health
+
+健康检查。
+
+响应：
+
+```json
+{ "ok": true }
+```
+
+## POST /api/import/taobao-batch
+
+导入淘宝采集批次。接口会归一化采集项、去重、写入 `source_order_items`，并为未退款的服饰、鞋类和配饰候选创建或更新 `garments`。
+
+请求体：`TaobaoCapturedBatch`
+
+```json
+{
+  "source": "taobao-selenium-order-list",
+  "pageType": "order-list",
+  "capturedAt": "2026-06-11T08:00:00.000Z",
+  "pageUrl": "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+  "items": [
+    {
+      "pageType": "order-list",
+      "itemId": "808",
+      "orderId": "123456789012345678",
+      "orderTime": "2026-06-10 20:30:00",
+      "title": "示例店铺 订单详情 交易成功 白色短袖T恤",
+      "sku": "颜色: 白色; 尺码: M",
+      "quantity": 1,
+      "payment": 99,
+      "status": "交易成功",
+      "itemUrl": "https://item.taobao.com/item.htm?id=808",
+      "imageUrl": "https://img.alicdn.com/example.jpg"
+    }
+  ]
+}
+```
+
+响应：`ImportSummary`
+
+```json
+{
+  "batchId": "2f9c...",
+  "summary": {
+    "totalItems": 1,
+    "uniqueItems": 1,
+    "skippedRefunded": 0,
+    "skippedNonApparel": 0,
+    "createdGarments": 1
+  }
+}
+```
+
+## POST /api/import/taobao-preview
+
+预览淘宝采集批次，不写入数据库。用于在正式导入前检查候选衣物、退款项、非服饰项、重复项和自动分类置信度。
+
+请求体：`TaobaoCapturedBatch`
+
+响应：`TaobaoImportPreview`
+
+```json
+{
+  "batchId": "2f9c...",
+  "summary": {
+    "totalItems": 4,
+    "uniqueItems": 3,
+    "skippedRefunded": 1,
+    "skippedNonApparel": 1,
+    "createdGarments": 1
+  },
+  "duplicateCount": 1,
+  "candidates": [
+    {
+      "sourceItemKey": "c9b7...",
+      "brand": "示例品牌",
+      "name": "红色针织围巾",
+      "rawName": "示例品牌 红色针织围巾",
+      "category": "accessory",
+      "color": "red",
+      "warmth": "warm",
+      "seasons": ["autumn", "winter"],
+      "confidence": 0.84,
+      "imageUrl": "https://img.alicdn.com/example.jpg"
+    }
+  ],
+  "skipped": [
+    { "title": "退款成功 黑色长裤", "reason": "refunded" },
+    { "title": "手机壳", "reason": "non-apparel" }
+  ]
+}
+```
+
+## POST /api/capture/taobao-orders
+
+启动 Selenium 淘宝订单页采集。接口只负责启动后台 Python 进程，不等待浏览器采集完成。
+
+请求体：
+
+```json
+{
+  "maxPages": 3,
+  "loginWait": 60
+}
+```
+
+字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `maxPages` | number | `3` | 订单页最大翻页数，范围 `1` 到 `20` |
+| `loginWait` | number | `60` | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
+
+响应：`CaptureStartResult`
+
+```json
+{
+  "started": true,
+  "mode": "orders",
+  "pid": 12345,
+  "outputDir": "output/taobao-captures",
+  "message": "Selenium 采集已启动。请在打开的 Chrome 中登录或处理验证，采集 JSON 会保存到 output/taobao-captures。"
+}
+```
+
+该旧接口仍保留兼容。新流程建议使用 `POST /api/capture/jobs`，因为它会为每次采集分配独立 `jobId` 和产物目录。
+
+## POST /api/capture/taobao-item
+
+启动 Selenium 淘宝/天猫商品详情采集。
+
+请求体：
+
+```json
+{
+  "url": "https://item.taobao.com/item.htm?id=808",
+  "loginWait": 60
+}
+```
+
+字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `url` | string | 是 | 仅接受 `item.taobao.com`、`detail.tmall.com`、`item.tmall.com` 的 HTTP/HTTPS 商品链接 |
+| `loginWait` | number | 否 | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
+
+响应：`CaptureStartResult`
+
+```json
+{
+  "started": true,
+  "mode": "item-detail",
+  "pid": 12346,
+  "outputDir": "output/taobao-captures",
+  "message": "Selenium 采集已启动。请在打开的 Chrome 中登录或处理验证，采集 JSON 会保存到 output/taobao-captures。"
+}
+```
+
+该旧接口仍保留兼容。新流程建议使用 `POST /api/capture/jobs`。
+
+## POST /api/capture/jobs
+
+创建一个带 `jobId` 的 Selenium 采集任务。任务产物写入 `output/taobao-captures/<jobId>`，后续通过 job 专属接口读取，避免误读其他采集产物。
+
+订单采集请求：
+
+```json
+{
+  "mode": "orders",
+  "maxPages": 3,
+  "loginWait": 60
+}
+```
+
+商品详情采集请求：
+
+```json
+{
+  "mode": "item-detail",
+  "url": "https://item.taobao.com/item.htm?id=808",
+  "loginWait": 60
+}
+```
+
+响应：`CaptureJob`
+
+```json
+{
+  "id": "cap_m3v7u0qk_a1b2c3d4",
+  "mode": "orders",
+  "status": "running",
+  "pid": 12345,
+  "outputDir": "output/taobao-captures/cap_m3v7u0qk_a1b2c3d4",
+  "logPath": "output/taobao-captures/cap_m3v7u0qk_a1b2c3d4/capture.log",
+  "message": "Selenium 采集任务已启动。请在打开的 Chrome 中登录或处理验证。",
+  "createdAt": "2026-06-11T08:00:00.000Z",
+  "updatedAt": "2026-06-11T08:00:00.000Z"
+}
+```
+
+字段约束：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `mode` | `"orders"` 或 `"item-detail"` | 是 | 采集模式 |
+| `maxPages` | number | 否 | 订单页最大翻页数，范围 `1` 到 `20`，仅订单采集使用 |
+| `loginWait` | number | 否 | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
+| `url` | string | 商品详情必填 | 仅接受淘宝/天猫商品详情链接 |
+
+## GET /api/capture/jobs/:id
+
+查询采集任务状态。状态枚举：
+
+```ts
+type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+```
+
+如果任务目录已生成 JSON 产物，查询时会把运行中的任务刷新为 `succeeded` 并填充 `artifactPath`。
+
+## POST /api/capture/jobs/:id/cancel
+
+取消仍在运行的采集任务。成功时返回更新后的 `CaptureJob`，已结束任务会原样返回当前状态。
+
+## GET /api/capture/jobs/:id/artifact
+
+读取指定采集任务的 JSON 产物。
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `wardrobeOnly` | `1` 或 `true` | 返回前按衣橱导入规则过滤退款和非服饰候选，并附带过滤摘要 |
+
+响应：`CaptureArtifact`
+
+```json
+{
+  "jobId": "cap_m3v7u0qk_a1b2c3d4",
+  "outputDir": "output/taobao-captures/cap_m3v7u0qk_a1b2c3d4",
+  "fileName": "taobao-orders-20260611-152934.json",
+  "path": "output/taobao-captures/cap_m3v7u0qk_a1b2c3d4/taobao-orders-20260611-152934.json",
+  "jsonText": "{ ... }",
+  "payload": {
+    "source": "taobao-selenium-order-list",
+    "pageType": "order-list",
+    "items": []
+  },
+  "filterSummary": {
+    "originalItems": 12,
+    "keptItems": 5,
+    "skippedRefunded": 2,
+    "skippedNonApparel": 5
+  }
+}
+```
+
+## GET /api/capture/taobao-latest
+
+读取 `output/taobao-captures` 下最新的 `.json` 采集产物。该接口用于兼容旧流程；应用内任务式采集优先使用 `/api/capture/jobs/:id/artifact`。
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `wardrobeOnly` | `1` 或 `true` | 返回前按衣橱导入规则过滤退款和非服饰候选，并附带过滤摘要 |
+
+响应：
+
+```json
+{
+  "outputDir": "output/taobao-captures",
+  "fileName": "taobao-orders-20260611-152934.json",
+  "path": "output/taobao-captures/taobao-orders-20260611-152934.json",
+  "jsonText": "{ ... }",
+  "payload": {
+    "source": "taobao-selenium-order-list",
+    "pageType": "order-list",
+    "items": []
+  },
+  "filterSummary": {
+    "originalItems": 12,
+    "keptItems": 5,
+    "skippedRefunded": 2,
+    "skippedNonApparel": 5
+  }
+}
+```
+
+没有可读 JSON 时返回错误。
+
+## GET /api/garments
+
+返回当前衣橱条目，按未排除、已拥有、较新 ID 优先排序。
+
+响应：`Garment[]`
+
+```json
+[
+  {
+    "id": 1,
+    "sourceOrderItemId": 10,
+    "brand": "示例品牌",
+    "name": "白色短袖T恤",
+    "rawName": "示例店铺 订单详情 交易成功 白色短袖T恤",
+    "category": "top",
+    "color": "white",
+    "warmth": "light",
+    "seasons": ["spring", "summer"],
+    "styles": ["casual"],
+    "formality": "casual",
+    "imageUrl": "https://img.alicdn.com/example.jpg",
+    "owned": true,
+    "confirmed": false,
+    "excluded": false,
+    "confidence": 0.82,
+    "notes": "",
+    "itemUrl": "https://item.taobao.com/item.htm?id=808",
+    "detailUrl": "https://item.taobao.com/item.htm?id=808"
+  }
+]
+```
+
+## PUT /api/garments/:id
+
+更新衣橱条目。
+
+路径参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | number | `garments.id` |
+
+请求体：`GarmentUpdate`
+
+```json
+{
+  "brand": "示例品牌",
+  "name": "白色短袖T恤",
+  "category": "top",
+  "color": "white",
+  "warmth": "light",
+  "seasons": ["spring", "summer"],
+  "styles": ["casual"],
+  "formality": "casual",
+  "owned": true,
+  "confirmed": true,
+  "excluded": false,
+  "notes": "适合通勤"
+}
+```
+
+响应：更新后的 `Garment`。不存在时返回 `衣服不存在`。
+
+## DELETE /api/garments/:id
+
+删除一个衣橱条目。
+
+响应：
+
+- 成功：HTTP 204，无响应体
+- 不存在：HTTP 400，`{ "error": { "code": "BAD_REQUEST", "message": "衣服不存在" } }`
+
+## POST /api/wear-logs
+
+记录一次穿着，用于后续推荐时降低近期重复穿着概率。
+
+请求体：
+
+```json
+{
+  "garmentIds": [1, 2, 3],
+  "context": {
+    "occasion": "casual",
+    "weather": "小雨"
+  }
+}
+```
+
+规则：
+
+- `garmentIds` 必须是非空正整数数组。
+- 重复 ID 会去重。
+- `context` 可省略，会以 JSON 存入 `wear_logs.context`。
+
+响应：
+
+```json
+{ "ok": true }
+```
+
+## GET /api/weather
+
+按经纬度获取天气快照。服务优先读取 30 分钟内缓存；Open-Meteo 请求失败时，若有过期缓存则返回过期缓存，否则返回本地估算天气。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `latitude` | number | 是 | 纬度 |
+| `longitude` | number | 是 | 经度 |
+
+响应：`WeatherSnapshot`
+
+```json
+{
+  "date": "2026-06-11",
+  "temperature": 24,
+  "apparentTemperature": 25,
+  "precipitationProbability": 30,
+  "windSpeed": 11,
+  "weatherCode": 3,
+  "summary": "多云"
+}
+```
+
+经纬度不是数字时返回 HTTP 400。
+
+## POST /api/recommendations
+
+生成搭配推荐。服务只使用 `owned = true` 且 `excluded = false` 的衣橱条目，并会合并请求中的 `recentlyWornGarmentIds` 与数据库最近穿着记录。
+
+请求体：
+
+```json
+{
+  "weather": {
+    "date": "2026-06-11",
+    "temperature": 24,
+    "apparentTemperature": 25,
+    "precipitationProbability": 30,
+    "windSpeed": 11,
+    "weatherCode": 3,
+    "summary": "多云"
+  },
+  "occasion": "smart-casual",
+  "recentlyWornGarmentIds": [1, 2],
+  "userProfile": {
+    "temperatureSensitivity": "runs-cold",
+    "preferredColors": ["red", "white"],
+    "avoidedColors": ["black"],
+    "preferredStyles": ["casual"]
+  }
+}
+```
+
+响应：`RecommendationResult`
+
+```json
+{
+  "weather": {
+    "date": "2026-06-11",
+    "temperature": 24,
+    "apparentTemperature": 25,
+    "precipitationProbability": 30,
+    "windSpeed": 11,
+    "weatherCode": 3,
+    "summary": "多云"
+  },
+  "weatherScenario": "dry_sunny",
+  "occasion": "smart-casual",
+  "outfits": [
+    {
+      "id": "top:1-bottom:2-shoes:3",
+      "score": 91,
+      "matchPercent": 86,
+      "scoreBreakdown": {
+        "slotCompleteness": 20,
+        "weatherComfort": 24,
+        "season": 8,
+        "occasion": 6,
+        "pairCompatibility": 8,
+        "colorHarmony": 6,
+        "recentWear": 0,
+        "itemConfidence": 7,
+        "userPreference": 7
+      },
+      "items": [],
+      "reasons": ["风格和轻商务场合匹配。"],
+      "alternatives": []
+    }
+  ]
+}
+```
+
+## PowerShell 调用示例
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8788/api/health"
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8788/api/wear-logs" `
+  -ContentType "application/json" `
+  -Body '{"garmentIds":[1,2],"context":{"occasion":"casual"}}'
+```

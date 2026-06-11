@@ -15,6 +15,10 @@ export interface Garment {
   seasons: Season[];
   styles: string[];
   formality: Formality;
+  size?: string;
+  materials?: string[];
+  patterns?: string[];
+  tags?: string[];
   imageUrl: string;
   owned: boolean;
   confirmed: boolean;
@@ -23,6 +27,8 @@ export interface Garment {
   notes?: string;
   itemUrl?: string;
   detailUrl?: string;
+  lastWornAt?: string;
+  wearCount?: number;
 }
 
 export interface WeatherSnapshot {
@@ -38,6 +44,8 @@ export interface WeatherSnapshot {
 export interface OutfitRecommendation {
   id: string;
   score: number;
+  matchPercent?: number;
+  scoreBreakdown?: RecommendationScoreBreakdown;
   items: Garment[];
   reasons: string[];
   alternatives: Garment[];
@@ -45,8 +53,32 @@ export interface OutfitRecommendation {
 
 export interface RecommendationResult {
   weather: WeatherSnapshot;
+  weatherScenario?: WeatherScenario;
   occasion: string;
   outfits: OutfitRecommendation[];
+}
+
+export type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";
+
+export interface RecommendationScoreBreakdown {
+  slotCompleteness: number;
+  weatherComfort: number;
+  season: number;
+  occasion: number;
+  pairCompatibility: number;
+  colorHarmony: number;
+  recentWear: number;
+  itemConfidence: number;
+  userPreference: number;
+}
+
+export type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
+
+export interface UserPreferenceProfile {
+  temperatureSensitivity?: TemperatureSensitivity;
+  preferredColors?: string[];
+  avoidedColors?: string[];
+  preferredStyles?: string[];
 }
 
 export type TaobaoPageType = "order-list" | "item-detail";
@@ -91,4 +123,63 @@ export interface TaobaoWardrobeFilterSummary {
   keptItems: number;
   skippedRefunded: number;
   skippedNonApparel: number;
+}
+
+export type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+export type CaptureJobMode = "orders" | "item-detail";
+
+export interface CaptureJob {
+  id: string;
+  mode: CaptureJobMode;
+  status: CaptureJobStatus;
+  pid: number;
+  outputDir: string;
+  logPath?: string;
+  artifactPath?: string;
+  error?: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CaptureArtifact {
+  jobId: string;
+  outputDir: string;
+  fileName: string;
+  path: string;
+  jsonText: string;
+  payload: unknown;
+  filterSummary?: TaobaoWardrobeFilterSummary;
+}
+
+export interface TaobaoImportPreviewItem {
+  sourceItemKey: string;
+  brand: string;
+  name: string;
+  rawName: string;
+  category: GarmentCategory;
+  color: string;
+  warmth: GarmentWarmth;
+  seasons: Season[];
+  confidence: number;
+  imageUrl: string;
+}
+
+export interface TaobaoImportSkippedItem {
+  title: string;
+  reason: "refunded" | "non-apparel";
+}
+
+export interface TaobaoImportPreview {
+  batchId: string;
+  summary: {
+    totalItems: number;
+    uniqueItems: number;
+    skippedRefunded: number;
+    skippedNonApparel: number;
+    createdGarments: number;
+  };
+  duplicateCount: number;
+  candidates: TaobaoImportPreviewItem[];
+  skipped: TaobaoImportSkippedItem[];
 }

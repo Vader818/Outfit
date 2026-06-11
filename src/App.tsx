@@ -21,22 +21,42 @@ import {
   getGarments,
   getRecommendations,
   getWeather,
+  getCaptureJobArtifact,
   importTaobaoBatch,
+  previewTaobaoImport,
   readLatestTaobaoCapture,
   recordWearLog,
-  startTaobaoItemCapture,
-  startTaobaoOrderCapture,
+  startCaptureJob,
   updateGarment,
   type CaptureStartResult,
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { Garment, OutfitRecommendation, RecommendationResult, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
+import type { CaptureJob, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "settings";
 type WearLogFeedback = { outfitId: string; message: string };
 type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
 type SelectOption = { value: string; label: string };
+type BusyAction =
+  | "import"
+  | "preview-import"
+  | "capture-orders"
+  | "capture-item"
+  | "read-capture"
+  | "bulk-confirm"
+  | "locate"
+  | "weather"
+  | "recommend";
+type WardrobeStatusFilter = "all" | "pending" | "confirmed" | "excluded";
+type WardrobeOwnedFilter = "all" | "owned" | "not-owned";
+type WardrobeFilters = {
+  status: WardrobeStatusFilter;
+  category: "all" | Garment["category"];
+  color: string;
+  season: "all" | Garment["seasons"][number];
+  owned: WardrobeOwnedFilter;
+};
 
 const CATEGORY_LABELS: Record<Garment["category"], string> = {
   top: "上装",
@@ -89,6 +109,19 @@ const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
 const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
 const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
 const SEASON_OPTIONS = toOptions(SEASON_LABELS);
+const STATUS_FILTER_OPTIONS: SelectOption[] = [
+  { value: "all", label: "全部状态" },
+  { value: "pending", label: "待确认" },
+  { value: "confirmed", label: "已确认" },
+  { value: "excluded", label: "已排除" }
+];
+const OWNED_FILTER_OPTIONS: SelectOption[] = [
+  { value: "all", label: "全部拥有" },
+  { value: "owned", label: "拥有" },
+  { value: "not-owned", label: "不在衣橱" }
+];
+const CATEGORY_FILTER_OPTIONS: SelectOption[] = [{ value: "all", label: "全部类别" }, ...CATEGORY_OPTIONS];
+const SEASON_FILTER_OPTIONS: SelectOption[] = [{ value: "all", label: "全部季节" }, ...SEASON_OPTIONS];
 
 export function buildTaobaoOrderCaptureOptions() {
   return { maxPages: 15, loginWait: 60 };
@@ -98,11 +131,20 @@ export function App() {
   const [tab, setTab] = useState<Tab>("recommend");
   const [garments, setGarments] = useState<Garment[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [wardrobeFilters, setWardrobeFilters] = useState<WardrobeFilters>({
+    status: "all",
+    category: "all",
+    color: "all",
+    season: "all",
+    owned: "all"
+  });
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
+  const [importPreview, setImportPreview] = useState<TaobaoImportPreview | null>(null);
   const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
-  const [captureResult, setCaptureResult] = useState<CaptureStartResult | null>(null);
+  const [captureResult, setCaptureResult] = useState<CaptureStartResult | CaptureJob | null>(null);
+  const [captureJob, setCaptureJob] = useState<CaptureJob | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
@@ -110,7 +152,7 @@ export function App() {
   const [occasion, setOccasion] = useState("casual");
   const [latitude, setLatitude] = useState(() => localStorage.getItem("outfit.latitude") || "39.9042");
   const [longitude, setLongitude] = useState(() => localStorage.getItem("outfit.longitude") || "116.4074");
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
   const [error, setError] = useState("");
 
   const bookmarklet = useMemo(() => getTaobaoBookmarklet(), []);
@@ -127,12 +169,13 @@ export function App() {
   }
 
   async function runImport() {
-    setBusy(true);
+    setBusyAction("import");
     setError("");
     try {
       const payload = JSON.parse(importText);
       const result = await importTaobaoBatch(payload);
       setImportResult(result);
+      setImportPreview(null);
       setImportText("");
       setCaptureFilterSummary(null);
       await refreshGarments();
@@ -140,7 +183,7 @@ export function App() {
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -149,49 +192,71 @@ export function App() {
   }
 
   async function startOrdersCapture() {
-    setBusy(true);
+    setBusyAction("capture-orders");
     setError("");
     setCaptureResult(null);
     try {
-      setCaptureResult(await startTaobaoOrderCapture(buildTaobaoOrderCaptureOptions()));
+      const job = await startCaptureJob({ mode: "orders", ...buildTaobaoOrderCaptureOptions() });
+      setCaptureJob(job);
+      setCaptureResult(job);
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "启动采集失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function startItemCapture() {
-    setBusy(true);
+    setBusyAction("capture-item");
     setError("");
     setCaptureResult(null);
     try {
-      setCaptureResult(await startTaobaoItemCapture({ url: captureUrl.trim(), loginWait: 60 }));
+      const job = await startCaptureJob({ mode: "item-detail", url: captureUrl.trim(), loginWait: 60 });
+      setCaptureJob(job);
+      setCaptureResult(job);
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "启动采集失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function readLatestCapture() {
-    setBusy(true);
+    setBusyAction("read-capture");
     setError("");
     try {
-      const latest = await readLatestTaobaoCapture({ wardrobeOnly: true });
+      const latest = captureJob
+        ? await getCaptureJobArtifact(captureJob.id, { wardrobeOnly: true })
+        : await readLatestTaobaoCapture({ wardrobeOnly: true });
       setImportResult(null);
+      setImportPreview(null);
       setCaptureFilterSummary(latest.filterSummary ?? null);
       setImportText(latest.jsonText || JSON.stringify(latest.payload, null, 2));
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "读取采集产物失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   function updateImportText(value: string) {
     setImportText(value);
     setCaptureFilterSummary(null);
+    setImportPreview(null);
+  }
+
+  async function previewImport() {
+    setBusyAction("preview-import");
+    setError("");
+    try {
+      const payload = JSON.parse(importText);
+      setImportPreview(await previewTaobaoImport(payload));
+      setImportResult(null);
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : "预览失败");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
@@ -206,16 +271,22 @@ export function App() {
   }
 
   async function bulkConfirm() {
-    setBusy(true);
-    await Promise.all(selectedIds.map((id) => updateGarment(id, { confirmed: true })));
-    setSelectedIds([]);
-    await refreshGarments();
-    setBusy(false);
+    setBusyAction("bulk-confirm");
+    setError("");
+    try {
+      await Promise.all(selectedIds.map((id) => updateGarment(id, { confirmed: true })));
+      setSelectedIds([]);
+      await refreshGarments();
+    } catch (bulkError) {
+      setError(bulkError instanceof Error ? bulkError.message : "批量确认失败");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function locate() {
     if (!navigator.geolocation) return;
-    setBusy(true);
+    setBusyAction("locate");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const lat = position.coords.latitude.toFixed(4);
@@ -224,14 +295,14 @@ export function App() {
         setLongitude(lon);
         localStorage.setItem("outfit.latitude", lat);
         localStorage.setItem("outfit.longitude", lon);
-        setBusy(false);
+        setBusyAction(null);
       },
-      () => setBusy(false)
+      () => setBusyAction(null)
     );
   }
 
   async function fetchForecast() {
-    setBusy(true);
+    setBusyAction("weather");
     setError("");
     try {
       const snapshot = await getWeather(Number(latitude), Number(longitude));
@@ -239,12 +310,12 @@ export function App() {
     } catch (weatherError) {
       setError(weatherError instanceof Error ? weatherError.message : "天气获取失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function generateRecommendations() {
-    setBusy(true);
+    setBusyAction("recommend");
     setError("");
     try {
       const snapshot = weather ?? (await getWeather(Number(latitude), Number(longitude)));
@@ -253,7 +324,7 @@ export function App() {
     } catch (recommendError) {
       setError(recommendError instanceof Error ? recommendError.message : "推荐失败");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -303,7 +374,8 @@ export function App() {
             occasion={occasion}
             latitude={latitude}
             longitude={longitude}
-            busy={busy}
+            busy={Boolean(busyAction)}
+            busyAction={busyAction}
             recordingOutfitId={recordingOutfitId}
             wearLogFeedback={wearLogFeedback}
             onOccasion={setOccasion}
@@ -316,7 +388,10 @@ export function App() {
           <WardrobeView
             garments={garments}
             selectedIds={selectedIds}
-            busy={busy}
+            busy={Boolean(busyAction)}
+            busyAction={busyAction}
+            filters={wardrobeFilters}
+            onFilters={setWardrobeFilters}
             onRefresh={refreshGarments}
             onSelect={setSelectedIds}
             onUpdate={updateOne}
@@ -329,10 +404,12 @@ export function App() {
             bookmarklet={bookmarklet}
             importText={importText}
             importResult={importResult}
+            importPreview={importPreview}
             filterSummary={captureFilterSummary}
             captureUrl={captureUrl}
             captureResult={captureResult}
-            busy={busy}
+            busy={Boolean(busyAction)}
+            busyAction={busyAction}
             onCopyBookmarklet={copyBookmarklet}
             onImportText={updateImportText}
             onImport={runImport}
@@ -340,13 +417,15 @@ export function App() {
             onStartOrdersCapture={startOrdersCapture}
             onStartItemCapture={startItemCapture}
             onReadLatestCapture={readLatestCapture}
+            onPreviewImport={previewImport}
           />
         )}
         {tab === "settings" && (
           <SettingsView
             latitude={latitude}
             longitude={longitude}
-            busy={busy}
+            busy={Boolean(busyAction)}
+            busyAction={busyAction}
             onLatitude={setLatitude}
             onLongitude={setLongitude}
             onLocate={locate}
@@ -371,13 +450,16 @@ export function ImportView(props: {
   bookmarklet: string;
   importText: string;
   importResult: ImportSummary | null;
+  importPreview?: TaobaoImportPreview | null;
   filterSummary: TaobaoWardrobeFilterSummary | null;
   captureUrl: string;
-  captureResult: CaptureStartResult | null;
+  captureResult: CaptureStartResult | CaptureJob | null;
   busy: boolean;
+  busyAction?: BusyAction | null;
   onCopyBookmarklet: () => void;
   onImportText: (value: string) => void;
   onImport: () => void;
+  onPreviewImport?: () => void;
   onCaptureUrl: (value: string) => void;
   onStartOrdersCapture: () => void;
   onStartItemCapture: () => void;
@@ -408,23 +490,24 @@ export function ImportView(props: {
       <div className="panel selenium-panel">
         <label>Selenium 采集</label>
         <div className="selenium-controls">
-          <button className="secondary" disabled={props.busy} onClick={props.onStartOrdersCapture}>
+          <button className="secondary" disabled={props.busyAction === "capture-orders"} onClick={props.onStartOrdersCapture}>
             <Play size={18} />
-            采集订单页
+            {props.busyAction === "capture-orders" ? "采集中" : "采集订单页"}
           </button>
           <input
             value={props.captureUrl}
             onChange={(event) => props.onCaptureUrl(event.target.value)}
             placeholder="https://item.taobao.com/item.htm?id=..."
           />
-          <button className="primary" disabled={props.busy || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
+          <button className="primary" disabled={props.busyAction === "capture-item" || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
             <Play size={18} />
-            采集商品详情
+            {props.busyAction === "capture-item" ? "采集中" : "采集商品详情"}
           </button>
         </div>
         {props.captureResult ? (
           <div className="capture-status">
             已启动 {props.captureResult.mode === "orders" ? "订单页采集" : "商品详情采集"}，PID {props.captureResult.pid}，输出目录 {props.captureResult.outputDir}
+            {"status" in props.captureResult ? `，状态 ${captureStatusLabel(props.captureResult.status)}` : ""}
           </div>
         ) : null}
       </div>
@@ -451,13 +534,17 @@ export function ImportView(props: {
             placeholder='{"source":"taobao-bookmarklet","items":[]}'
           />
           <div className="import-actions">
-            <button className="secondary" disabled={props.busy} onClick={props.onReadLatestCapture}>
+            <button className="secondary" disabled={props.busyAction === "read-capture"} onClick={props.onReadLatestCapture}>
               <Database size={18} />
-              读取产物
+              {props.busyAction === "read-capture" ? "读取中" : "读取产物"}
             </button>
-            <button className="primary" disabled={props.busy || !props.importText.trim()} onClick={props.onImport}>
+            <button className="secondary" disabled={props.busyAction === "preview-import" || !props.importText.trim()} onClick={props.onPreviewImport}>
+              <Sparkles size={18} />
+              {props.busyAction === "preview-import" ? "预览中" : "预览"}
+            </button>
+            <button className="primary" disabled={props.busyAction === "import" || !props.importText.trim()} onClick={props.onImport}>
               <Upload size={18} />
-              导入
+              {props.busyAction === "import" ? "导入中" : "导入"}
             </button>
           </div>
           {props.filterSummary ? (
@@ -476,6 +563,23 @@ export function ImportView(props: {
           <Metric label="新衣服" value={props.importResult.summary.createdGarments} />
         </div>
       ) : null}
+      {props.importPreview ? (
+        <div className="panel preview-panel">
+          <label>导入预览</label>
+          <div className="metric-strip">
+            <Metric label="候选" value={props.importPreview.candidates.length} />
+            <Metric label="重复" value={props.importPreview.duplicateCount} />
+            <Metric label="退款过滤" value={props.importPreview.summary.skippedRefunded} />
+            <Metric label="非服饰过滤" value={props.importPreview.summary.skippedNonApparel} />
+            <Metric label="唯一项" value={props.importPreview.summary.uniqueItems} />
+          </div>
+          <div className="preview-list">
+            {props.importPreview.candidates.slice(0, 6).map((item) => (
+              <span key={item.sourceItemKey}>{CATEGORY_LABELS[item.category]} · {item.name} · 置信度 {Math.round(item.confidence * 100)}%</span>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -484,32 +588,67 @@ export function WardrobeView(props: {
   garments: Garment[];
   selectedIds: number[];
   busy: boolean;
+  busyAction?: BusyAction | null;
+  filters?: WardrobeFilters;
+  onFilters?: (filters: WardrobeFilters) => void;
   onRefresh: () => void;
   onSelect: (ids: number[]) => void;
   onUpdate: (id: number, update: Partial<Garment>) => void;
   onDelete: (id: number) => void;
   onBulkConfirm: () => void;
 }) {
+  const filters = props.filters ?? {
+    status: "all",
+    category: "all",
+    color: "all",
+    season: "all",
+    owned: "all"
+  };
+  const colorFilterOptions = buildColorFilterOptions(props.garments);
+  const filteredGarments = props.garments.filter((item) => matchesWardrobeFilters(item, filters));
+  const filteredIds = filteredGarments.map((item) => item.id);
+
+  function updateFilter<K extends keyof WardrobeFilters>(key: K, value: WardrobeFilters[K]) {
+    props.onFilters?.({ ...filters, [key]: value });
+  }
+
   return (
     <section className="view">
       <header className="view-header">
         <div>
           <h1>衣服库</h1>
-          <p>{props.garments.length} 件，{props.garments.filter((item) => !item.confirmed && !item.excluded).length} 件待确认。</p>
+          <p>{props.garments.length} 件，{props.garments.filter((item) => !item.confirmed && !item.excluded).length} 件待确认，当前显示 {filteredGarments.length} 件。</p>
         </div>
         <div className="actions">
           <button className="secondary" title="刷新" onClick={props.onRefresh}>
             <RefreshCw size={18} />
             刷新
           </button>
-          <button className="primary" disabled={!props.selectedIds.length || props.busy} onClick={props.onBulkConfirm}>
+          <button className="secondary" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
             <Check size={18} />
-            批量确认
+            选择当前结果
+          </button>
+          <button className="secondary" disabled={!props.selectedIds.length} onClick={() => props.onSelect([])}>
+            <X size={18} />
+            清空选择
+          </button>
+          <button className="primary" disabled={!props.selectedIds.length || props.busyAction === "bulk-confirm"} onClick={props.onBulkConfirm}>
+            <Check size={18} />
+            {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
           </button>
         </div>
       </header>
-      <div className="wardrobe-list">
-        {props.garments.map((item) => (
+      <div className="filter-bar">
+        <Select value={filters.status} options={STATUS_FILTER_OPTIONS} onChange={(value) => updateFilter("status", value as WardrobeStatusFilter)} />
+        <Select value={filters.category} options={CATEGORY_FILTER_OPTIONS} onChange={(value) => updateFilter("category", value as WardrobeFilters["category"])} />
+        <Select value={filters.color} options={colorFilterOptions} onChange={(value) => updateFilter("color", value)} />
+        <Select value={filters.season} options={SEASON_FILTER_OPTIONS} onChange={(value) => updateFilter("season", value as WardrobeFilters["season"])} />
+        <Select value={filters.owned} options={OWNED_FILTER_OPTIONS} onChange={(value) => updateFilter("owned", value as WardrobeOwnedFilter)} />
+      </div>
+      {props.garments.length ? (
+        filteredGarments.length ? (
+          <div className="wardrobe-list">
+            {filteredGarments.map((item) => (
           <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
             <input
               type="checkbox"
@@ -548,13 +687,19 @@ export function WardrobeView(props: {
               <button className={item.owned ? "status" : "status warn"} onClick={() => props.onUpdate(item.id, { owned: !item.owned })}>
                 {item.owned ? "拥有" : "不在衣橱"}
               </button>
-              <button className="icon-button" title="删除" onClick={() => props.onDelete(item.id)}>
+              <button className="icon-button" title="删除" onClick={() => confirmDelete(item, props.onDelete)}>
                 <X size={16} />
               </button>
             </div>
           </article>
-        ))}
-      </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">没有符合当前筛选条件的衣物。</div>
+        )
+      ) : (
+        <div className="empty-state">还没有衣服。先从淘宝采集或粘贴 JSON 导入衣橱。</div>
+      )}
     </section>
   );
 }
@@ -566,6 +711,7 @@ export function RecommendationView(props: {
   latitude: string;
   longitude: string;
   busy: boolean;
+  busyAction?: BusyAction | null;
   recordingOutfitId: string | null;
   wearLogFeedback: WearLogFeedback | null;
   onOccasion: (value: string) => void;
@@ -581,13 +727,13 @@ export function RecommendationView(props: {
           <p>{props.latitude}, {props.longitude}</p>
         </div>
         <div className="actions">
-          <button className="secondary" disabled={props.busy} onClick={props.onFetchWeather}>
+          <button className="secondary" disabled={props.busyAction === "weather"} onClick={props.onFetchWeather}>
             <CloudSun size={18} />
-            天气
+            {props.busyAction === "weather" ? "获取中" : "天气"}
           </button>
-          <button className="primary" disabled={props.busy} onClick={props.onGenerate}>
+          <button className="primary" disabled={props.busyAction === "recommend"} onClick={props.onGenerate}>
             <Sparkles size={18} />
-            生成
+            {props.busyAction === "recommend" ? "生成中" : "生成"}
           </button>
         </div>
       </header>
@@ -607,10 +753,11 @@ export function RecommendationView(props: {
           <span>{props.weather.windSpeed} km/h 风</span>
         </div>
       ) : null}
-      <div className="outfit-grid">
-        {props.recommendations?.outfits.map((outfit) => (
+      {props.recommendations?.outfits.length ? (
+        <div className="outfit-grid">
+          {props.recommendations.outfits.map((outfit) => (
           <article className="outfit" key={outfit.id}>
-            <div className="score">匹配度 {outfit.score}</div>
+            <div className="score">匹配度 {outfit.matchPercent ?? Math.round(Math.min(100, outfit.score))}%</div>
             <div className="item-stack">
               {outfit.items.map((item) => (
                 <div className="mini-item" key={item.id}>
@@ -650,8 +797,11 @@ export function RecommendationView(props: {
               {props.wearLogFeedback?.outfitId === outfit.id ? <span className="wear-log-feedback">{props.wearLogFeedback.message}</span> : null}
             </div>
           </article>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">还没有推荐。获取天气后生成今日搭配。</div>
+      )}
     </section>
   );
 }
@@ -660,6 +810,7 @@ function SettingsView(props: {
   latitude: string;
   longitude: string;
   busy: boolean;
+  busyAction?: BusyAction | null;
   onLatitude: (value: string) => void;
   onLongitude: (value: string) => void;
   onLocate: () => void;
@@ -679,9 +830,9 @@ function SettingsView(props: {
         <label>经度</label>
         <input value={props.longitude} onChange={(event) => props.onLongitude(event.target.value)} />
         <div className="actions">
-          <button className="secondary" disabled={props.busy} onClick={props.onLocate}>
+          <button className="secondary" disabled={props.busyAction === "locate"} onClick={props.onLocate}>
             <MapPin size={18} />
-            定位
+            {props.busyAction === "locate" ? "定位中" : "定位"}
           </button>
           <button className="primary" onClick={props.onSave}>
             <Save size={18} />
@@ -761,6 +912,42 @@ function withCurrentOption(options: SelectOption[], value: string): SelectOption
     return options;
   }
   return [{ value, label: COLOR_LABELS[value] || value || COLOR_LABELS.unknown }, ...options];
+}
+
+function buildColorFilterOptions(garments: Garment[]): SelectOption[] {
+  const colors = Array.from(new Set(garments.map((item) => item.color || "unknown"))).sort();
+  return [
+    { value: "all", label: "全部颜色" },
+    ...colors.map((color) => ({ value: color, label: COLOR_LABELS[color] || color }))
+  ];
+}
+
+function matchesWardrobeFilters(item: Garment, filters: WardrobeFilters): boolean {
+  if (filters.status === "pending" && (item.confirmed || item.excluded)) return false;
+  if (filters.status === "confirmed" && (!item.confirmed || item.excluded)) return false;
+  if (filters.status === "excluded" && !item.excluded) return false;
+  if (filters.category !== "all" && item.category !== filters.category) return false;
+  if (filters.color !== "all" && item.color !== filters.color) return false;
+  if (filters.season !== "all" && !item.seasons.includes(filters.season)) return false;
+  if (filters.owned === "owned" && !item.owned) return false;
+  if (filters.owned === "not-owned" && item.owned) return false;
+  return true;
+}
+
+function confirmDelete(item: Garment, onDelete: (id: number) => void) {
+  if (globalThis.confirm(`确定删除「${displayGarmentName(item) || item.name}」吗？此操作会从本地衣橱数据库移除这件衣服。`)) {
+    onDelete(item.id);
+  }
+}
+
+function captureStatusLabel(status: CaptureJob["status"]): string {
+  return {
+    pending: "等待中",
+    running: "运行中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消"
+  }[status];
 }
 
 function garmentMeta(item: Garment): GarmentWithMeta {

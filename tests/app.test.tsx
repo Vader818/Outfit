@@ -80,6 +80,31 @@ describe("App", () => {
     expect(markup).toContain("非服饰过滤 4 条");
   });
 
+  it("keeps import controls operation-level while preview is running", () => {
+    const tree = ImportView({
+      bookmarklet: "https://example.com/bookmarklet",
+      importText: "{}",
+      importResult: null,
+      filterSummary: null,
+      captureUrl: "",
+      captureResult: null,
+      busy: true,
+      busyAction: "preview-import",
+      onCopyBookmarklet: vi.fn(),
+      onImportText: vi.fn(),
+      onImport: vi.fn(),
+      onPreviewImport: vi.fn(),
+      onCaptureUrl: vi.fn(),
+      onStartOrdersCapture: vi.fn(),
+      onStartItemCapture: vi.fn(),
+      onReadLatestCapture: vi.fn()
+    });
+
+    expect(findButtonsByText(tree, "预览中")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(tree, "导入")[0].props.disabled).toBe(false);
+    expect(findButtonsByText(tree, "读取产物")[0].props.disabled).toBe(false);
+  });
+
   it("uses fifteen pages for Taobao order capture", async () => {
     const appModule = await import("../src/App");
     const buildTaobaoOrderCaptureOptions = (appModule as {
@@ -249,6 +274,11 @@ describe("App", () => {
     const markup = renderToStaticMarkup(<>{tree}</>);
 
     expect(markup).toContain("优衣库");
+    expect(markup).toContain("全部状态");
+    expect(markup).toContain("全部类别");
+    expect(markup).toContain("全部颜色");
+    expect(markup).toContain("全部季节");
+    expect(markup).toContain("全部拥有");
     expect(markup).toContain('value="短款针织衫"');
     expect(markup).toContain("上装");
     expect(markup).toContain("蓝色");
@@ -262,6 +292,138 @@ describe("App", () => {
     expect(markup).not.toContain(">light<");
     expect(markup).not.toContain(">spring<");
     expect(markup).not.toContain(">winter<");
+  });
+
+  it("renders empty states for wardrobe and recommendation views", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const RecommendationView = (appModule as {
+      RecommendationView?: (props: {
+        weather: WeatherSnapshot | null;
+        recommendations: RecommendationResult | null;
+        occasion: string;
+        latitude: string;
+        longitude: string;
+        busy: boolean;
+        recordingOutfitId: string | null;
+        wearLogFeedback: { outfitId: string; message: string } | null;
+        onOccasion: (value: string) => void;
+        onFetchWeather: () => void;
+        onGenerate: () => void;
+        onRecordWearLog: (outfit: OutfitRecommendation) => void;
+      }) => ReactNode;
+    }).RecommendationView;
+
+    const wardrobeMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
+    const recommendationMarkup = renderToStaticMarkup(<>{RecommendationView?.({
+      weather: null,
+      recommendations: null,
+      occasion: "casual",
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: false,
+      recordingOutfitId: null,
+      wearLogFeedback: null,
+      onOccasion: vi.fn(),
+      onFetchWeather: vi.fn(),
+      onGenerate: vi.fn(),
+      onRecordWearLog: vi.fn()
+    })}</>);
+
+    expect(wardrobeMarkup).toContain("还没有衣服");
+    expect(recommendationMarkup).toContain("还没有推荐");
+  });
+
+  it("asks for explicit confirmation before deleting a garment", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const onDelete = vi.fn();
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+
+    const tree = WardrobeView?.({
+      garments: [makeGarment(303, "短款针织衫", "top")],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete,
+      onBulkConfirm: vi.fn()
+    });
+
+    findButtonsByTitle(tree, "删除")[0].props.onClick();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("短款针织衫"));
+    expect(onDelete).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    findButtonsByTitle(tree, "删除")[0].props.onClick();
+    expect(onDelete).toHaveBeenCalledWith(303);
+  });
+
+  it("selects the current wardrobe result set for batch actions", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const onSelect = vi.fn();
+
+    const tree = WardrobeView?.({
+      garments: [
+        makeGarment(101, "白衬衫", "top"),
+        makeGarment(202, "黑长裤", "bottom")
+      ],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect,
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    });
+
+    findButtonsByText(tree, "选择当前结果")[0].props.onClick();
+    expect(onSelect).toHaveBeenCalledWith([101, 202]);
   });
 
   it("collapses extra recommendation reasons and alternatives behind a Chinese details summary", async () => {
@@ -390,6 +552,29 @@ function findButtonsByText(node: ReactNode, text: string): ReactElement[] {
 
     const props = current.props as { children?: ReactNode };
     if (current.type === "button" && elementText(props.children).includes(text)) {
+      matches.push(current);
+    }
+    visit(props.children);
+  }
+
+  visit(node);
+  return matches;
+}
+
+function findButtonsByTitle(node: ReactNode, title: string): ReactElement[] {
+  const matches: ReactElement[] = [];
+
+  function visit(current: ReactNode) {
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (!isValidElement(current)) {
+      return;
+    }
+
+    const props = current.props as { children?: ReactNode; title?: string };
+    if (current.type === "button" && props.title === title) {
       matches.push(current);
     }
     visit(props.children);

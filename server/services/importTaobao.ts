@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Garment, GarmentCategory, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoPageType, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
+import type { Garment, GarmentCategory, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoImportPreview, TaobaoPageType, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
 import { classifyGarment } from "./classify";
 
 export interface SourceOrderItemDraft {
@@ -54,7 +54,7 @@ export interface GarmentDisplayInfo {
   rawName: string;
 }
 
-const WARDROBE_IMPORT_CATEGORIES: readonly GarmentCategory[] = ["top", "bottom", "dress", "outerwear", "shoes"];
+const WARDROBE_IMPORT_CATEGORIES: readonly GarmentCategory[] = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"];
 const REFUND_PATTERN = /退款成功|退货退款|交易关闭|已退款|售后成功|退款退货成功|订单关闭/i;
 const GENERIC_DETAIL_TITLE_PATTERN = /^(宝贝描述|商品详情|图文详情|参数|参数信息|尺码|尺码信息|详情|描述)$/i;
 const ORDER_STATUS_TEXT = "(?:Pending receipt|Pending review|Completed|交易成功|交易关闭|买家已付款|卖家已发货|待付款|待发货|待收货|待评价|已完成)";
@@ -171,6 +171,53 @@ export function filterTaobaoBatchForWardrobe(payload: unknown): TaobaoWardrobeFi
       skippedRefunded: normalized.summary.skippedRefunded,
       skippedNonApparel: normalized.summary.skippedNonApparel
     }
+  };
+}
+
+export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
+  const normalized = normalizeTaobaoBatch(payload);
+  const candidates: TaobaoImportPreview["candidates"] = [];
+  const skipped: TaobaoImportPreview["skipped"] = [];
+
+  for (const item of normalized.sourceItems) {
+    if (item.isRefunded) {
+      skipped.push({
+        title: displayTitle(item) || item.title || item.detailTitle,
+        reason: "refunded"
+      });
+      continue;
+    }
+
+    const classification = classifyGarment(displayTitle(item), classificationContext(item));
+    if (!classification || !isWardrobeImportCategory(classification.category)) {
+      skipped.push({
+        title: displayTitle(item) || item.title || item.detailTitle,
+        reason: "non-apparel"
+      });
+      continue;
+    }
+
+    const displayInfo = buildGarmentDisplayInfo(item);
+    candidates.push({
+      sourceItemKey: item.externalKey,
+      brand: displayInfo.brand,
+      name: displayInfo.name,
+      rawName: displayInfo.rawName,
+      category: classification.category,
+      color: classification.color,
+      warmth: classification.warmth,
+      seasons: classification.seasons,
+      confidence: classification.confidence,
+      imageUrl: preferredImage(item)
+    });
+  }
+
+  return {
+    batchId: normalized.batchId,
+    summary: normalized.summary,
+    duplicateCount: Math.max(0, normalized.summary.totalItems - normalized.summary.uniqueItems),
+    candidates,
+    skipped
   };
 }
 

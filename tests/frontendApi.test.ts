@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readLatestTaobaoCapture, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
+import { getCaptureJob, getCaptureJobArtifact, previewTaobaoImport, readLatestTaobaoCapture, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -23,6 +23,88 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/capture/taobao-orders", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ maxPages: 2, loginWait: 45 })
+    }));
+  });
+
+  it("uses capture job endpoints for stateful Selenium runs", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "cap_123",
+        mode: "orders",
+        status: "running",
+        pid: 4321,
+        outputDir: "output/taobao-captures/cap_123"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "cap_123",
+        mode: "orders",
+        status: "succeeded",
+        pid: 4321,
+        outputDir: "output/taobao-captures/cap_123"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        jobId: "cap_123",
+        outputDir: "output/taobao-captures/cap_123",
+        fileName: "capture.json",
+        path: "output/taobao-captures/cap_123/capture.json",
+        jsonText: "{}",
+        payload: {},
+        filterSummary: {
+          originalItems: 1,
+          keptItems: 1,
+          skippedRefunded: 0,
+          skippedNonApparel: 0
+        }
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(startCaptureJob({ mode: "orders", maxPages: 2, loginWait: 45 })).resolves.toMatchObject({
+      id: "cap_123",
+      status: "running"
+    });
+    await expect(getCaptureJob("cap_123")).resolves.toMatchObject({ status: "succeeded" });
+    await expect(getCaptureJobArtifact("cap_123", { wardrobeOnly: true })).resolves.toMatchObject({
+      jobId: "cap_123",
+      filterSummary: { keptItems: 1 }
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/capture/jobs", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ mode: "orders", maxPages: 2, loginWait: 45 })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/capture/jobs/cap_123", expect.objectContaining({
+      method: "GET"
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/capture/jobs/cap_123/artifact?wardrobeOnly=1", expect.objectContaining({
+      method: "GET"
+    }));
+  });
+
+  it("previews Taobao imports before writing them", async () => {
+    const payload = { source: "taobao-bookmarklet", items: [{ title: "黑色T恤" }] };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      batchId: "batch",
+      summary: {
+        totalItems: 1,
+        uniqueItems: 1,
+        skippedRefunded: 0,
+        skippedNonApparel: 0,
+        createdGarments: 1
+      },
+      duplicateCount: 0,
+      candidates: [{ name: "黑色T恤", category: "top", confidence: 0.8 }],
+      skipped: []
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(previewTaobaoImport(payload)).resolves.toMatchObject({
+      summary: { createdGarments: 1 },
+      candidates: [expect.objectContaining({ category: "top" })]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/import/taobao-preview", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(payload)
     }));
   });
 
