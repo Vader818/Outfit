@@ -474,12 +474,14 @@ select:focus {
 .outfit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  align-items: start;
   gap: 16px;
 }
 
 .outfit {
   position: relative;
   display: grid;
+  align-content: start;
   gap: 12px;
   padding: 16px;
   border-radius: 8px;
@@ -489,6 +491,7 @@ select:focus {
 
 .score {
   justify-self: start;
+  align-self: start;
   width: max-content;
   padding: 4px 8px;
   border-radius: 8px;

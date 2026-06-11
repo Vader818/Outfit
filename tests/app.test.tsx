@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, ImportView } from "../src/App";
@@ -484,7 +485,21 @@ describe("App", () => {
     expect(markup).toContain("COS");
     expect(markup).toContain("灰色夹克");
   });
+
+  it("keeps recommendation score badges from stretching when an outfit expands", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ".outfit-grid")).toMatch(/align-items:\s*start;/);
+    expect(cssRule(styles, ".outfit")).toMatch(/align-content:\s*start;/);
+    expect(cssRule(styles, ".score")).toMatch(/align-self:\s*start;/);
+  });
 });
+
+function cssRule(styles: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "m").exec(styles);
+  return match?.[1] ?? "";
+}
 
 function makeWeather(): WeatherSnapshot {
   return {
