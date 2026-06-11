@@ -1,8 +1,10 @@
 import {
+  BarChart3,
   Check,
   CloudSun,
   Copy,
   Database,
+  Download,
   ExternalLink,
   MapPin,
   Play,
@@ -18,23 +20,29 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteGarment,
+  exportLocalData,
   getGarments,
+  getInsights,
+  getPersonalProfile,
   getRecommendations,
+  getRecommendationRuns,
   getWeather,
+  getWearLogs,
   getCaptureJobArtifact,
   importTaobaoBatch,
   previewTaobaoImport,
   readLatestTaobaoCapture,
   recordWearLog,
+  savePersonalProfile,
   startCaptureJob,
   updateGarment,
   type CaptureStartResult,
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { CaptureJob, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WeatherSnapshot } from "./shared/types";
+import type { CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
-type Tab = "import" | "wardrobe" | "recommend" | "settings";
+type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
 type WearLogFeedback = { outfitId: string; message: string };
 type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
 type SelectOption = { value: string; label: string };
@@ -46,6 +54,9 @@ type BusyAction =
   | "read-capture"
   | "bulk-confirm"
   | "locate"
+  | "save-settings"
+  | "history"
+  | "export"
   | "weather"
   | "recommend";
 type WardrobeStatusFilter = "all" | "pending" | "confirmed" | "excluded";
@@ -56,6 +67,7 @@ type WardrobeFilters = {
   color: string;
   season: "all" | Garment["seasons"][number];
   owned: WardrobeOwnedFilter;
+  query: string;
 };
 
 const CATEGORY_LABELS: Record<Garment["category"], string> = {
@@ -104,6 +116,28 @@ const OCCASION_LABELS: Record<(typeof OCCASIONS)[number], string> = {
   formal: "正装",
   sport: "运动"
 };
+const BODY_TYPE_LABELS: Record<NonNullable<PersonalProfile["bodyType"]>, string> = {
+  "slim-tall": "瘦高",
+  average: "标准",
+  athletic: "运动型",
+  stocky: "壮实"
+};
+const SKIN_TONE_LABELS: Record<NonNullable<PersonalProfile["skinTone"]>, string> = {
+  "dark-yellow": "较黑黄",
+  "medium-yellow": "中性偏黄",
+  fair: "偏白",
+  deep: "深色"
+};
+const COLOR_DISPOSITION_LABELS: Record<NonNullable<PersonalProfile["colorDisposition"]>, string> = {
+  "cool-clean": "清爽冷感",
+  neutral: "中性",
+  "warm-soft": "柔和暖感"
+};
+const TEMPERATURE_LABELS: Record<NonNullable<PersonalProfile["temperatureSensitivity"]>, string> = {
+  "runs-cold": "怕冷",
+  neutral: "正常",
+  "runs-hot": "怕热"
+};
 const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
 const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
 const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
@@ -122,6 +156,21 @@ const OWNED_FILTER_OPTIONS: SelectOption[] = [
 ];
 const CATEGORY_FILTER_OPTIONS: SelectOption[] = [{ value: "all", label: "全部类别" }, ...CATEGORY_OPTIONS];
 const SEASON_FILTER_OPTIONS: SelectOption[] = [{ value: "all", label: "全部季节" }, ...SEASON_OPTIONS];
+const BODY_TYPE_OPTIONS = toOptions(BODY_TYPE_LABELS);
+const SKIN_TONE_OPTIONS = toOptions(SKIN_TONE_LABELS);
+const COLOR_DISPOSITION_OPTIONS = toOptions(COLOR_DISPOSITION_LABELS);
+const TEMPERATURE_OPTIONS = toOptions(TEMPERATURE_LABELS);
+const DEFAULT_PROFILE: PersonalProfile = {
+  heightCm: 176,
+  weightKg: 57,
+  bodyType: "slim-tall",
+  skinTone: "dark-yellow",
+  colorDisposition: "cool-clean",
+  temperatureSensitivity: "neutral",
+  preferredColors: ["white", "blue", "gray"],
+  avoidedColors: ["yellow", "brown"],
+  preferredStyles: ["smart-casual"]
+};
 
 export function buildTaobaoOrderCaptureOptions() {
   return { maxPages: 15, loginWait: 60 };
@@ -136,7 +185,8 @@ export function App() {
     category: "all",
     color: "all",
     season: "all",
-    owned: "all"
+    owned: "all",
+    query: ""
   });
   const [importText, setImportText] = useState("");
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
@@ -147,6 +197,10 @@ export function App() {
   const [captureJob, setCaptureJob] = useState<CaptureJob | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [profile, setProfile] = useState<PersonalProfile>(DEFAULT_PROFILE);
+  const [wearLogs, setWearLogs] = useState<WearLogEntry[]>([]);
+  const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
+  const [insights, setInsights] = useState<WardrobeInsights | null>(null);
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [occasion, setOccasion] = useState("casual");
@@ -161,11 +215,37 @@ export function App() {
 
   useEffect(() => {
     void refreshGarments();
+    void refreshProfile();
+    void refreshHistoryData();
   }, []);
 
   async function refreshGarments() {
     setError("");
     setGarments(await getGarments());
+  }
+
+  async function refreshProfile() {
+    try {
+      setProfile(await getPersonalProfile());
+    } catch {
+      setProfile(DEFAULT_PROFILE);
+    }
+  }
+
+  async function refreshHistoryData() {
+    setError("");
+    try {
+      const [nextWearLogs, nextRecommendationRuns, nextInsights] = await Promise.all([
+        getWearLogs(),
+        getRecommendationRuns(),
+        getInsights()
+      ]);
+      setWearLogs(nextWearLogs);
+      setRecommendationRuns(nextRecommendationRuns);
+      setInsights(nextInsights);
+    } catch (historyError) {
+      setError(historyError instanceof Error ? historyError.message : "历史数据读取失败");
+    }
   }
 
   async function runImport() {
@@ -320,7 +400,7 @@ export function App() {
     try {
       const snapshot = weather ?? (await getWeather(Number(latitude), Number(longitude)));
       setWeather(snapshot);
-      setRecommendations(await getRecommendations({ weather: snapshot, occasion }));
+      setRecommendations(await getRecommendations({ weather: snapshot, occasion, userProfile: profile }));
     } catch (recommendError) {
       setError(recommendError instanceof Error ? recommendError.message : "推荐失败");
     } finally {
@@ -335,6 +415,7 @@ export function App() {
     try {
       await recordWearLog(buildRecommendationWearLogInput(outfit, occasion, weather ?? recommendations?.weather ?? null));
       setWearLogFeedback({ outfitId: outfit.id, message: "已标记已穿" });
+      await refreshHistoryData();
     } catch (wearLogError) {
       setError(wearLogError instanceof Error ? wearLogError.message : "标记已穿失败");
     } finally {
@@ -342,13 +423,44 @@ export function App() {
     }
   }
 
-  function saveSettings() {
-    localStorage.setItem("outfit.latitude", latitude);
-    localStorage.setItem("outfit.longitude", longitude);
+  async function saveSettings() {
+    setBusyAction("save-settings");
+    setError("");
+    try {
+      localStorage.setItem("outfit.latitude", latitude);
+      localStorage.setItem("outfit.longitude", longitude);
+      setProfile(await savePersonalProfile(profile));
+    } catch (settingsError) {
+      setError(settingsError instanceof Error ? settingsError.message : "设置保存失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function refreshHistory() {
+    setBusyAction("history");
+    try {
+      await refreshHistoryData();
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function exportBackup() {
+    setBusyAction("export");
+    setError("");
+    try {
+      const data = await exportLocalData();
+      downloadJson(data);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "导出失败");
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme="corporate">
       <aside className="sidebar">
         <div className="brand">
           <Shirt size={28} />
@@ -360,6 +472,7 @@ export function App() {
         <nav>
           <NavButton active={tab === "recommend"} icon={<Wand2 size={18} />} label="今日推荐" onClick={() => setTab("recommend")} />
           <NavButton active={tab === "wardrobe"} icon={<Database size={18} />} label={`衣服库 ${pendingCount ? `(${pendingCount})` : ""}`} onClick={() => setTab("wardrobe")} />
+          <NavButton active={tab === "history"} icon={<BarChart3 size={18} />} label="历史洞察" onClick={() => setTab("history")} />
           <NavButton active={tab === "import"} icon={<Upload size={18} />} label="导入" onClick={() => setTab("import")} />
           <NavButton active={tab === "settings"} icon={<Settings size={18} />} label="设置" onClick={() => setTab("settings")} />
         </nav>
@@ -399,6 +512,17 @@ export function App() {
             onBulkConfirm={bulkConfirm}
           />
         )}
+        {tab === "history" && (
+          <HistoryInsightsView
+            insights={insights}
+            wearLogs={wearLogs}
+            recommendationRuns={recommendationRuns}
+            busy={Boolean(busyAction)}
+            busyAction={busyAction}
+            onRefresh={refreshHistory}
+            onExport={exportBackup}
+          />
+        )}
         {tab === "import" && (
           <ImportView
             bookmarklet={bookmarklet}
@@ -426,10 +550,12 @@ export function App() {
             longitude={longitude}
             busy={Boolean(busyAction)}
             busyAction={busyAction}
+            profile={profile}
             onLatitude={setLatitude}
             onLongitude={setLongitude}
             onLocate={locate}
             onSave={saveSettings}
+            onProfile={setProfile}
           />
         )}
       </main>
@@ -438,8 +564,9 @@ export function App() {
 }
 
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
+  const accessibleLabel = label.trim();
   return (
-    <button className={active ? "nav-button active" : "nav-button"} onClick={onClick}>
+    <button className={active ? "nav-button active" : "nav-button"} aria-current={active ? "page" : undefined} aria-label={accessibleLabel} onClick={onClick}>
       {icon}
       <span>{label}</span>
     </button>
@@ -473,11 +600,11 @@ export function ImportView(props: {
           <p>本地 JSON 入口，不保存淘宝账号。</p>
         </div>
         <div className="actions">
-          <a className="secondary link-button" href={TAOBAO_BOUGHT_ITEMS_URL} target="_blank" rel="noreferrer">
+          <a className="secondary link-button btn btn-soft" href={TAOBAO_BOUGHT_ITEMS_URL} target="_blank" rel="noreferrer">
             <ExternalLink size={18} />
             已买到的宝贝
           </a>
-          <button className="icon-button" title="复制书签脚本" onClick={props.onCopyBookmarklet}>
+          <button className="icon-button btn btn-square btn-soft" title="复制书签脚本" onClick={props.onCopyBookmarklet}>
             <Copy size={18} />
           </button>
         </div>
@@ -487,68 +614,69 @@ export function ImportView(props: {
         <span>2 打开已买到或商品详情</span>
         <span>3 粘贴 JSON 导入</span>
       </div>
-      <div className="panel selenium-panel">
+      <div className="panel selenium-panel card">
         <label>Selenium 采集</label>
         <div className="selenium-controls">
-          <button className="secondary" disabled={props.busyAction === "capture-orders"} onClick={props.onStartOrdersCapture}>
+          <button className="secondary btn btn-soft" disabled={props.busyAction === "capture-orders"} onClick={props.onStartOrdersCapture}>
             <Play size={18} />
             {props.busyAction === "capture-orders" ? "采集中" : "采集订单页"}
           </button>
           <input
+            className="input input-bordered"
             value={props.captureUrl}
             onChange={(event) => props.onCaptureUrl(event.target.value)}
             placeholder="https://item.taobao.com/item.htm?id=..."
           />
-          <button className="primary" disabled={props.busyAction === "capture-item" || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
+          <button className="primary btn btn-primary" disabled={props.busyAction === "capture-item" || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
             <Play size={18} />
             {props.busyAction === "capture-item" ? "采集中" : "采集商品详情"}
           </button>
         </div>
         {props.captureResult ? (
-          <div className="capture-status">
+          <div className="capture-status text-wrap-anywhere">
             已启动 {props.captureResult.mode === "orders" ? "订单页采集" : "商品详情采集"}，PID {props.captureResult.pid}，输出目录 {props.captureResult.outputDir}
             {"status" in props.captureResult ? `，状态 ${captureStatusLabel(props.captureResult.status)}` : ""}
           </div>
         ) : null}
       </div>
       <div className="grid two">
-        <div className="panel">
+        <div className="panel card">
           <label>书签脚本</label>
-          <textarea className="code-box" readOnly value={props.bookmarklet} />
+          <textarea className="code-box textarea textarea-bordered" readOnly value={props.bookmarklet} />
           <div className="bookmarklet-actions">
             <a className="bookmarklet-link" href={props.bookmarklet}>
               Outfit 淘宝采集
             </a>
-            <button className="secondary" onClick={props.onCopyBookmarklet}>
+            <button className="secondary btn btn-soft" onClick={props.onCopyBookmarklet}>
               <Copy size={18} />
               复制脚本
             </button>
           </div>
         </div>
-        <div className="panel">
+        <div className="panel card">
           <label>采集 JSON</label>
           <textarea
-            className="import-box"
+            className="import-box textarea textarea-bordered"
             value={props.importText}
             onChange={(event) => props.onImportText(event.target.value)}
             placeholder='{"source":"taobao-bookmarklet","items":[]}'
           />
           <div className="import-actions">
-            <button className="secondary" disabled={props.busyAction === "read-capture"} onClick={props.onReadLatestCapture}>
+            <button className="secondary btn btn-soft" disabled={props.busyAction === "read-capture"} onClick={props.onReadLatestCapture}>
               <Database size={18} />
               {props.busyAction === "read-capture" ? "读取中" : "读取产物"}
             </button>
-            <button className="secondary" disabled={props.busyAction === "preview-import" || !props.importText.trim()} onClick={props.onPreviewImport}>
+            <button className="secondary btn btn-soft" disabled={props.busyAction === "preview-import" || !props.importText.trim()} onClick={props.onPreviewImport}>
               <Sparkles size={18} />
               {props.busyAction === "preview-import" ? "预览中" : "预览"}
             </button>
-            <button className="primary" disabled={props.busyAction === "import" || !props.importText.trim()} onClick={props.onImport}>
+            <button className="primary btn btn-primary" disabled={props.busyAction === "import" || !props.importText.trim()} onClick={props.onImport}>
               <Upload size={18} />
               {props.busyAction === "import" ? "导入中" : "导入"}
             </button>
           </div>
           {props.filterSummary ? (
-            <div className="capture-status">
+            <div className="capture-status text-wrap-anywhere">
               已从 {props.filterSummary.originalItems} 条订单中保留 {props.filterSummary.keptItems} 条衣服/鞋候选，退款过滤 {props.filterSummary.skippedRefunded} 条，非服饰过滤 {props.filterSummary.skippedNonApparel} 条。
             </div>
           ) : null}
@@ -564,7 +692,7 @@ export function ImportView(props: {
         </div>
       ) : null}
       {props.importPreview ? (
-        <div className="panel preview-panel">
+        <div className="panel preview-panel card">
           <label>导入预览</label>
           <div className="metric-strip">
             <Metric label="候选" value={props.importPreview.candidates.length} />
@@ -575,7 +703,7 @@ export function ImportView(props: {
           </div>
           <div className="preview-list">
             {props.importPreview.candidates.slice(0, 6).map((item) => (
-              <span key={item.sourceItemKey}>{CATEGORY_LABELS[item.category]} · {item.name} · 置信度 {Math.round(item.confidence * 100)}%</span>
+              <span className="text-wrap-anywhere" key={item.sourceItemKey}>{CATEGORY_LABELS[item.category]} · {item.name} · 置信度 {Math.round(item.confidence * 100)}%</span>
             ))}
           </div>
         </div>
@@ -602,7 +730,8 @@ export function WardrobeView(props: {
     category: "all",
     color: "all",
     season: "all",
-    owned: "all"
+    owned: "all",
+    query: ""
   };
   const colorFilterOptions = buildColorFilterOptions(props.garments);
   const filteredGarments = props.garments.filter((item) => matchesWardrobeFilters(item, filters));
@@ -620,25 +749,31 @@ export function WardrobeView(props: {
           <p>{props.garments.length} 件，{props.garments.filter((item) => !item.confirmed && !item.excluded).length} 件待确认，当前显示 {filteredGarments.length} 件。</p>
         </div>
         <div className="actions">
-          <button className="secondary" title="刷新" onClick={props.onRefresh}>
+          <button className="secondary btn btn-soft" title="刷新" onClick={props.onRefresh}>
             <RefreshCw size={18} />
             刷新
           </button>
-          <button className="secondary" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
+          <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
             <Check size={18} />
             选择当前结果
           </button>
-          <button className="secondary" disabled={!props.selectedIds.length} onClick={() => props.onSelect([])}>
+          <button className="secondary btn btn-soft" disabled={!props.selectedIds.length} onClick={() => props.onSelect([])}>
             <X size={18} />
             清空选择
           </button>
-          <button className="primary" disabled={!props.selectedIds.length || props.busyAction === "bulk-confirm"} onClick={props.onBulkConfirm}>
+          <button className="primary btn btn-primary" disabled={!props.selectedIds.length || props.busyAction === "bulk-confirm"} onClick={props.onBulkConfirm}>
             <Check size={18} />
             {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
           </button>
         </div>
       </header>
       <div className="filter-bar">
+        <input
+          className="input input-bordered input-sm"
+          value={filters.query}
+          onChange={(event) => updateFilter("query", event.target.value)}
+          placeholder="搜索名称、品牌、材质或标签"
+        />
         <Select value={filters.status} options={STATUS_FILTER_OPTIONS} onChange={(value) => updateFilter("status", value as WardrobeStatusFilter)} />
         <Select value={filters.category} options={CATEGORY_FILTER_OPTIONS} onChange={(value) => updateFilter("category", value as WardrobeFilters["category"])} />
         <Select value={filters.color} options={colorFilterOptions} onChange={(value) => updateFilter("color", value)} />
@@ -651,6 +786,7 @@ export function WardrobeView(props: {
             {filteredGarments.map((item) => (
           <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
             <input
+              className="checkbox checkbox-sm"
               type="checkbox"
               checked={props.selectedIds.includes(item.id)}
               onChange={(event) =>
@@ -662,6 +798,7 @@ export function WardrobeView(props: {
               <div className="garment-title-line">
                 {garmentMeta(item).brand ? <span className="brand-tag">{garmentMeta(item).brand}</span> : null}
                 <input
+                  className="input input-bordered input-sm"
                   value={item.name}
                   title={garmentMeta(item).rawName || item.name}
                   onChange={(event) => props.onUpdate(item.id, { name: event.target.value })}
@@ -672,22 +809,38 @@ export function WardrobeView(props: {
                 <Select value={item.color} options={withCurrentOption(COLOR_OPTIONS, item.color)} onChange={(value) => props.onUpdate(item.id, { color: value })} />
                 <Select value={item.warmth} options={WARMTH_OPTIONS} onChange={(value) => props.onUpdate(item.id, { warmth: value as Garment["warmth"] })} />
                 <SeasonPicker seasons={item.seasons} onChange={(seasons) => props.onUpdate(item.id, { seasons })} />
+                <label className="detail-field">
+                  <span>尺码</span>
+                  <input className="input input-bordered input-sm" value={item.size ?? ""} onChange={(event) => props.onUpdate(item.id, { size: event.target.value })} />
+                </label>
+                <label className="detail-field">
+                  <span>材质</span>
+                  <input className="input input-bordered input-sm" value={formatList(item.materials)} onChange={(event) => props.onUpdate(item.id, { materials: parseList(event.target.value) })} />
+                </label>
+                <label className="detail-field">
+                  <span>图案</span>
+                  <input className="input input-bordered input-sm" value={formatList(item.patterns)} onChange={(event) => props.onUpdate(item.id, { patterns: parseList(event.target.value) })} />
+                </label>
+                <label className="detail-field">
+                  <span>标签</span>
+                  <input className="input input-bordered input-sm" value={formatList(item.tags)} onChange={(event) => props.onUpdate(item.id, { tags: parseList(event.target.value) })} />
+                </label>
               </div>
             </div>
             <div className="row-actions">
               {item.detailUrl || item.itemUrl ? (
-                <a className="icon-button" title="商品详情" href={item.detailUrl || item.itemUrl} target="_blank" rel="noreferrer">
+                <a className="icon-button btn btn-square btn-soft" title="商品详情" href={item.detailUrl || item.itemUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} />
                 </a>
               ) : null}
-              <button className={item.confirmed ? "status good" : "status"} onClick={() => props.onUpdate(item.id, { confirmed: !item.confirmed })}>
+              <button className={item.confirmed ? "status btn btn-sm good" : "status btn btn-sm"} onClick={() => props.onUpdate(item.id, { confirmed: !item.confirmed })}>
                 <Check size={16} />
                 {item.confirmed ? "已确认" : "确认"}
               </button>
-              <button className={item.owned ? "status" : "status warn"} onClick={() => props.onUpdate(item.id, { owned: !item.owned })}>
+              <button className={item.owned ? "status btn btn-sm" : "status btn btn-sm warn"} onClick={() => props.onUpdate(item.id, { owned: !item.owned })}>
                 {item.owned ? "拥有" : "不在衣橱"}
               </button>
-              <button className="icon-button" title="删除" onClick={() => confirmDelete(item, props.onDelete)}>
+              <button className="icon-button btn btn-square btn-soft" title="删除" onClick={() => confirmDelete(item, props.onDelete)}>
                 <X size={16} />
               </button>
             </div>
@@ -727,11 +880,11 @@ export function RecommendationView(props: {
           <p>{props.latitude}, {props.longitude}</p>
         </div>
         <div className="actions">
-          <button className="secondary" disabled={props.busyAction === "weather"} onClick={props.onFetchWeather}>
+          <button className="secondary btn btn-soft" disabled={props.busyAction === "weather"} onClick={props.onFetchWeather}>
             <CloudSun size={18} />
             {props.busyAction === "weather" ? "获取中" : "天气"}
           </button>
-          <button className="primary" disabled={props.busyAction === "recommend"} onClick={props.onGenerate}>
+          <button className="primary btn btn-primary" disabled={props.busyAction === "recommend"} onClick={props.onGenerate}>
             <Sparkles size={18} />
             {props.busyAction === "recommend" ? "生成中" : "生成"}
           </button>
@@ -739,7 +892,7 @@ export function RecommendationView(props: {
       </header>
       <div className="toolbar">
         {OCCASIONS.map((value) => (
-          <button className={props.occasion === value ? "chip active" : "chip"} key={value} onClick={() => props.onOccasion(value)}>
+          <button className={props.occasion === value ? "chip btn btn-sm active" : "chip btn btn-sm"} key={value} onClick={() => props.onOccasion(value)}>
             {OCCASION_LABELS[value]}
           </button>
         ))}
@@ -790,7 +943,7 @@ export function RecommendationView(props: {
               </details>
             ) : null}
             <div className="outfit-actions">
-              <button className="secondary" disabled={props.recordingOutfitId === outfit.id} onClick={() => props.onRecordWearLog(outfit)}>
+              <button className="secondary btn btn-soft" disabled={props.recordingOutfitId === outfit.id} onClick={() => props.onRecordWearLog(outfit)}>
                 <Check size={16} />
                 {props.recordingOutfitId === outfit.id ? "标记中" : "标记已穿"}
               </button>
@@ -806,16 +959,22 @@ export function RecommendationView(props: {
   );
 }
 
-function SettingsView(props: {
+export function SettingsView(props: {
   latitude: string;
   longitude: string;
   busy: boolean;
   busyAction?: BusyAction | null;
+  profile: PersonalProfile;
   onLatitude: (value: string) => void;
   onLongitude: (value: string) => void;
   onLocate: () => void;
   onSave: () => void;
+  onProfile: (profile: PersonalProfile) => void;
 }) {
+  function updateProfile(update: Partial<PersonalProfile>) {
+    props.onProfile({ ...props.profile, ...update });
+  }
+
   return (
     <section className="view compact">
       <header className="view-header">
@@ -826,20 +985,115 @@ function SettingsView(props: {
       </header>
       <div className="panel settings-panel">
         <label>纬度</label>
-        <input value={props.latitude} onChange={(event) => props.onLatitude(event.target.value)} />
+        <input className="input input-bordered" value={props.latitude} onChange={(event) => props.onLatitude(event.target.value)} />
         <label>经度</label>
-        <input value={props.longitude} onChange={(event) => props.onLongitude(event.target.value)} />
+        <input className="input input-bordered" value={props.longitude} onChange={(event) => props.onLongitude(event.target.value)} />
+        <h2>个人画像</h2>
+        <label>身高 cm</label>
+        <input className="input input-bordered" type="number" value={props.profile.heightCm ?? ""} onChange={(event) => updateProfile({ heightCm: numberOrUndefined(event.target.value) })} />
+        <label>体重 kg</label>
+        <input className="input input-bordered" type="number" value={props.profile.weightKg ?? ""} onChange={(event) => updateProfile({ weightKg: numberOrUndefined(event.target.value) })} />
+        <label>体型</label>
+        <Select value={props.profile.bodyType ?? "slim-tall"} options={BODY_TYPE_OPTIONS} onChange={(value) => updateProfile({ bodyType: value as PersonalProfile["bodyType"] })} />
+        <label>肤色</label>
+        <Select value={props.profile.skinTone ?? "dark-yellow"} options={SKIN_TONE_OPTIONS} onChange={(value) => updateProfile({ skinTone: value as PersonalProfile["skinTone"] })} />
+        <label>色彩倾向</label>
+        <Select value={props.profile.colorDisposition ?? "cool-clean"} options={COLOR_DISPOSITION_OPTIONS} onChange={(value) => updateProfile({ colorDisposition: value as PersonalProfile["colorDisposition"] })} />
+        <label>温度感受</label>
+        <Select value={props.profile.temperatureSensitivity ?? "neutral"} options={TEMPERATURE_OPTIONS} onChange={(value) => updateProfile({ temperatureSensitivity: value as PersonalProfile["temperatureSensitivity"] })} />
+        <label>偏好颜色</label>
+        <input className="input input-bordered" value={formatColorList(props.profile.preferredColors)} onChange={(event) => updateProfile({ preferredColors: parseColorList(event.target.value) })} placeholder="白色,蓝色,灰色" />
+        <label>避开颜色</label>
+        <input className="input input-bordered" value={formatColorList(props.profile.avoidedColors)} onChange={(event) => updateProfile({ avoidedColors: parseColorList(event.target.value) })} placeholder="黄色,棕色" />
+        <label>偏好风格</label>
+        <input className="input input-bordered" value={formatList(props.profile.preferredStyles)} onChange={(event) => updateProfile({ preferredStyles: parseList(event.target.value) })} placeholder="casual,smart-casual" />
         <div className="actions">
-          <button className="secondary" disabled={props.busyAction === "locate"} onClick={props.onLocate}>
+          <button className="secondary btn btn-soft" disabled={props.busyAction === "locate"} onClick={props.onLocate}>
             <MapPin size={18} />
             {props.busyAction === "locate" ? "定位中" : "定位"}
           </button>
-          <button className="primary" onClick={props.onSave}>
+          <button className="primary btn btn-primary" disabled={props.busyAction === "save-settings"} onClick={props.onSave}>
             <Save size={18} />
-            保存
+            {props.busyAction === "save-settings" ? "保存中" : "保存"}
           </button>
         </div>
       </div>
+    </section>
+  );
+}
+
+export function HistoryInsightsView(props: {
+  insights: WardrobeInsights | null;
+  wearLogs: WearLogEntry[];
+  recommendationRuns: RecommendationRunEntry[];
+  busy: boolean;
+  busyAction?: BusyAction | null;
+  onRefresh: () => void;
+  onExport: () => void;
+}) {
+  const insights = props.insights;
+  return (
+    <section className="view">
+      <header className="view-header">
+        <div>
+          <h1>历史洞察</h1>
+          <p>{insights ? `${insights.totalGarments} 件衣物，${props.wearLogs.length} 条穿着记录。` : "本地穿着记录和推荐历史。"}</p>
+        </div>
+        <div className="actions">
+          <button className="secondary btn btn-soft" disabled={props.busyAction === "history"} onClick={props.onRefresh}>
+            <RefreshCw size={18} />
+            {props.busyAction === "history" ? "刷新中" : "刷新"}
+          </button>
+          <button className="primary btn btn-primary" disabled={props.busyAction === "export"} onClick={props.onExport}>
+            <Download size={18} />
+            {props.busyAction === "export" ? "导出中" : "导出备份"}
+          </button>
+        </div>
+      </header>
+      {insights ? (
+        <>
+          <div className="metric-strip">
+            <Metric label="衣物总数" value={insights.totalGarments} />
+            <Metric label="可穿" value={insights.ownedGarments} />
+            <Metric label="已确认" value={insights.confirmedGarments} />
+            <Metric label="待确认" value={insights.pendingGarments} />
+          </div>
+          <div className="grid two">
+            <div className="panel card">
+              <label>常穿单品</label>
+              <InsightList items={insights.mostWorn} empty="还没有穿着统计。" />
+            </div>
+            <div className="panel card">
+              <label>近期未穿</label>
+              <InsightList items={insights.neverWorn} empty="所有衣物都有穿着记录。" />
+            </div>
+          </div>
+          <div className="grid two">
+            <div className="panel card">
+              <label>类别分布</label>
+              <Distribution data={labelDistribution(insights.categoryDistribution, CATEGORY_LABELS)} />
+            </div>
+            <div className="panel card">
+              <label>颜色分布</label>
+              <Distribution data={labelDistribution(insights.colorDistribution, COLOR_LABELS)} />
+            </div>
+          </div>
+          <div className="panel card">
+            <label>推荐历史</label>
+            {props.recommendationRuns.length ? (
+              <div className="history-list">
+                {props.recommendationRuns.slice(0, 5).map((run) => (
+                  <span key={run.id}>{run.createdAt}</span>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">还没有推荐历史。</div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="empty-state">还没有可展示的历史洞察。</div>
+      )}
     </section>
   );
 }
@@ -869,7 +1123,7 @@ function SeasonPicker({ seasons, onChange }: { seasons: Garment["seasons"]; onCh
     <div className="season-picker" aria-label="季节">
       {SEASON_OPTIONS.map((option) => (
         <button
-          className={seasons.includes(option.value as Garment["seasons"][number]) ? "season-chip active" : "season-chip"}
+          className={seasons.includes(option.value as Garment["seasons"][number]) ? "season-chip btn btn-sm active" : "season-chip btn btn-sm"}
           key={option.value}
           aria-pressed={seasons.includes(option.value as Garment["seasons"][number])}
           type="button"
@@ -884,7 +1138,7 @@ function SeasonPicker({ seasons, onChange }: { seasons: Garment["seasons"]; onCh
 
 function Select({ value, options, onChange }: { value: string; options: SelectOption[]; onChange: (value: string) => void }) {
   return (
-    <select value={value} onChange={(event) => onChange(event.target.value)}>
+    <select className="select select-bordered select-sm" value={value} onChange={(event) => onChange(event.target.value)}>
       {options.map((option) => (
         <option key={option.value} value={option.value}>
           {option.label}
@@ -894,9 +1148,32 @@ function Select({ value, options, onChange }: { value: string; options: SelectOp
   );
 }
 
+function InsightList({ items, empty }: { items: Array<{ id: number; name: string; wearCount?: number }>; empty: string }) {
+  if (!items.length) return <div className="empty-state">{empty}</div>;
+  return (
+    <div className="history-list">
+      {items.map((item) => (
+        <span key={item.id}>{item.name}{item.wearCount ? ` · ${item.wearCount} 次` : ""}</span>
+      ))}
+    </div>
+  );
+}
+
+function Distribution({ data }: { data: Record<string, number> }) {
+  const entries = Object.entries(data).filter(([, value]) => value > 0);
+  if (!entries.length) return <div className="empty-state">暂无分布数据。</div>;
+  return (
+    <div className="history-list">
+      {entries.map(([label, value]) => (
+        <span key={label}>{label} · {value}</span>
+      ))}
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="metric">
+    <div className="metric stat">
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
@@ -923,6 +1200,19 @@ function buildColorFilterOptions(garments: Garment[]): SelectOption[] {
 }
 
 function matchesWardrobeFilters(item: Garment, filters: WardrobeFilters): boolean {
+  const query = filters.query.trim().toLowerCase();
+  if (query) {
+    const searchable = [
+      item.name,
+      item.brand,
+      item.rawName,
+      item.size,
+      ...(item.materials ?? []),
+      ...(item.patterns ?? []),
+      ...(item.tags ?? [])
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (!searchable.includes(query)) return false;
+  }
   if (filters.status === "pending" && (item.confirmed || item.excluded)) return false;
   if (filters.status === "confirmed" && (!item.confirmed || item.excluded)) return false;
   if (filters.status === "excluded" && !item.excluded) return false;
@@ -932,6 +1222,44 @@ function matchesWardrobeFilters(item: Garment, filters: WardrobeFilters): boolea
   if (filters.owned === "owned" && !item.owned) return false;
   if (filters.owned === "not-owned" && item.owned) return false;
   return true;
+}
+
+function parseList(value: string): string[] {
+  return Array.from(new Set(value.split(/[,，]/).map((item) => item.trim()).filter(Boolean)));
+}
+
+function formatList(value: string[] | undefined): string {
+  return (value ?? []).join(",");
+}
+
+function formatColorList(value: string[] | undefined): string {
+  return (value ?? []).map((color) => COLOR_LABELS[color] || color).join(",");
+}
+
+function parseColorList(value: string): string[] {
+  const reverse = Object.fromEntries(Object.entries(COLOR_LABELS).map(([key, label]) => [label, key]));
+  return parseList(value).map((color) => reverse[color] || color);
+}
+
+function numberOrUndefined(value: string): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function labelDistribution<T extends string>(data: Partial<Record<T, number>> | Record<string, number>, labels: Record<string, string>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [labels[key] || key, Number(value ?? 0)])
+  );
+}
+
+function downloadJson(data: OutfitExport): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `outfit-backup-${data.exportedAt.slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function confirmDelete(item: Garment, onDelete: (id: number) => void) {

@@ -1,12 +1,12 @@
 import express, { type Request, type Response } from "express";
 import type { AppDatabase, GarmentUpdate } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { deleteGarment, getCachedWeather, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
+import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateCaptureJobRequest, validateGarmentUpdate, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
 export function createApiApp(db: AppDatabase): express.Express {
   const app = express();
@@ -63,6 +63,14 @@ export function createApiApp(db: AppDatabase): express.Express {
     handle(response, () => listGarments(db));
   });
 
+  app.get("/api/profile", (_request, response) => {
+    handle(response, () => getPersonalProfile(db));
+  });
+
+  app.put("/api/profile", (request, response) => {
+    handle(response, () => savePersonalProfile(db, validatePersonalProfile(request.body)));
+  });
+
   app.put("/api/garments/:id", (request, response) => {
     handle(response, () => updateGarment(db, Number(request.params.id), validateGarmentUpdate(request.body) as GarmentUpdate));
   });
@@ -82,6 +90,22 @@ export function createApiApp(db: AppDatabase): express.Express {
       saveWearLog(db, wearLog.garmentIds, wearLog.context);
       return { ok: true };
     });
+  });
+
+  app.get("/api/wear-logs", (_request, response) => {
+    handle(response, () => listWearLogs(db));
+  });
+
+  app.get("/api/recommendation-runs", (_request, response) => {
+    handle(response, () => listRecommendationRuns(db));
+  });
+
+  app.get("/api/insights", (_request, response) => {
+    handle(response, () => getWardrobeInsights(db));
+  });
+
+  app.get("/api/export", (_request, response) => {
+    handle(response, () => exportOutfitData(db));
   });
 
   app.get("/api/weather", async (request, response) => {
@@ -120,14 +144,15 @@ export function createApiApp(db: AppDatabase): express.Express {
         ...recommendationRequest.recentlyWornGarmentIds,
         ...listRecentlyWornGarmentIds(db)
       ]));
+      const effectiveProfile = recommendationRequest.userProfile ?? getPersonalProfile(db);
       const result = recommendOutfits({
         garments,
         weather: recommendationRequest.weather,
         occasion: recommendationRequest.occasion,
         recentlyWornGarmentIds,
-        userProfile: recommendationRequest.userProfile
+        userProfile: effectiveProfile
       });
-      saveRecommendationRun(db, request.body, result);
+      saveRecommendationRun(db, { ...request.body, userProfile: effectiveProfile }, result);
       return result;
     });
   });

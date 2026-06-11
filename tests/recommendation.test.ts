@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { recommendOutfits } from "../server/services/recommend";
-import type { Garment, GarmentCategory, GarmentWarmth, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, GarmentCategory, GarmentWarmth, PersonalProfile, WeatherSnapshot } from "../src/shared/types";
 
 function garment(overrides: Partial<Garment> & Pick<Garment, "id" | "name" | "category">): Garment {
   return {
@@ -266,6 +266,43 @@ describe("recommendOutfits", () => {
     expect(outfit.scoreBreakdown).toBeDefined();
     expect(outfit.scoreBreakdown!.userPreference).toBeGreaterThan(0);
     expect(outfit.reasons.join(" ")).toMatch(/偏好|怕冷|颜色/);
+  });
+
+  it("uses body proportion and skin tone profile signals in scoring explanations", () => {
+    const personalProfile: PersonalProfile = {
+      heightCm: 176,
+      weightKg: 57,
+      bodyType: "slim-tall",
+      skinTone: "dark-yellow",
+      colorDisposition: "cool-clean",
+      temperatureSensitivity: "neutral",
+      preferredColors: [],
+      avoidedColors: [],
+      preferredStyles: ["smart-casual"]
+    };
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "土黄色贴身针织衫", category: "top", color: "yellow", confidence: 0.99 }),
+        garment({ id: 2, name: "驼色窄腿裤", category: "bottom", color: "brown", confidence: 0.99 }),
+        garment({ id: 3, name: "米色低帮鞋", category: "shoes", color: "beige", confidence: 0.99 }),
+        garment({ id: 4, name: "白色挺括衬衫", category: "top", color: "white", tags: ["挺括", "层次"], confidence: 0.65 }),
+        garment({ id: 5, name: "深蓝直筒牛仔裤", category: "bottom", color: "blue", tags: ["直筒"], confidence: 0.65 }),
+        garment({ id: 6, name: "灰色休闲鞋", category: "shoes", color: "gray", confidence: 0.65 }),
+        garment({ id: 7, name: "海军蓝轻夹克", category: "outerwear", color: "blue", tags: ["结构感"], confidence: 0.65 })
+      ],
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "smart-casual",
+      userProfile: personalProfile
+    });
+
+    expect(result.outfits[0].items.map((item) => item.id)).toEqual(expect.arrayContaining([4, 5, 6]));
+    expect(result.outfits[0].scoreBreakdown).toMatchObject({
+      bodyProportion: expect.any(Number),
+      colorSuitability: expect.any(Number)
+    });
+    expect(result.outfits[0].scoreBreakdown!.bodyProportion).toBeGreaterThanOrEqual(0);
+    expect(result.outfits[0].scoreBreakdown!.colorSuitability).toBeGreaterThan(0);
+    expect(result.outfits[0].reasons.join(" ")).toMatch(/瘦高|肤色|黑黄|清爽|对比/);
   });
 
   it("sorts alternatives by replacement compatibility", () => {

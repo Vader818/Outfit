@@ -2,6 +2,9 @@ export type GarmentCategory = "top" | "bottom" | "dress" | "outerwear" | "shoes"
 export type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 export type Season = "spring" | "summer" | "autumn" | "winter";
 export type Formality = "casual" | "smart-casual" | "formal" | "sport";
+export type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
+export type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
+export type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
 
 export interface Garment {
   id: number;
@@ -70,6 +73,8 @@ export interface RecommendationScoreBreakdown {
   recentWear: number;
   itemConfidence: number;
   userPreference: number;
+  bodyProportion: number;
+  colorSuitability: number;
 }
 
 export type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
@@ -79,6 +84,57 @@ export interface UserPreferenceProfile {
   preferredColors?: string[];
   avoidedColors?: string[];
   preferredStyles?: string[];
+}
+
+export interface PersonalProfile extends UserPreferenceProfile {
+  heightCm?: number;
+  weightKg?: number;
+  bodyType?: BodyType;
+  skinTone?: SkinTone;
+  colorDisposition?: ColorDisposition;
+}
+
+export interface WearLogEntry {
+  id: number;
+  garmentIds: number[];
+  context: unknown;
+  wornAt: string;
+}
+
+export interface RecommendationRunEntry {
+  id: number;
+  input: unknown;
+  result: unknown;
+  createdAt: string;
+}
+
+export interface WornGarmentInsight {
+  id: number;
+  name: string;
+  category?: GarmentCategory;
+  color?: string;
+  wearCount?: number;
+}
+
+export interface WardrobeInsights {
+  totalGarments: number;
+  ownedGarments: number;
+  confirmedGarments: number;
+  pendingGarments: number;
+  categoryDistribution: Partial<Record<GarmentCategory, number>>;
+  colorDistribution: Record<string, number>;
+  mostWorn: WornGarmentInsight[];
+  neverWorn: WornGarmentInsight[];
+}
+
+export interface OutfitExport {
+  version: 1;
+  exportedAt: string;
+  profile: PersonalProfile;
+  garments: Garment[];
+  sourceOrderItems: unknown[];
+  wearLogs: WearLogEntry[];
+  recommendationRuns: RecommendationRunEntry[];
 }
 
 export type TaobaoPageType = "order-list" | "item-detail";

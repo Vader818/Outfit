@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Garment, TaobaoDetailProp, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 
@@ -33,6 +33,10 @@ export interface GarmentUpdate {
   styles?: string[];
   formality?: string;
   imageUrl?: string;
+  size?: string;
+  materials?: string[];
+  patterns?: string[];
+  tags?: string[];
   owned?: boolean;
   confirmed?: boolean;
   excluded?: boolean;
@@ -56,6 +60,18 @@ interface StoredDetailRow {
   detail_images: string | null;
   detail_raw_text: string | null;
 }
+
+export const DEFAULT_PERSONAL_PROFILE: PersonalProfile = {
+  heightCm: 176,
+  weightKg: 57,
+  bodyType: "slim-tall",
+  skinTone: "dark-yellow",
+  colorDisposition: "cool-clean",
+  temperatureSensitivity: "neutral",
+  preferredColors: ["white", "blue", "gray"],
+  avoidedColors: ["yellow", "brown"],
+  preferredStyles: ["smart-casual"]
+};
 
 export function defaultDatabasePath(): string {
   return join(process.cwd(), "data", "outfit.sqlite");
@@ -114,6 +130,10 @@ export function migrate(db: AppDatabase): void {
       seasons TEXT NOT NULL,
       styles TEXT NOT NULL,
       formality TEXT NOT NULL,
+      size TEXT,
+      materials TEXT NOT NULL DEFAULT '[]',
+      patterns TEXT NOT NULL DEFAULT '[]',
+      tags TEXT NOT NULL DEFAULT '[]',
       image_url TEXT,
       owned INTEGER NOT NULL DEFAULT 1,
       confirmed INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +166,12 @@ export function migrate(db: AppDatabase): void {
       result_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   ensureColumn(db, "source_order_items", "page_type", "TEXT");
   ensureColumn(db, "source_order_items", "item_id", "TEXT");
@@ -169,6 +195,10 @@ export function migrate(db: AppDatabase): void {
   ensureColumn(db, "source_order_items", "is_apparel", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "garments", "brand", "TEXT");
   ensureColumn(db, "garments", "raw_name", "TEXT");
+  ensureColumn(db, "garments", "size", "TEXT");
+  ensureColumn(db, "garments", "materials", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "garments", "patterns", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "garments", "tags", "TEXT NOT NULL DEFAULT '[]'");
   db.exec("CREATE INDEX IF NOT EXISTS idx_source_order_items_item_id ON source_order_items(item_id)");
   backfillGarmentDisplayData(db);
 }
@@ -445,6 +475,10 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     seasons: JSON.stringify(update.seasons ?? safeJson<string[]>(current.seasons, [])),
     styles: JSON.stringify(update.styles ?? safeJson<string[]>(current.styles, [])),
     formality: update.formality ?? current.formality,
+    size: update.size ?? current.size ?? "",
+    materials: JSON.stringify(update.materials ?? safeJson<string[]>(current.materials || "[]", [])),
+    patterns: JSON.stringify(update.patterns ?? safeJson<string[]>(current.patterns || "[]", [])),
+    tags: JSON.stringify(update.tags ?? safeJson<string[]>(current.tags || "[]", [])),
     imageUrl: update.imageUrl ?? current.image_url ?? "",
     owned: boolToInt(update.owned ?? Boolean(current.owned)),
     confirmed: boolToInt(update.confirmed ?? Boolean(current.confirmed)),
@@ -455,7 +489,7 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
   db.prepare(`
     UPDATE garments
     SET brand = ?, name = ?, raw_name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
-      formality = ?, image_url = ?, owned = ?, confirmed = ?, excluded = ?, notes = ?,
+      formality = ?, size = ?, materials = ?, patterns = ?, tags = ?, image_url = ?, owned = ?, confirmed = ?, excluded = ?, notes = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
@@ -468,6 +502,10 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     next.seasons,
     next.styles,
     next.formality,
+    next.size,
+    next.materials,
+    next.patterns,
+    next.tags,
     next.imageUrl,
     next.owned,
     next.confirmed,
@@ -515,11 +553,111 @@ export function listRecentlyWornGarmentIds(db: AppDatabase, limit = 8): number[]
   return Array.from(seen);
 }
 
+export function listWearLogs(db: AppDatabase, limit = 50): WearLogEntry[] {
+  const rows = db.prepare(`
+    SELECT id, garment_ids, context, worn_at
+    FROM wear_logs
+    ORDER BY worn_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<{ id: number; garment_ids: string; context: string | null; worn_at: string }>;
+  return rows.map((row) => ({
+    id: row.id,
+    garmentIds: safeJson<number[]>(row.garment_ids, []),
+    context: row.context ? safeJson<unknown>(row.context, null) : null,
+    wornAt: row.worn_at
+  }));
+}
+
 export function saveRecommendationRun(db: AppDatabase, input: unknown, result: unknown): void {
   db.prepare("INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, ?)").run(
     JSON.stringify(input),
     JSON.stringify(result)
   );
+}
+
+export function listRecommendationRuns(db: AppDatabase, limit = 20): RecommendationRunEntry[] {
+  const rows = db.prepare(`
+    SELECT id, input_json, result_json, created_at
+    FROM recommendation_runs
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<{ id: number; input_json: string; result_json: string; created_at: string }>;
+  return rows.map((row) => ({
+    id: row.id,
+    input: safeJson<unknown>(row.input_json, {}),
+    result: safeJson<unknown>(row.result_json, {}),
+    createdAt: row.created_at
+  }));
+}
+
+export function getPersonalProfile(db: AppDatabase): PersonalProfile {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("personalProfile") as { value: string } | undefined;
+  if (!row) return { ...DEFAULT_PERSONAL_PROFILE };
+  return normalizePersonalProfile(safeJson<PersonalProfile>(row.value, {}));
+}
+
+export function savePersonalProfile(db: AppDatabase, profile: PersonalProfile): PersonalProfile {
+  const next = normalizePersonalProfile(profile);
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run("personalProfile", JSON.stringify(next), new Date().toISOString());
+  return next;
+}
+
+export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
+  const garments = listGarments(db);
+  const wornCounts = new Map<number, number>();
+  for (const log of listWearLogs(db, 500)) {
+    for (const id of log.garmentIds) {
+      wornCounts.set(id, (wornCounts.get(id) ?? 0) + 1);
+    }
+  }
+  const categoryDistribution: WardrobeInsights["categoryDistribution"] = {};
+  const colorDistribution: WardrobeInsights["colorDistribution"] = {};
+  for (const garment of garments) {
+    categoryDistribution[garment.category] = (categoryDistribution[garment.category] ?? 0) + 1;
+    colorDistribution[garment.color || "unknown"] = (colorDistribution[garment.color || "unknown"] ?? 0) + 1;
+  }
+  const worn = garments
+    .filter((garment) => (wornCounts.get(garment.id) ?? 0) > 0)
+    .map((garment) => ({
+      id: garment.id,
+      name: displayInsightName(garment),
+      category: garment.category,
+      color: garment.color,
+      wearCount: wornCounts.get(garment.id) ?? 0
+    }))
+    .sort((left, right) => (right.wearCount ?? 0) - (left.wearCount ?? 0))
+    .slice(0, 5);
+  return {
+    totalGarments: garments.length,
+    ownedGarments: garments.filter((garment) => garment.owned).length,
+    confirmedGarments: garments.filter((garment) => garment.confirmed).length,
+    pendingGarments: garments.filter((garment) => !garment.confirmed && !garment.excluded).length,
+    categoryDistribution,
+    colorDistribution,
+    mostWorn: worn,
+    neverWorn: garments
+      .filter((garment) => !wornCounts.has(garment.id))
+      .slice(0, 8)
+      .map((garment) => ({ id: garment.id, name: displayInsightName(garment), category: garment.category, color: garment.color }))
+  };
+}
+
+export function exportOutfitData(db: AppDatabase): OutfitExport {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    profile: getPersonalProfile(db),
+    garments: listGarments(db),
+    sourceOrderItems: db.prepare("SELECT * FROM source_order_items ORDER BY id ASC").all(),
+    wearLogs: listWearLogs(db, 1000),
+    recommendationRuns: listRecommendationRuns(db, 200)
+  };
 }
 
 export function getCachedWeather(db: AppDatabase, latitude: number, longitude: number, maxAgeMs = 30 * 60 * 1000): WeatherSnapshot | null {
@@ -566,6 +704,10 @@ interface GarmentRow {
   excluded: number;
   confidence: number;
   notes: string | null;
+  size: string | null;
+  materials: string | null;
+  patterns: string | null;
+  tags: string | null;
   item_url: string | null;
   detail_url: string | null;
 }
@@ -583,6 +725,10 @@ function rowToGarment(row: GarmentRow): Garment {
     seasons: safeJson(row.seasons, []),
     styles: safeJson(row.styles, []),
     formality: row.formality,
+    size: row.size ?? undefined,
+    materials: safeJson(row.materials || "[]", []),
+    patterns: safeJson(row.patterns || "[]", []),
+    tags: safeJson(row.tags || "[]", []),
     imageUrl: row.image_url ?? "",
     owned: Boolean(row.owned),
     confirmed: Boolean(row.confirmed),
@@ -816,6 +962,25 @@ function withStoredStandaloneDetail(
     detailRawText: storedDetail.detail_raw_text || item.detailRawText,
     isApparel
   };
+}
+
+function normalizePersonalProfile(profile: PersonalProfile): PersonalProfile {
+  return {
+    ...DEFAULT_PERSONAL_PROFILE,
+    ...profile,
+    preferredColors: normalizeStringArray(profile.preferredColors ?? DEFAULT_PERSONAL_PROFILE.preferredColors),
+    avoidedColors: normalizeStringArray(profile.avoidedColors ?? DEFAULT_PERSONAL_PROFILE.avoidedColors),
+    preferredStyles: normalizeStringArray(profile.preferredStyles ?? DEFAULT_PERSONAL_PROFILE.preferredStyles)
+  };
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean)));
+}
+
+function displayInsightName(garment: Garment): string {
+  return [garment.brand, garment.name].filter(Boolean).join(" ") || garment.name;
 }
 
 function safeJson<T>(value: string, fallback: T): T {

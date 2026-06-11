@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getCaptureJob, getCaptureJobArtifact, previewTaobaoImport, readLatestTaobaoCapture, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
+import { exportLocalData, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getWearLogs, previewTaobaoImport, readLatestTaobaoCapture, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -215,5 +215,47 @@ describe("frontend API client", () => {
         }
       })
     }));
+  });
+
+  it("uses profile, history, insights, and export endpoints", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        preferredColors: ["white", "blue"]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, garmentIds: [101], context: {}, wornAt: "2026-06-12T00:00:00.000Z" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 2, input: {}, result: {}, createdAt: "2026-06-12T00:00:00.000Z" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ totalGarments: 4, mostWorn: [], neverWorn: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 1, garments: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getPersonalProfile()).resolves.toMatchObject({ bodyType: "slim-tall" });
+    await expect(savePersonalProfile({
+      heightCm: 176,
+      weightKg: 57,
+      bodyType: "slim-tall",
+      skinTone: "dark-yellow",
+      preferredColors: ["white", "blue"]
+    })).resolves.toMatchObject({ preferredColors: ["white", "blue"] });
+    await expect(getWearLogs()).resolves.toHaveLength(1);
+    await expect(getRecommendationRuns()).resolves.toHaveLength(1);
+    await expect(getInsights()).resolves.toMatchObject({ totalGarments: 4 });
+    await expect(exportLocalData()).resolves.toMatchObject({ version: 1 });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/profile", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/profile", expect.objectContaining({ method: "PUT" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/wear-logs", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/recommendation-runs", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/insights", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/export", expect.objectContaining({ method: "GET" }));
   });
 });

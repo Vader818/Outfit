@@ -1,4 +1,4 @@
-import type { CaptureArtifact, CaptureJob, CaptureJobMode, Garment, RecommendationResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, UserPreferenceProfile, WeatherSnapshot } from "./shared/types";
+import type { CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -98,6 +98,19 @@ export async function getGarments(): Promise<Garment[]> {
   return request<Garment[]>("/api/garments");
 }
 
+export async function getPersonalProfile(): Promise<PersonalProfile> {
+  return request<PersonalProfile>("/api/profile", {
+    method: "GET"
+  });
+}
+
+export async function savePersonalProfile(profile: PersonalProfile): Promise<PersonalProfile> {
+  return request<PersonalProfile>("/api/profile", {
+    method: "PUT",
+    body: JSON.stringify(profile)
+  });
+}
+
 export async function updateGarment(id: number, update: Partial<Garment>): Promise<Garment> {
   return request<Garment>(`/api/garments/${id}`, {
     method: "PUT",
@@ -119,7 +132,7 @@ export async function getRecommendations(input: {
   weather: WeatherSnapshot;
   occasion: string;
   recentlyWornGarmentIds?: number[];
-  userProfile?: UserPreferenceProfile;
+  userProfile?: PersonalProfile;
 }): Promise<RecommendationResult> {
   return request<RecommendationResult>("/api/recommendations", {
     method: "POST",
@@ -134,6 +147,30 @@ export async function recordWearLog(input: {
   return request<unknown>("/api/wear-logs", {
     method: "POST",
     body: JSON.stringify(input)
+  });
+}
+
+export async function getWearLogs(): Promise<WearLogEntry[]> {
+  return request<WearLogEntry[]>("/api/wear-logs", {
+    method: "GET"
+  });
+}
+
+export async function getRecommendationRuns(): Promise<RecommendationRunEntry[]> {
+  return request<RecommendationRunEntry[]>("/api/recommendation-runs", {
+    method: "GET"
+  });
+}
+
+export async function getInsights(): Promise<WardrobeInsights> {
+  return request<WardrobeInsights>("/api/insights", {
+    method: "GET"
+  });
+}
+
+export async function exportLocalData(): Promise<OutfitExport> {
+  return request<OutfitExport>("/api/export", {
+    method: "GET"
   });
 }
 

@@ -1,4 +1,4 @@
-import type { Formality, GarmentCategory, GarmentWarmth, Season, UserPreferenceProfile, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -28,6 +28,9 @@ export const SEASONS = ["spring", "summer", "autumn", "winter"] as const satisfi
 export const FORMALITIES = ["casual", "smart-casual", "formal", "sport"] as const satisfies readonly Formality[];
 export const CAPTURE_MODES = ["orders", "item-detail"] as const;
 export const TEMPERATURE_SENSITIVITIES = ["runs-cold", "neutral", "runs-hot"] as const;
+export const BODY_TYPES = ["slim-tall", "average", "athletic", "stocky"] as const satisfies readonly BodyType[];
+export const SKIN_TONES = ["dark-yellow", "medium-yellow", "fair", "deep"] as const satisfies readonly SkinTone[];
+export const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as const satisfies readonly ColorDisposition[];
 
 const COLOR_PATTERN = /^[a-z][a-z-]{1,30}$/i;
 
@@ -51,6 +54,7 @@ export function validateGarmentUpdate(value: unknown): GarmentUpdate {
     }
   });
   copyOptionalString(record, update, "imageUrl");
+  copyOptionalString(record, update, "size");
   copyOptionalString(record, update, "notes");
 
   if ("category" in record) update.category = enumValue(record.category, GARMENT_CATEGORIES, "category");
@@ -58,11 +62,31 @@ export function validateGarmentUpdate(value: unknown): GarmentUpdate {
   if ("formality" in record) update.formality = enumValue(record.formality, FORMALITIES, "formality");
   if ("seasons" in record) update.seasons = enumArray(record.seasons, SEASONS, "seasons");
   if ("styles" in record) update.styles = stringArray(record.styles, "styles");
+  if ("materials" in record) update.materials = stringArray(record.materials, "materials");
+  if ("patterns" in record) update.patterns = stringArray(record.patterns, "patterns");
+  if ("tags" in record) update.tags = stringArray(record.tags, "tags");
   if ("owned" in record) update.owned = booleanValue(record.owned, "owned");
   if ("confirmed" in record) update.confirmed = booleanValue(record.confirmed, "confirmed");
   if ("excluded" in record) update.excluded = booleanValue(record.excluded, "excluded");
 
   return update;
+}
+
+export function validatePersonalProfile(value: unknown): PersonalProfile {
+  const record = assertRecord(value, "个人画像必须是 JSON 对象");
+  const profile: PersonalProfile = {};
+  if ("heightCm" in record) profile.heightCm = boundedNumber(record.heightCm, "heightCm", 120, 230);
+  if ("weightKg" in record) profile.weightKg = boundedNumber(record.weightKg, "weightKg", 30, 200);
+  if ("bodyType" in record) profile.bodyType = enumValue(record.bodyType, BODY_TYPES, "bodyType");
+  if ("skinTone" in record) profile.skinTone = enumValue(record.skinTone, SKIN_TONES, "skinTone");
+  if ("colorDisposition" in record) profile.colorDisposition = enumValue(record.colorDisposition, COLOR_DISPOSITIONS, "colorDisposition");
+  if ("temperatureSensitivity" in record) {
+    profile.temperatureSensitivity = enumValue(record.temperatureSensitivity, TEMPERATURE_SENSITIVITIES, "temperatureSensitivity");
+  }
+  if ("preferredColors" in record) profile.preferredColors = stringArray(record.preferredColors, "preferredColors");
+  if ("avoidedColors" in record) profile.avoidedColors = stringArray(record.avoidedColors, "avoidedColors");
+  if ("preferredStyles" in record) profile.preferredStyles = stringArray(record.preferredStyles, "preferredStyles");
+  return profile;
 }
 
 export function validateCaptureJobRequest(value: unknown): {
@@ -99,7 +123,7 @@ export function validateRecommendationRequest(value: unknown): {
   weather: WeatherSnapshot;
   occasion: Formality;
   recentlyWornGarmentIds: number[];
-  userProfile?: UserPreferenceProfile;
+  userProfile?: PersonalProfile;
 } {
   const record = assertRecord(value, "推荐请求必须是 JSON 对象");
   const weather = validateWeather(record.weather);
@@ -108,7 +132,7 @@ export function validateRecommendationRequest(value: unknown): {
     weather,
     occasion,
     recentlyWornGarmentIds: normalizeGarmentIds(record.recentlyWornGarmentIds),
-    userProfile: validateUserProfile(record.userProfile)
+    userProfile: validateRecommendationProfile(record.userProfile)
   };
 }
 
@@ -142,17 +166,9 @@ function validateWeather(value: unknown): WeatherSnapshot {
   };
 }
 
-function validateUserProfile(value: unknown): UserPreferenceProfile | undefined {
+function validateRecommendationProfile(value: unknown): PersonalProfile | undefined {
   if (value == null) return undefined;
-  const record = assertRecord(value, "userProfile 必须是 JSON 对象");
-  return {
-    temperatureSensitivity: "temperatureSensitivity" in record
-      ? enumValue(record.temperatureSensitivity, TEMPERATURE_SENSITIVITIES, "temperatureSensitivity")
-      : undefined,
-    preferredColors: "preferredColors" in record ? stringArray(record.preferredColors, "preferredColors") : undefined,
-    avoidedColors: "avoidedColors" in record ? stringArray(record.avoidedColors, "avoidedColors") : undefined,
-    preferredStyles: "preferredStyles" in record ? stringArray(record.preferredStyles, "preferredStyles") : undefined
-  };
+  return validatePersonalProfile(value);
 }
 
 function copyOptionalString<T extends Record<string, unknown>, K extends keyof GarmentUpdate>(
@@ -214,6 +230,14 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
     throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的整数`);
+  }
+  return parsed;
+}
+
+function boundedNumber(value: unknown, name: string, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的数字`);
   }
   return parsed;
 }

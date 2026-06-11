@@ -392,6 +392,130 @@ describe("API routes", () => {
     expect(JSON.parse(row.context)).toMatchObject({ outfitId: "outfit-1", occasion: "casual" });
   });
 
+  it("stores a local personal profile and returns it for recommendations", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const defaultProfileResponse = await fetch(`${baseUrl}/api/profile`);
+    expect(defaultProfileResponse.status).toBe(200);
+    expect(await defaultProfileResponse.json()).toMatchObject({
+      heightCm: 176,
+      weightKg: 57,
+      bodyType: "slim-tall",
+      skinTone: "dark-yellow"
+    });
+
+    const saveResponse = await fetch(`${baseUrl}/api/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        colorDisposition: "cool-clean",
+        temperatureSensitivity: "runs-cold",
+        preferredColors: ["white", "blue"],
+        avoidedColors: ["yellow", "brown"],
+        preferredStyles: ["smart-casual"]
+      })
+    });
+    expect(saveResponse.status).toBe(200);
+    expect(await saveResponse.json()).toMatchObject({
+      temperatureSensitivity: "runs-cold",
+      preferredColors: ["white", "blue"],
+      avoidedColors: ["yellow", "brown"]
+    });
+
+    const invalidResponse = await fetch(`${baseUrl}/api/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ heightCm: 60 })
+    });
+    expect(invalidResponse.status).toBe(400);
+    expect(await invalidResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("heightCm") }
+    });
+  });
+
+  it("updates garment detail fields and exposes local history insights and export data", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    await fetch(`${baseUrl}/api/import/taobao-batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const garments = (await (await fetch(`${baseUrl}/api/garments`)).json()) as Array<{ id: number; category: string }>;
+    const top = garments.find((garment) => garment.category === "top") ?? garments[0];
+
+    const updateResponse = await fetch(`${baseUrl}/api/garments/${top.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        size: "M",
+        materials: ["cotton"],
+        patterns: ["solid"],
+        tags: ["挺括", "层次"]
+      })
+    });
+    expect(updateResponse.status).toBe(200);
+    expect(await updateResponse.json()).toMatchObject({
+      size: "M",
+      materials: ["cotton"],
+      patterns: ["solid"],
+      tags: ["挺括", "层次"]
+    });
+
+    await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ garmentIds: [top.id], context: { outfitId: "outfit-1", occasion: "casual" } })
+    });
+    await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ occasion: "casual", weather: recommendationWeather })
+    });
+
+    const wearLogs = await (await fetch(`${baseUrl}/api/wear-logs`)).json();
+    expect(wearLogs).toEqual([expect.objectContaining({ garmentIds: [top.id], context: expect.objectContaining({ outfitId: "outfit-1" }) })]);
+
+    const recommendationRuns = await (await fetch(`${baseUrl}/api/recommendation-runs`)).json();
+    expect(recommendationRuns[0]).toMatchObject({ input: expect.any(Object), result: expect.any(Object) });
+
+    const insights = await (await fetch(`${baseUrl}/api/insights`)).json();
+    expect(insights).toMatchObject({
+      totalGarments: 4,
+      ownedGarments: 4,
+      categoryDistribution: expect.objectContaining({ top: expect.any(Number) }),
+      colorDistribution: expect.any(Object),
+      mostWorn: [expect.objectContaining({ id: top.id, wearCount: 1 })],
+      neverWorn: expect.any(Array)
+    });
+
+    const exported = await (await fetch(`${baseUrl}/api/export`)).json();
+    expect(exported).toMatchObject({
+      version: 1,
+      profile: expect.objectContaining({ bodyType: "slim-tall" }),
+      garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
+      wearLogs: expect.any(Array),
+      recommendationRuns: expect.any(Array),
+      sourceOrderItems: expect.any(Array)
+    });
+  });
+
   it("rejects invalid wear log payloads", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);

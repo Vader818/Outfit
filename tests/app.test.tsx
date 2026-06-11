@@ -2,8 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, ImportView } from "../src/App";
-import type { Garment, OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "../src/shared/types";
+import { App, HistoryInsightsView, ImportView, SettingsView } from "../src/App";
+import type { Garment, OutfitRecommendation, RecommendationResult, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -26,6 +26,20 @@ describe("App", () => {
     expect(markup).not.toContain(">smart-casual<");
     expect(markup).not.toContain(">formal<");
     expect(markup).not.toContain(">sport<");
+  });
+
+  it("gives navigation icon buttons accessible names for compact layouts", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: vi.fn()
+    });
+
+    const markup = renderToStaticMarkup(<App />);
+
+    expect(markup).toContain('aria-label="今日推荐"');
+    expect(markup).toContain('aria-label="衣服库');
+    expect(markup).toContain('aria-label="导入"');
+    expect(markup).toContain('aria-label="设置"');
   });
 
   it("renders a control for reading Selenium capture artifacts into the import JSON box", () => {
@@ -355,6 +369,113 @@ describe("App", () => {
     expect(recommendationMarkup).toContain("还没有推荐");
   });
 
+  it("renders personal profile controls in settings", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsView
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        profile={{
+          heightCm: 176,
+          weightKg: 57,
+          bodyType: "slim-tall",
+          skinTone: "dark-yellow",
+          colorDisposition: "cool-clean",
+          temperatureSensitivity: "neutral",
+          preferredColors: ["white", "blue"],
+          avoidedColors: ["yellow", "brown"],
+          preferredStyles: ["smart-casual"]
+        }}
+        onLatitude={vi.fn()}
+        onLongitude={vi.fn()}
+        onLocate={vi.fn()}
+        onSave={vi.fn()}
+        onProfile={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("个人画像");
+    expect(markup).toContain('value="176"');
+    expect(markup).toContain('value="57"');
+    expect(markup).toContain("瘦高");
+    expect(markup).toContain("较黑黄");
+    expect(markup).toContain("白色,蓝色");
+    expect(markup).toContain("黄色,棕色");
+  });
+
+  it("renders wardrobe detail fields for size materials patterns and tags", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+
+    const markup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [
+        makeGarment(303, "白色挺括衬衫", "top", {
+          size: "M",
+          materials: ["cotton"],
+          patterns: ["solid"],
+          tags: ["挺括", "层次"]
+        })
+      ],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
+
+    expect(markup).toContain("尺码");
+    expect(markup).toContain("材质");
+    expect(markup).toContain("图案");
+    expect(markup).toContain("标签");
+    expect(markup).toContain('value="M"');
+    expect(markup).toContain('value="cotton"');
+    expect(markup).toContain('value="solid"');
+    expect(markup).toContain('value="挺括,层次"');
+  });
+
+  it("renders history insights metrics and export control", () => {
+    const insights: WardrobeInsights = {
+      totalGarments: 4,
+      ownedGarments: 4,
+      confirmedGarments: 2,
+      pendingGarments: 2,
+      categoryDistribution: { top: 1, bottom: 1, shoes: 1, outerwear: 1 },
+      colorDistribution: { white: 1, blue: 1 },
+      mostWorn: [{ id: 101, name: "白衬衫", wearCount: 2 }],
+      neverWorn: [{ id: 202, name: "黑长裤", category: "bottom" }]
+    };
+
+    const markup = renderToStaticMarkup(
+      <HistoryInsightsView
+        insights={insights}
+        wearLogs={[{ id: 1, garmentIds: [101], context: { occasion: "casual" }, wornAt: "2026-06-12T00:00:00.000Z" }]}
+        recommendationRuns={[{ id: 2, input: {}, result: {}, createdAt: "2026-06-12T00:00:00.000Z" }]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onExport={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("历史洞察");
+    expect(markup).toContain("常穿单品");
+    expect(markup).toContain("近期未穿");
+    expect(markup).toContain("白衬衫");
+    expect(markup).toContain("导出备份");
+  });
+
   it("asks for explicit confirmation before deleting a garment", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -492,6 +613,14 @@ describe("App", () => {
     expect(cssRule(styles, ".outfit-grid")).toMatch(/align-items:\s*start;/);
     expect(cssRule(styles, ".outfit")).toMatch(/align-content:\s*start;/);
     expect(cssRule(styles, ".score")).toMatch(/align-self:\s*start;/);
+  });
+
+  it("uses resilient layout utilities for filters and long imported text", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ".filter-bar")).toMatch(/repeat\(auto-fit,\s*minmax\(min\(100%,\s*12rem\),\s*1fr\)\)/);
+    expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/overflow-wrap:\s*anywhere;/);
+    expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
   });
 });
 

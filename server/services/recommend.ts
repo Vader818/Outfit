@@ -1,11 +1,11 @@
-import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, RecommendationResult, RecommendationScoreBreakdown, Season, UserPreferenceProfile, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
 
 export interface RecommendInput {
   garments: Garment[];
   weather: WeatherSnapshot;
   occasion: string;
   recentlyWornGarmentIds?: number[];
-  userProfile?: UserPreferenceProfile;
+  userProfile?: PersonalProfile;
 }
 
 interface Candidate {
@@ -117,7 +117,9 @@ function scoreCandidate(items: Garment[], input: RecommendInput): Candidate {
     colorHarmony: colorHarmonyScore(items, reasons),
     recentWear: recentWearScore(items, input.recentlyWornGarmentIds ?? [], reasons),
     itemConfidence: itemConfidenceScore(items),
-    userPreference: userPreferenceScore(items, input.userProfile, input.weather, reasons)
+    userPreference: userPreferenceScore(items, input.userProfile, input.weather, reasons),
+    bodyProportion: bodyProportionScore(items, input.userProfile, reasons),
+    colorSuitability: colorSuitabilityScore(items, input.userProfile, reasons)
   };
   const score = 50 + Object.values(scoreBreakdown).reduce((total, value) => total + value, 0);
 
@@ -320,7 +322,7 @@ function itemConfidenceScore(items: Garment[]): number {
   return items.reduce((score, item) => score + (item.confirmed ? 2 : 0) + item.confidence * 2, 0);
 }
 
-function userPreferenceScore(items: Garment[], profile: UserPreferenceProfile | undefined, weather: WeatherSnapshot, reasons: string[]): number {
+function userPreferenceScore(items: Garment[], profile: PersonalProfile | undefined, weather: WeatherSnapshot, reasons: string[]): number {
   if (!profile) return 0;
   let score = 0;
   const preferredColors = new Set((profile.preferredColors ?? []).map((color) => color.toLowerCase()));
@@ -364,6 +366,50 @@ function userPreferenceScore(items: Garment[], profile: UserPreferenceProfile | 
   }
   if (matchedPreference) addReason(reasons, "颜色或风格更贴近你的偏好。");
   if (avoidedPenalty) addReason(reasons, "包含偏好中避开的颜色，已降低排序。");
+  return score;
+}
+
+function bodyProportionScore(items: Garment[], profile: PersonalProfile | undefined, reasons: string[]): number {
+  if (profile?.bodyType !== "slim-tall") return 0;
+  const text = items.map((item) => [
+    item.name,
+    ...(item.tags ?? []),
+    ...(item.patterns ?? []),
+    ...(item.materials ?? [])
+  ].join(" ")).join(" ");
+  let score = 0;
+  const hasLayer = items.some((item) => item.category === "outerwear" || item.category === "accessory");
+  const hasStructure = /挺括|结构|廓形|直筒|夹克|衬衫|大衣|风衣|层次|宽松|阔腿|oversize|oversized/i.test(text);
+  const coreColors = items.filter((item) => CORE_CATEGORIES.has(item.category)).map((item) => item.color);
+  const lowContrastColumn = coreColors.length >= 3 && new Set(coreColors).size === 1 && ["black", "gray", "brown"].includes(coreColors[0]);
+  if (hasLayer) score += 5;
+  if (hasStructure) score += 8;
+  if (lowContrastColumn) score -= 10;
+  if (score > 0) addReason(reasons, "瘦高体型更适合有层次或结构感的组合。");
+  if (lowContrastColumn) addReason(reasons, "全身低对比深色纵向感较强，已降低瘦高体型排序。");
+  return score;
+}
+
+function colorSuitabilityScore(items: Garment[], profile: PersonalProfile | undefined, reasons: string[]): number {
+  if (profile?.skinTone !== "dark-yellow") return 0;
+  const flattering = new Set(["white", "blue", "gray", "black"]);
+  const dullEarth = new Set(["yellow", "brown", "beige"]);
+  let flatteringCount = 0;
+  let dullCount = 0;
+  let score = 0;
+  for (const item of items) {
+    if (flattering.has(item.color)) {
+      flatteringCount += 1;
+      score += CORE_CATEGORIES.has(item.category) ? 5 : 2;
+    }
+    if (dullEarth.has(item.color)) {
+      dullCount += 1;
+      score -= CORE_CATEGORIES.has(item.category) ? 7 : 3;
+    }
+  }
+  if (profile.colorDisposition === "cool-clean") score += flatteringCount * 2;
+  if (flatteringCount >= 2) addReason(reasons, "较黑黄肤色更适合清爽高对比的中性色或蓝灰色。");
+  if (dullCount >= 2) addReason(reasons, "大面积土黄、棕色或灰黄感颜色会显暗沉，已降低排序。");
   return score;
 }
 
