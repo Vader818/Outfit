@@ -113,6 +113,53 @@ nav {
   gap: 8px;
 }
 
+.session-card {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: #e5eef7;
+}
+
+.session-user svg {
+  flex: 0 0 auto;
+  color: #99f6e4;
+}
+
+.session-user span,
+.session-user strong {
+  display: block;
+}
+
+.session-user span {
+  color: #b8c6d6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-user strong {
+  max-width: 170px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #ffffff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-logout {
+  width: 100%;
+}
+
 .nav-button {
   position: relative;
   display: flex;
@@ -157,6 +204,49 @@ nav {
 .workspace {
   min-width: 0;
   padding: 30px clamp(18px, 4vw, 42px) 42px;
+}
+
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.08), transparent 32rem),
+    linear-gradient(315deg, rgba(37, 99, 235, 0.08), transparent 34rem),
+    #eef3f8;
+}
+
+.auth-card {
+  display: grid;
+  gap: 14px;
+  width: min(100%, 420px);
+  padding: 24px;
+  border: 1px solid rgba(217, 226, 236, 0.9);
+  border-radius: 8px;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+}
+
+.auth-card.loading {
+  justify-items: center;
+  color: var(--app-primary);
+  text-align: center;
+}
+
+.auth-mark {
+  display: grid;
+  width: 50px;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 8px;
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 4px;
 }
 
 .view {
@@ -790,6 +880,10 @@ li + li {
   nav {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
+  }
+
+  .session-card {
+    display: none;
   }
 
   .nav-button {

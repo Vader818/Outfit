@@ -6,6 +6,9 @@ import {
   Database,
   Download,
   ExternalLink,
+  LockKeyhole,
+  LogIn,
+  LogOut,
   MapPin,
   Play,
   RefreshCw,
@@ -14,6 +17,7 @@ import {
   Shirt,
   Sparkles,
   Upload,
+  UserRound,
   Wand2,
   X
 } from "lucide-react";
@@ -21,6 +25,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   deleteGarment,
   exportLocalData,
+  getAuthStatus,
   getGarments,
   getInsights,
   getPersonalProfile,
@@ -33,6 +38,9 @@ import {
   previewTaobaoImport,
   readLatestTaobaoCapture,
   recordWearLog,
+  login,
+  logout,
+  register as registerAccount,
   savePersonalProfile,
   startCaptureJob,
   updateGarment,
@@ -40,9 +48,10 @@ import {
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, AuthUser, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
+type AuthInput = { username: string; password: string };
 type WearLogFeedback = { outfitId: string; message: string };
 type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
 type SelectOption = { value: string; label: string };
@@ -177,6 +186,79 @@ export function buildTaobaoOrderCaptureOptions() {
 }
 
 export function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    getAuthStatus()
+      .then((status) => {
+        if (!cancelled) setAuthStatus(status);
+      })
+      .catch((statusError) => {
+        if (cancelled) return;
+        setAuthStatus({ hasAccount: true, user: null });
+        setAuthError(statusError instanceof Error ? statusError.message : "认证状态读取失败");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function submitAuth(input: AuthInput) {
+    if (!authStatus) return;
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const nextStatus = authStatus.hasAccount ? await login(input) : await registerAccount(input);
+      setAuthStatus(nextStatus);
+    } catch (authSubmitError) {
+      setAuthError(authSubmitError instanceof Error ? authSubmitError.message : "认证失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      await logout();
+      setAuthStatus({ hasAccount: true, user: null });
+    } catch (logoutError) {
+      setAuthError(logoutError instanceof Error ? logoutError.message : "退出失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  if (!authStatus) {
+    return (
+      <div className="auth-shell" data-theme="corporate">
+        <div className="auth-card loading">
+          <Shirt size={30} />
+          <strong>正在进入 Outfit</strong>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authStatus.user) {
+    return (
+      <AuthView
+        hasAccount={authStatus.hasAccount}
+        busy={authBusy}
+        error={authError}
+        onSubmit={submitAuth}
+      />
+    );
+  }
+
+  return <MainApp user={authStatus.user} onLogout={signOut} />;
+}
+
+export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void } = {}) {
   const [tab, setTab] = useState<Tab>("recommend");
   const [garments, setGarments] = useState<Garment[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -476,6 +558,7 @@ export function App() {
           <NavButton active={tab === "import"} icon={<Upload size={18} />} label="导入" onClick={() => setTab("import")} />
           <NavButton active={tab === "settings"} icon={<Settings size={18} />} label="设置" onClick={() => setTab("settings")} />
         </nav>
+        {props.user && props.onLogout ? <SessionSummary user={props.user} onLogout={props.onLogout} /> : null}
       </aside>
 
       <main className="workspace">
@@ -559,6 +642,84 @@ export function App() {
           />
         )}
       </main>
+    </div>
+  );
+}
+
+export function AuthView(props: {
+  hasAccount: boolean;
+  busy: boolean;
+  error: string;
+  onSubmit: (input: AuthInput) => void | Promise<void>;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const title = props.hasAccount ? "登录 Outfit" : "创建本地账号";
+  const submitLabel = props.hasAccount ? "进入衣橱" : "创建并进入";
+
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void props.onSubmit({ username, password });
+  }
+
+  return (
+    <main className="auth-shell" data-theme="corporate">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-mark">
+          {props.hasAccount ? <LogIn size={28} /> : <LockKeyhole size={28} />}
+        </div>
+        <div>
+          <h1>{title}</h1>
+          <p>{props.hasAccount ? "输入本地账号进入衣橱。" : "首次使用 Outfit 时创建本机门禁账号。"}</p>
+        </div>
+        {props.error ? <div className="banner error">{props.error}</div> : null}
+        <label htmlFor="auth-username">用户名</label>
+        <input
+          id="auth-username"
+          className="input input-bordered"
+          value={username}
+          autoComplete="username"
+          minLength={3}
+          maxLength={32}
+          pattern="[A-Za-z0-9_]{3,32}"
+          required
+          onChange={(event) => setUsername(event.target.value)}
+        />
+        <label htmlFor="auth-password">密码</label>
+        <input
+          id="auth-password"
+          className="input input-bordered"
+          value={password}
+          type="password"
+          autoComplete={props.hasAccount ? "current-password" : "new-password"}
+          minLength={8}
+          maxLength={128}
+          required
+          onChange={(event) => setPassword(event.target.value)}
+        />
+        <button className="primary btn btn-primary auth-submit" disabled={props.busy} type="submit">
+          {props.hasAccount ? <LogIn size={18} /> : <LockKeyhole size={18} />}
+          {props.busy ? "处理中" : submitLabel}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+export function SessionSummary({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  return (
+    <div className="session-card">
+      <div className="session-user">
+        <UserRound size={18} />
+        <div>
+          <span>当前账号</span>
+          <strong>{user.username}</strong>
+        </div>
+      </div>
+      <button className="nav-button session-logout" type="button" onClick={onLogout}>
+        <LogOut size={18} />
+        <span>退出</span>
+      </button>
     </div>
   );
 }

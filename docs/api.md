@@ -22,9 +22,93 @@ http://127.0.0.1:8788
 
 不存在的采集任务会返回 HTTP 404，错误码为 `NOT_FOUND`。
 
+除 `GET /api/health` 和 `/api/auth/*` 外，其他 `/api/*` 接口都需要本地 session cookie。未登录时返回 HTTP 401，错误码为 `UNAUTHENTICATED`。
+
 ## GET /api/health
 
 健康检查。
+
+响应：
+
+```json
+{ "ok": true }
+```
+
+## GET /api/auth/status
+
+读取本地门禁状态。无需登录。
+
+响应：
+
+```json
+{
+  "hasAccount": true,
+  "user": {
+    "id": 1,
+    "username": "local_user"
+  }
+}
+```
+
+没有创建账号时返回 `{ "hasAccount": false, "user": null }`。已有账号但未登录时返回 `{ "hasAccount": true, "user": null }`。
+
+## POST /api/auth/register
+
+首次创建本地账号。仅允许在没有账号时调用；成功后自动写入 HTTP-only session cookie。
+
+请求体：
+
+```json
+{
+  "username": "local_user",
+  "password": "correct-password"
+}
+```
+
+字段规则：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `username` | string | 3-32 位 ASCII 字母、数字或下划线，大小写不敏感唯一 |
+| `password` | string | 8-128 个字符 |
+
+响应状态：HTTP 201
+
+```json
+{
+  "hasAccount": true,
+  "user": {
+    "id": 1,
+    "username": "local_user"
+  }
+}
+```
+
+已存在账号时返回 HTTP 409，错误码为 `ACCOUNT_EXISTS`。
+
+## POST /api/auth/login
+
+登录本地账号。成功后写入 HTTP-only session cookie。
+
+请求体同注册接口。
+
+响应：
+
+```json
+{
+  "hasAccount": true,
+  "user": {
+    "id": 1,
+    "username": "local_user"
+  }
+}
+```
+
+用户名或密码错误时返回 HTTP 401，错误码为 `INVALID_CREDENTIALS`。
+
+## POST /api/auth/logout
+
+退出当前本地 session。成功后清除 session cookie。
 
 响应：
 

@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from "express";
+import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, GarmentUpdate } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
 import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
@@ -6,7 +7,7 @@ import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
 export function createApiApp(db: AppDatabase): express.Express {
   const app = express();
@@ -14,6 +15,45 @@ export function createApiApp(db: AppDatabase): express.Express {
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true });
+  });
+
+  app.get("/api/auth/status", (request, response) => {
+    handle(response, () => getAuthStatus(db, readSessionCookie(request)));
+  });
+
+  app.post("/api/auth/register", (request, response) => {
+    try {
+      const user = createFirstUser(db, validateAuthCredentials(request.body));
+      setSessionCookie(response, createSession(db, user.id));
+      response.status(201).json({ hasAccount: true, user });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.post("/api/auth/login", (request, response) => {
+    try {
+      const user = authenticateUser(db, validateAuthCredentials(request.body));
+      setSessionCookie(response, createSession(db, user.id));
+      response.json({ hasAccount: true, user });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.post("/api/auth/logout", (request, response) => {
+    deleteSession(db, readSessionCookie(request));
+    clearSessionCookie(response);
+    response.json({ ok: true });
+  });
+
+  app.use("/api", (request, response, next) => {
+    const user = getUserForSession(db, readSessionCookie(request));
+    if (!user) {
+      sendError(response, new ApiError("UNAUTHENTICATED", "请先登录", 401));
+      return;
+    }
+    next();
   });
 
   app.post("/api/import/taobao-batch", (request, response) => {
@@ -184,4 +224,36 @@ function sendError(response: Response, error: unknown): void {
 
 function isTruthyQueryFlag(value: unknown): boolean {
   return value === "1" || value === "true";
+}
+
+function readSessionCookie(request: Request): string | undefined {
+  const header = request.headers.cookie;
+  if (!header) return undefined;
+  for (const pair of header.split(";")) {
+    const [rawName, ...rawValue] = pair.trim().split("=");
+    if (rawName === AUTH_COOKIE_NAME) {
+      return decodeURIComponent(rawValue.join("="));
+    }
+  }
+  return undefined;
+}
+
+function setSessionCookie(response: Response, token: string): void {
+  response.setHeader("Set-Cookie", [
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    `Max-Age=${SESSION_TTL_SECONDS}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ].join("; "));
+}
+
+function clearSessionCookie(response: Response): void {
+  response.setHeader("Set-Cookie", [
+    `${AUTH_COOKIE_NAME}=`,
+    "Max-Age=0",
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ].join("; "));
 }

@@ -1,4 +1,4 @@
-import type { CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -26,6 +26,32 @@ export interface ImportSummary {
     skippedNonApparel: number;
     createdGarments: number;
   };
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/status", {
+    method: "GET"
+  });
+}
+
+export async function register(input: { username: string; password: string }): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function login(input: { username: string; password: string }): Promise<AuthStatus> {
+  return request<AuthStatus>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function logout(): Promise<{ ok: true }> {
+  return request<{ ok: true }>("/api/auth/logout", {
+    method: "POST"
+  });
 }
 
 export async function previewTaobaoImport(payload: unknown): Promise<TaobaoImportPreview> {
@@ -177,6 +203,7 @@ export async function exportLocalData(): Promise<OutfitExport> {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       "content-type": "application/json",
       ...(init.headers || {})

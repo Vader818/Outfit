@@ -11,6 +11,7 @@ vi.mock("node:child_process", () => ({
 
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
 const spawnMock = vi.mocked(spawn);
+let nextTestUserId = 0;
 
 const payload = {
   source: "taobao-bookmarklet",
@@ -73,7 +74,7 @@ afterEach(async () => {
 });
 
 describe("API routes", () => {
-  it("starts Taobao Selenium captures without waiting for the browser run", async () => {
+  it("supports first-run registration, login, status, and logout", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
     const server = app.listen(0);
@@ -82,9 +83,123 @@ describe("API routes", () => {
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
 
+    const initialStatus = await fetch(`${baseUrl}/api/auth/status`);
+    expect(initialStatus.status).toBe(200);
+    expect(await initialStatus.json()).toEqual({ hasAccount: false, user: null });
+
+    const registerResponse = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ username: "local_user", password: "correct-password" })
+    });
+    const registerCookie = sessionCookie(registerResponse);
+    expect(registerResponse.status).toBe(201);
+    expect(registerCookie).toMatch(/^outfit_session=/);
+    expect(await registerResponse.json()).toEqual({
+      hasAccount: true,
+      user: { id: 1, username: "local_user" }
+    });
+
+    const duplicateResponse = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ username: "second_user", password: "correct-password" })
+    });
+    expect(duplicateResponse.status).toBe(409);
+    expect(await duplicateResponse.json()).toMatchObject({
+      error: { code: "ACCOUNT_EXISTS" }
+    });
+
+    const badLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ username: "local_user", password: "wrong-password" })
+    });
+    expect(badLoginResponse.status).toBe(401);
+    expect(await badLoginResponse.json()).toMatchObject({
+      error: { code: "INVALID_CREDENTIALS" }
+    });
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ username: "LOCAL_USER", password: "correct-password" })
+    });
+    const loginCookie = sessionCookie(loginResponse);
+    expect(loginResponse.status).toBe(200);
+    expect(loginCookie).toMatch(/^outfit_session=/);
+    expect(await loginResponse.json()).toEqual({
+      hasAccount: true,
+      user: { id: 1, username: "local_user" }
+    });
+
+    const authenticatedStatus = await fetch(`${baseUrl}/api/auth/status`, {
+      headers: { cookie: loginCookie }
+    });
+    expect(await authenticatedStatus.json()).toEqual({
+      hasAccount: true,
+      user: { id: 1, username: "local_user" }
+    });
+
+    const logoutResponse = await fetch(`${baseUrl}/api/auth/logout`, {
+      method: "POST",
+      headers: { cookie: loginCookie }
+    });
+    expect(logoutResponse.status).toBe(200);
+    expect(logoutResponse.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    const loggedOutStatus = await fetch(`${baseUrl}/api/auth/status`, {
+      headers: { cookie: loginCookie }
+    });
+    expect(await loggedOutStatus.json()).toEqual({ hasAccount: true, user: null });
+  });
+
+  it("requires a valid local session for existing data APIs", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const unauthenticatedResponse = await fetch(`${baseUrl}/api/garments`);
+    expect(unauthenticatedResponse.status).toBe(401);
+    expect(await unauthenticatedResponse.json()).toMatchObject({
+      error: { code: "UNAUTHENTICATED" }
+    });
+
+    const authenticatedResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
+    expect(authenticatedResponse.status).toBe(200);
+    expect(await authenticatedResponse.json()).toEqual([]);
+
+    await fetch(`${baseUrl}/api/auth/logout`, {
+      method: "POST",
+      headers: { cookie: authCookie }
+    });
+
+    const afterLogoutResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
+    expect(afterLogoutResponse.status).toBe(401);
+  });
+
+  it("starts Taobao Selenium captures without waiting for the browser run", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
     const ordersResponse = await fetch(`${baseUrl}/api/capture/taobao-orders`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ maxPages: 2, loginWait: 45 })
     });
     expect(ordersResponse.status).toBe(200);
@@ -102,7 +217,7 @@ describe("API routes", () => {
 
     const itemResponse = await fetch(`${baseUrl}/api/capture/taobao-item`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ url: "https://item.taobao.com/item.htm?id=808", loginWait: 30 })
     });
     expect(itemResponse.status).toBe(200);
@@ -127,10 +242,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const response = await fetch(`${baseUrl}/api/capture/taobao-item`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ url: "not a url" })
     });
 
@@ -152,10 +268,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ mode: "orders", maxPages: 2, loginWait: 45 })
     });
     const job = await startResponse.json() as { id: string; status: string; outputDir: string; pid: number };
@@ -187,7 +304,9 @@ describe("API routes", () => {
     };
     writeFileSync(path.join(job.outputDir, "capture.json"), JSON.stringify(payload), "utf8");
 
-    const artifactResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}/artifact?wardrobeOnly=1`);
+    const artifactResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}/artifact?wardrobeOnly=1`, {
+      headers: { cookie: authCookie }
+    });
     const artifact = await artifactResponse.json();
 
     expect(artifactResponse.status).toBe(200);
@@ -211,10 +330,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const response = await fetch(`${baseUrl}/api/import/taobao-preview`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         source: "taobao-selenium-order-list",
         items: [
@@ -263,7 +383,7 @@ describe("API routes", () => {
       ]
     });
 
-    expect(await (await fetch(`${baseUrl}/api/garments`)).json()).toEqual([]);
+    expect(await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json()).toEqual([]);
   });
 
   it("imports Taobao items, updates garments, and returns recommendations", async () => {
@@ -274,16 +394,19 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const importResponse = await fetch(`${baseUrl}/api/import/taobao-batch`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify(payload)
     });
     expect(importResponse.status).toBe(200);
     expect(await importResponse.json()).toMatchObject({ summary: { createdGarments: 4 } });
 
-    const garmentsResponse = await fetch(`${baseUrl}/api/garments`);
+    const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
     const garments = (await garmentsResponse.json()) as Array<{ id: number; confirmed: boolean; itemUrl?: string; detailUrl?: string }>;
     expect(garments).toHaveLength(4);
     expect(garments.some((garment) => garment.itemUrl === "https://item.taobao.com/item.htm?id=1")).toBe(true);
@@ -292,7 +415,7 @@ describe("API routes", () => {
     expect(linkedGarment).toBeTruthy();
     const updateResponse = await fetch(`${baseUrl}/api/garments/${linkedGarment?.id}`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ confirmed: true })
     });
     const updatedGarment = await updateResponse.json();
@@ -301,7 +424,7 @@ describe("API routes", () => {
 
     const invalidUpdate = await fetch(`${baseUrl}/api/garments/${linkedGarment?.id}`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ category: "hat" })
     });
     expect(invalidUpdate.status).toBe(400);
@@ -314,7 +437,7 @@ describe("API routes", () => {
 
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         occasion: "casual",
         weather: {
@@ -341,23 +464,29 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     await fetch(`${baseUrl}/api/import/taobao-batch`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify(payload)
     });
 
-    const garmentsResponse = await fetch(`${baseUrl}/api/garments`);
+    const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
     const garments = (await garmentsResponse.json()) as Array<{ id: number }>;
     const deletedId = garments[0].id;
 
     const deleteResponse = await fetch(`${baseUrl}/api/garments/${deletedId}`, {
-      method: "DELETE"
+      method: "DELETE",
+      headers: { cookie: authCookie }
     });
     expect(deleteResponse.status).toBe(204);
 
-    const afterDeleteResponse = await fetch(`${baseUrl}/api/garments`);
+    const afterDeleteResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
     const afterDelete = (await afterDeleteResponse.json()) as Array<{ id: number }>;
     expect(afterDelete).toHaveLength(3);
     expect(afterDelete.some((item) => item.id === deletedId)).toBe(false);
@@ -371,10 +500,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const response = await fetch(`${baseUrl}/api/wear-logs`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         garmentIds: [1, 2, 3],
         context: {
@@ -400,8 +530,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
-    const defaultProfileResponse = await fetch(`${baseUrl}/api/profile`);
+    const defaultProfileResponse = await fetch(`${baseUrl}/api/profile`, {
+      headers: { cookie: authCookie }
+    });
     expect(defaultProfileResponse.status).toBe(200);
     expect(await defaultProfileResponse.json()).toMatchObject({
       heightCm: 176,
@@ -412,7 +545,7 @@ describe("API routes", () => {
 
     const saveResponse = await fetch(`${baseUrl}/api/profile`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         heightCm: 176,
         weightKg: 57,
@@ -434,7 +567,7 @@ describe("API routes", () => {
 
     const invalidResponse = await fetch(`${baseUrl}/api/profile`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ heightCm: 60 })
     });
     expect(invalidResponse.status).toBe(400);
@@ -451,18 +584,19 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     await fetch(`${baseUrl}/api/import/taobao-batch`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify(payload)
     });
-    const garments = (await (await fetch(`${baseUrl}/api/garments`)).json()) as Array<{ id: number; category: string }>;
+    const garments = (await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json()) as Array<{ id: number; category: string }>;
     const top = garments.find((garment) => garment.category === "top") ?? garments[0];
 
     const updateResponse = await fetch(`${baseUrl}/api/garments/${top.id}`, {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         size: "M",
         materials: ["cotton"],
@@ -480,22 +614,22 @@ describe("API routes", () => {
 
     await fetch(`${baseUrl}/api/wear-logs`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ garmentIds: [top.id], context: { outfitId: "outfit-1", occasion: "casual" } })
     });
     await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ occasion: "casual", weather: recommendationWeather })
     });
 
-    const wearLogs = await (await fetch(`${baseUrl}/api/wear-logs`)).json();
+    const wearLogs = await (await fetch(`${baseUrl}/api/wear-logs`, { headers: { cookie: authCookie } })).json();
     expect(wearLogs).toEqual([expect.objectContaining({ garmentIds: [top.id], context: expect.objectContaining({ outfitId: "outfit-1" }) })]);
 
-    const recommendationRuns = await (await fetch(`${baseUrl}/api/recommendation-runs`)).json();
+    const recommendationRuns = await (await fetch(`${baseUrl}/api/recommendation-runs`, { headers: { cookie: authCookie } })).json();
     expect(recommendationRuns[0]).toMatchObject({ input: expect.any(Object), result: expect.any(Object) });
 
-    const insights = await (await fetch(`${baseUrl}/api/insights`)).json();
+    const insights = await (await fetch(`${baseUrl}/api/insights`, { headers: { cookie: authCookie } })).json();
     expect(insights).toMatchObject({
       totalGarments: 4,
       ownedGarments: 4,
@@ -505,7 +639,7 @@ describe("API routes", () => {
       neverWorn: expect.any(Array)
     });
 
-    const exported = await (await fetch(`${baseUrl}/api/export`)).json();
+    const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
       version: 1,
       profile: expect.objectContaining({ bodyType: "slim-tall" }),
@@ -524,10 +658,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const response = await fetch(`${baseUrl}/api/wear-logs`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ garmentIds: [] })
     });
 
@@ -559,16 +694,17 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     await fetch(`${baseUrl}/api/wear-logs`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({ garmentIds: [1], context: { outfitId: "outfit-previous" } })
     });
 
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         occasion: "casual",
         weather: recommendationWeather
@@ -589,10 +725,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
 
     const response = await fetch(`${baseUrl}/api/import/taobao-batch`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: jsonHeaders(authCookie),
       body: JSON.stringify({
         source: "taobao-bookmarklet",
         pageType: "item-detail",
@@ -611,7 +748,9 @@ describe("API routes", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ summary: { createdGarments: 1 } });
 
-    const garmentsResponse = await fetch(`${baseUrl}/api/garments`);
+    const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    });
     const garments = (await garmentsResponse.json()) as Array<{ name: string; detailUrl?: string; imageUrl?: string }>;
     expect(garments).toHaveLength(1);
     expect(garments[0]).toMatchObject({
@@ -646,9 +785,14 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
 
-    const first = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
-    const second = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    const first = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
+    const second = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
 
     expect(first.status).toBe(200);
     expect(await first.json()).toMatchObject({ summary: "小雨" });
@@ -667,8 +811,11 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
 
-    const response = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    const response = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -707,15 +854,47 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
 
-    const first = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    const first = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
     expect(first.status).toBe(200);
     db.prepare("UPDATE weather_cache SET fetched_at = ?").run("2020-01-01T00:00:00.000Z");
 
-    const second = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`);
+    const second = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
 
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({ summary: "小雨" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+function jsonHeaders(cookie?: string): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    ...(cookie ? { cookie } : {})
+  };
+}
+
+async function registerTestUser(baseUrl: string, fetcher: typeof fetch = fetch): Promise<string> {
+  nextTestUserId += 1;
+  const response = await fetcher(`${baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      username: `test_user_${nextTestUserId}`,
+      password: "test-password"
+    })
+  });
+  expect(response.status).toBe(201);
+  return sessionCookie(response);
+}
+
+function sessionCookie(response: Response): string {
+  const setCookie = response.headers.get("set-cookie");
+  expect(setCookie).toEqual(expect.any(String));
+  return setCookie!.split(";")[0];
+}

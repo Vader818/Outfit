@@ -33,6 +33,7 @@ export const SKIN_TONES = ["dark-yellow", "medium-yellow", "fair", "deep"] as co
 export const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as const satisfies readonly ColorDisposition[];
 
 const COLOR_PATTERN = /^[a-z][a-z-]{1,30}$/i;
+const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,32}$/;
 
 export function assertRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -87,6 +88,19 @@ export function validatePersonalProfile(value: unknown): PersonalProfile {
   if ("avoidedColors" in record) profile.avoidedColors = stringArray(record.avoidedColors, "avoidedColors");
   if ("preferredStyles" in record) profile.preferredStyles = stringArray(record.preferredStyles, "preferredStyles");
   return profile;
+}
+
+export function validateAuthCredentials(value: unknown): { username: string; password: string } {
+  const record = assertRecord(value, "账号请求必须是 JSON 对象");
+  const username = stringValue(record.username, "username").trim();
+  if (!USERNAME_PATTERN.test(username)) {
+    throw new ValidationError("用户名必须是 3-32 位字母、数字或下划线");
+  }
+  const password = stringValue(record.password, "password");
+  if (password.length < 8 || password.length > 128) {
+    throw new ValidationError("密码必须是 8-128 个字符");
+  }
+  return { username, password };
 }
 
 export function validateCaptureJobRequest(value: unknown): {

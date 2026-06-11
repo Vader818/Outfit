@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, HistoryInsightsView, ImportView, SettingsView } from "../src/App";
+import { AuthView, HistoryInsightsView, ImportView, MainApp, SessionSummary, SettingsView } from "../src/App";
 import type { Garment, OutfitRecommendation, RecommendationResult, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
@@ -16,7 +16,7 @@ describe("App", () => {
       setItem: vi.fn()
     });
 
-    const markup = renderToStaticMarkup(<App />);
+    const markup = renderToStaticMarkup(<MainApp />);
 
     expect(markup).toContain(">休闲<");
     expect(markup).toContain(">商务休闲<");
@@ -34,12 +34,55 @@ describe("App", () => {
       setItem: vi.fn()
     });
 
-    const markup = renderToStaticMarkup(<App />);
+    const markup = renderToStaticMarkup(<MainApp />);
 
     expect(markup).toContain('aria-label="今日推荐"');
     expect(markup).toContain('aria-label="衣服库');
     expect(markup).toContain('aria-label="导入"');
     expect(markup).toContain('aria-label="设置"');
+  });
+
+  it("renders first-run registration with username and password fields", () => {
+    const markup = renderToStaticMarkup(
+      <AuthView
+        hasAccount={false}
+        busy={false}
+        error=""
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("创建本地账号");
+    expect(markup).toContain("用户名");
+    expect(markup).toContain("密码");
+    expect(markup).toContain("创建并进入");
+    expect(markup).not.toContain("邮箱");
+  });
+
+  it("renders login mode and auth error feedback", () => {
+    const markup = renderToStaticMarkup(
+      <AuthView
+        hasAccount={true}
+        busy={false}
+        error="用户名或密码错误"
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("登录 Outfit");
+    expect(markup).toContain("进入衣橱");
+    expect(markup).toContain("用户名或密码错误");
+  });
+
+  it("wires the sidebar logout control", () => {
+    const onLogout = vi.fn();
+    const tree = SessionSummary({ user: { id: 1, username: "local_user" }, onLogout });
+
+    const logoutButtons = findButtonsByText(tree, "退出");
+    expect(logoutButtons).toHaveLength(1);
+
+    logoutButtons[0].props.onClick();
+    expect(onLogout).toHaveBeenCalled();
   });
 
   it("renders a control for reading Selenium capture artifacts into the import JSON box", () => {

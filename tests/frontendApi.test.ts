@@ -1,9 +1,46 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exportLocalData, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getWearLogs, previewTaobaoImport, readLatestTaobaoCapture, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
+import { exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("uses local auth endpoints with same-origin credentials", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hasAccount: false, user: null }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hasAccount: true, user: { id: 1, username: "local_user" } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hasAccount: true, user: { id: 1, username: "local_user" } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAuthStatus()).resolves.toEqual({ hasAccount: false, user: null });
+    await expect(register({ username: "local_user", password: "correct-password" })).resolves.toMatchObject({
+      user: { username: "local_user" }
+    });
+    await expect(login({ username: "local_user", password: "correct-password" })).resolves.toMatchObject({
+      user: { username: "local_user" }
+    });
+    await expect(logout()).resolves.toEqual({ ok: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/status", expect.objectContaining({
+      method: "GET",
+      credentials: "same-origin"
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/auth/register", expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ username: "local_user", password: "correct-password" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/auth/login", expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ username: "local_user", password: "correct-password" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/auth/logout", expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin"
+    }));
   });
 
   it("posts Taobao order Selenium capture options", async () => {

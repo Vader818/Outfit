@@ -6,6 +6,16 @@ export type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
 export type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
 export type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
 
+export interface AuthUser {
+  id: number;
+  username: string;
+}
+
+export interface AuthStatus {
+  hasAccount: boolean;
+  user: AuthUser | null;
+}
+
 export interface Garment {
   id: number;
   sourceOrderItemId?: number;

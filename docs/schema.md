@@ -263,6 +263,38 @@ interface TaobaoImportPreview {
 
 ## SQLite 表
 
+### users
+
+保存本地门禁账号。当前产品仍是个人本地应用，只允许首次注册一个账号，不按用户隔离衣橱数据。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | 本地账号 ID |
+| `username` | TEXT | NOT NULL | 展示用用户名 |
+| `username_normalized` | TEXT | NOT NULL UNIQUE | 小写用户名，用于大小写不敏感登录 |
+| `password_hash` | TEXT | NOT NULL | `crypto.scrypt` 派生的密码哈希 |
+| `password_salt` | TEXT | NOT NULL | 随机 salt |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+| `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 更新时间 |
+
+### sessions
+
+保存本地登录会话。浏览器 cookie 中保存原始 session token，SQLite 中只保存 token 的 SHA-256 hash。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `token_hash` | TEXT | PRIMARY KEY | session token 的 hash |
+| `user_id` | INTEGER | NOT NULL, FK | 关联 `users.id` |
+| `expires_at` | TEXT | NOT NULL | 过期时间，默认创建后 7 天 |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+
+索引：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+```
+
 ### source_order_items
 
 保存淘宝订单页和商品详情页的原始来源记录。
