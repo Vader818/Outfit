@@ -43,8 +43,15 @@ export interface NormalizedTaobaoBatch {
   };
 }
 
+export interface GarmentDisplayInfo {
+  brand: string;
+  name: string;
+  rawName: string;
+}
+
 const REFUND_PATTERN = /退款成功|退货退款|交易关闭|已退款|售后成功|退款退货成功|订单关闭/i;
 const GENERIC_DETAIL_TITLE_PATTERN = /^(宝贝描述|商品详情|图文详情|参数|参数信息|尺码|尺码信息|详情|描述)$/i;
+const ORDER_STATUS_TEXT = "(?:Pending receipt|Pending review|Completed|交易成功|交易关闭|买家已付款|卖家已发货|待付款|待发货|待收货|待评价|已完成)";
 const PRODUCT_TITLE_PATTERNS = [
   /([A-Za-z][A-Za-z0-9._ -]{0,40}\/[^¥￥]{8,160}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi,
   /([\u4e00-\u9fffA-Za-z0-9/·._ -]{12,160}?(?:T恤|t恤|tee|上衣|短袖|长袖|衬衫|外套|裤|鞋|裙|连衣裙|卫衣|毛衣|针织|背心|吊带|靴|包|帽|围巾)[\u4e00-\u9fffA-Za-z0-9/·._ -]{0,60}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi
@@ -100,9 +107,12 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
       continue;
     }
 
+    const displayInfo = buildGarmentDisplayInfo(sourceItem);
     garmentDrafts.push({
       sourceOrderItemId: undefined,
-      name: displayTitle(sourceItem),
+      brand: displayInfo.brand,
+      name: displayInfo.name,
+      rawName: displayInfo.rawName,
       category: classification.category,
       color: classification.color,
       warmth: classification.warmth,
@@ -264,8 +274,98 @@ function cleanProductTitle(value: string): string {
     .slice(0, 180);
 }
 
-function preferredImage(item: SourceOrderItemDraft): string {
-  return item.detailImages[0] || item.imageUrl;
+export function buildGarmentDisplayInfo(item: SourceOrderItemDraft): GarmentDisplayInfo {
+  const rawName = displayTitle(item);
+  const brand = extractBrand(item.detailProps, rawName);
+  return {
+    brand,
+    name: cleanGarmentName(rawName, brand),
+    rawName
+  };
+}
+
+export function preferredImage(item: SourceOrderItemDraft): string {
+  const candidates = [...item.detailImages, item.imageUrl].map(cleanText).filter(Boolean);
+  return candidates.find(isTrustedProductImage) || "";
+}
+
+export function isTrustedProductImage(value: string): boolean {
+  const url = cleanText(value);
+  if (!url) return false;
+  const lower = decodeURIComponent(url).toLowerCase();
+  if (!/^https?:\/\//i.test(url) && !/^\/\//.test(url)) return false;
+  if (/\.(?:svg|gif)(?:[?#].*)?$/i.test(lower)) return false;
+  if (/logo|sprite|icon|avatar|placeholder|transparent|loading|wangwang|shop[_-]?card|store[_-]?card/.test(lower)) return false;
+
+  const sizeMatch = lower.match(/(?:^|[^\d])(\d{1,3})[x_-](\d{1,3})(?:[^\d]|$)/);
+  if (sizeMatch) {
+    const width = Number(sizeMatch[1]);
+    const height = Number(sizeMatch[2]);
+    if (width < 120 || height < 120) return false;
+  }
+
+  return true;
+}
+
+function extractBrand(props: TaobaoDetailProp[], title: string): string {
+  const propBrand = props.find((prop) => /^(品牌|brand)$/i.test(cleanText(prop.name)))?.value || "";
+  const cleanedPropBrand = cleanBrand(propBrand);
+  if (cleanedPropBrand) return cleanedPropBrand;
+
+  const parsedOrderTitle = parseOrderTitle(title);
+  const productTitle = parsedOrderTitle.productTitle || cleanText(title);
+  const shopBrand = cleanBrand(parsedOrderTitle.shopName);
+  if (shopBrand && productTitle.toLowerCase().startsWith(shopBrand.toLowerCase())) return shopBrand;
+
+  const slashBrand = productTitle.match(/^([A-Za-z0-9][A-Za-z0-9°._· -]{1,30})\s*[\/／]\s*\S+/)?.[1] || "";
+  if (slashBrand) return cleanBrand(slashBrand);
+
+  const productToken = productTitle.match(/^([A-Za-z][A-Za-z0-9°._-]{1,30})(?=\s|[\/／])/i)?.[1] || "";
+  if (productToken) return cleanBrand(productToken);
+
+  return shopBrand;
+}
+
+function cleanBrand(value: string): string {
+  const brand = cleanText(value)
+    .replace(/^品牌[:：]\s*/i, "")
+    .replace(/(?:官方旗舰店|旗舰店|官方店|专卖店|店铺)$/i, "")
+    .replace(/[®™]/g, "")
+    .trim();
+  if (!brand || /^(无|其他|其它|other|none|不详)$/i.test(brand)) return "";
+  return brand.slice(0, 40);
+}
+
+function cleanGarmentName(rawName: string, brand: string): string {
+  let name = parseOrderTitle(rawName).productTitle || cleanText(rawName);
+  if (brand) {
+    const escapedBrand = escapeRegExp(brand);
+    name = name
+      .replace(new RegExp(`^${escapedBrand}\\s*[\\/／｜|:-]\\s*`, "i"), "")
+      .replace(new RegExp(`^${escapedBrand}\\s+`, "i"), "")
+      .replace(new RegExp(`^${escapedBrand}(?=[\\u4e00-\\u9fff])`, "i"), "");
+  }
+  name = name
+    .replace(/\s*\[交易快照\].*$/i, "")
+    .replace(/\s*(?:大促价保|假一赔四|极速退款|7天无理由|退货|退换|加入购物车|申请售后|再买一单).*$/i, "")
+    .replace(/\b(?:官方旗舰店|旗舰店|淘宝|天猫|同款|包邮|券后|优惠前|官方立减)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (name || cleanText(rawName)).slice(0, 120);
+}
+
+function parseOrderTitle(value: string): { shopName: string; productTitle: string } {
+  const title = cleanText(value);
+  const orderMatch = title.match(new RegExp(`^\\d{4}-\\d{2}-\\d{2}\\s+(.+?)\\s+订单详情\\s+${ORDER_STATUS_TEXT}\\s+(.+)$`, "i"));
+  if (!orderMatch) return { shopName: "", productTitle: title };
+  return {
+    shopName: cleanText(orderMatch[1]),
+    productTitle: cleanText(orderMatch[2])
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeDetailProps(value: unknown): TaobaoDetailProp[] {

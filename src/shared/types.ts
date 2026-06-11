@@ -6,7 +6,9 @@ export type Formality = "casual" | "smart-casual" | "formal" | "sport";
 export interface Garment {
   id: number;
   sourceOrderItemId?: number;
+  brand: string;
   name: string;
+  rawName: string;
   category: GarmentCategory;
   color: string;
   warmth: GarmentWarmth;

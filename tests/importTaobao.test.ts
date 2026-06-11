@@ -146,7 +146,9 @@ describe("normalizeTaobaoBatch", () => {
     expect(result.summary.createdGarments).toBe(1);
     expect(result.summary.skippedNonApparel).toBe(0);
     expect(result.garmentDrafts[0]).toMatchObject({
-      name: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      brand: "UTIMUS",
+      name: "宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      rawName: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
       category: "top",
       warmth: "light",
       imageUrl: "https://img.alicdn.com/tee-main.jpg"
@@ -270,8 +272,108 @@ describe("normalizeTaobaoBatch", () => {
 
     expect(result.summary.createdGarments).toBe(1);
     expect(result.garmentDrafts[0]).toMatchObject({
-      name: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      brand: "UTIMUS",
+      name: "宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      rawName: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
       category: "top"
+    });
+  });
+
+  it("extracts brand, stores a short product name, and skips non-product thumbnail assets", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=505",
+      items: [
+        {
+          itemId: "505",
+          detailUrl: "https://item.taobao.com/item.htm?id=505",
+          detailTitle: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+          detailProps: [
+            { name: "品牌", value: "UTIMUS" },
+            { name: "颜色分类", value: "深灰色" },
+            { name: "适用季节", value: "夏季" }
+          ],
+          detailImages: [
+            "https://gw.alicdn.com/tfs/TB1platform_80x36.png",
+            "https://img.alicdn.com/imgextra/i2/123456/O1CN01real-product.jpg"
+          ],
+          detailDescription: "夏季透气短袖。"
+        }
+      ]
+    });
+
+    expect(result.garmentDrafts[0]).toMatchObject({
+      brand: "UTIMUS",
+      rawName: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      name: "宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      imageUrl: "https://img.alicdn.com/imgextra/i2/123456/O1CN01real-product.jpg"
+    });
+  });
+
+  it("cleans noisy order-list titles into a brand and readable product name", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      pageUrl: "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+      items: [
+        {
+          itemId: "707",
+          orderId: "9000000000000000007",
+          title: "2025-10-10 UTIMUS 订单详情 交易成功 UTIMUS拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G [交易快照] 深灰色;M 大促价保 7天无理由退货 加入购物车申请售后",
+          sku: "颜色分类: 深灰色; 尺码: M",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=707"
+        }
+      ]
+    });
+
+    expect(result.garmentDrafts[0]).toMatchObject({
+      brand: "UTIMUS",
+      rawName: "2025-10-10 UTIMUS 订单详情 交易成功 UTIMUS拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G [交易快照] 深灰色;M 大促价保 7天无理由退货 加入购物车申请售后",
+      name: "拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G"
+    });
+  });
+
+  it("keeps multi-word shop brands when the product title starts with the same brand", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "808",
+          orderId: "9000000000000000008",
+          title: "2026-03-23 Gnomes lab 订单详情 交易成功 Gnomes lab 25AW碳素磨毛亲肤舒适纯棉活页色织格纹通勤衬衫 [交易快照] 黑色;S 大促价保 极速退款 7天无理由退货 加入购物车申请售后",
+          sku: "颜色分类: 黑色; 尺码: S",
+          status: "交易成功"
+        }
+      ]
+    });
+
+    expect(result.garmentDrafts[0]).toMatchObject({
+      brand: "Gnomes lab",
+      name: "25AW碳素磨毛亲肤舒适纯棉活页色织格纹通勤衬衫"
+    });
+  });
+
+  it("cleans noisy order-list titles with non-success order statuses", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "909",
+          orderId: "9000000000000000009",
+          title: "2026-04-12 BOSIE 订单详情 卖家已发货 BOSIE/小方领蓝色短袖衬衫 夏季通勤上衣 [交易快照] 蓝色;M 7天无理由退货 加入购物车申请售后",
+          sku: "颜色分类: 蓝色; 尺码: M",
+          status: "卖家已发货"
+        }
+      ]
+    });
+
+    expect(result.garmentDrafts[0]).toMatchObject({
+      brand: "BOSIE",
+      name: "小方领蓝色短袖衬衫 夏季通勤上衣"
     });
   });
 });

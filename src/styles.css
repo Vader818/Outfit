@@ -363,10 +363,57 @@ select:focus {
   min-width: 0;
 }
 
+.garment-title-line {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.brand-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 120px;
+  min-height: 34px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #ecfeff;
+  color: #155e75;
+  font-size: 12px;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(96px, 1fr));
   gap: 8px;
+}
+
+.season-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.season-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  border-radius: 8px;
+  padding: 8px 6px;
+  background: #e2e8f0;
+  color: #172033;
+  font-weight: 650;
+}
+
+.season-chip.active {
+  background: #ccfbf1;
+  color: #115e59;
 }
 
 .row-actions {
@@ -390,7 +437,7 @@ select:focus {
 
 .outfit-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px;
 }
 
@@ -405,10 +452,8 @@ select:focus {
 }
 
 .score {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  min-width: 42px;
+  justify-self: start;
+  width: max-content;
   padding: 4px 8px;
   border-radius: 8px;
   background: #1f2937;
@@ -420,25 +465,34 @@ select:focus {
 .item-stack {
   display: grid;
   gap: 8px;
-  padding-right: 52px;
 }
 
 .mini-item {
   display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
   gap: 2px;
   padding: 9px 10px;
   border-radius: 8px;
   background: #f8fafc;
 }
 
+.mini-item .thumb {
+  width: 44px;
+  border-radius: 8px;
+}
+
 .mini-item span {
+  display: block;
   color: #64748b;
   font-size: 12px;
 }
 
 .mini-item strong {
+  display: block;
   color: #172033;
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 ul {
@@ -449,6 +503,17 @@ ul {
 
 .alt {
   color: #9a3412;
+}
+
+.outfit-more {
+  display: grid;
+  gap: 8px;
+}
+
+.outfit-more summary {
+  cursor: pointer;
+  color: #0f766e;
+  font-weight: 750;
 }
 
 .outfit-actions {
@@ -546,6 +611,14 @@ ul {
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .garment-title-line {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-tag {
+    max-width: 100%;
   }
 
   .primary,

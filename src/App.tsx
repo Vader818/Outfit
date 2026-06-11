@@ -35,6 +35,8 @@ import type { Garment, OutfitRecommendation, RecommendationResult, WeatherSnapsh
 
 type Tab = "import" | "wardrobe" | "recommend" | "settings";
 type WearLogFeedback = { outfitId: string; message: string };
+type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
+type SelectOption = { value: string; label: string };
 
 const CATEGORY_LABELS: Record<Garment["category"], string> = {
   top: "上装",
@@ -52,6 +54,28 @@ const WARMTH_LABELS: Record<Garment["warmth"], string> = {
   heavy: "厚重"
 };
 
+const SEASON_LABELS: Record<Garment["seasons"][number], string> = {
+  spring: "春",
+  summer: "夏",
+  autumn: "秋",
+  winter: "冬"
+};
+
+const COLOR_LABELS: Record<string, string> = {
+  black: "黑色",
+  white: "白色",
+  gray: "灰色",
+  blue: "蓝色",
+  brown: "棕色",
+  beige: "米色",
+  red: "红色",
+  pink: "粉色",
+  green: "绿色",
+  yellow: "黄色",
+  purple: "紫色",
+  unknown: "未知"
+};
+
 const OCCASIONS = ["casual", "smart-casual", "formal", "sport"] as const;
 
 const OCCASION_LABELS: Record<(typeof OCCASIONS)[number], string> = {
@@ -61,6 +85,10 @@ const OCCASION_LABELS: Record<(typeof OCCASIONS)[number], string> = {
   sport: "运动"
 };
 const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
+const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
+const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
+const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
+const SEASON_OPTIONS = toOptions(SEASON_LABELS);
 
 export function App() {
   const [tab, setTab] = useState<Tab>("recommend");
@@ -433,7 +461,7 @@ export function ImportView(props: {
   );
 }
 
-function WardrobeView(props: {
+export function WardrobeView(props: {
   garments: Garment[];
   selectedIds: number[];
   busy: boolean;
@@ -463,7 +491,7 @@ function WardrobeView(props: {
       </header>
       <div className="wardrobe-list">
         {props.garments.map((item) => (
-          <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id}>
+          <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
             <input
               type="checkbox"
               checked={props.selectedIds.includes(item.id)}
@@ -471,14 +499,21 @@ function WardrobeView(props: {
                 props.onSelect(event.target.checked ? [...props.selectedIds, item.id] : props.selectedIds.filter((id) => id !== item.id))
               }
             />
-            <div className="thumb">{item.imageUrl ? <img src={item.imageUrl} alt="" /> : <Shirt size={24} />}</div>
+            <GarmentThumbnail item={item} />
             <div className="garment-main">
-              <input value={item.name} onChange={(event) => props.onUpdate(item.id, { name: event.target.value })} />
+              <div className="garment-title-line">
+                {garmentMeta(item).brand ? <span className="brand-tag">{garmentMeta(item).brand}</span> : null}
+                <input
+                  value={item.name}
+                  title={garmentMeta(item).rawName || item.name}
+                  onChange={(event) => props.onUpdate(item.id, { name: event.target.value })}
+                />
+              </div>
               <div className="field-grid">
-                <Select value={item.category} values={Object.keys(CATEGORY_LABELS)} onChange={(value) => props.onUpdate(item.id, { category: value as Garment["category"] })} />
-                <input value={item.color} onChange={(event) => props.onUpdate(item.id, { color: event.target.value })} />
-                <Select value={item.warmth} values={Object.keys(WARMTH_LABELS)} onChange={(value) => props.onUpdate(item.id, { warmth: value as Garment["warmth"] })} />
-                <input value={item.seasons.join(",")} onChange={(event) => props.onUpdate(item.id, { seasons: splitList(event.target.value) as Garment["seasons"] })} />
+                <Select value={item.category} options={CATEGORY_OPTIONS} onChange={(value) => props.onUpdate(item.id, { category: value as Garment["category"] })} />
+                <Select value={item.color} options={withCurrentOption(COLOR_OPTIONS, item.color)} onChange={(value) => props.onUpdate(item.id, { color: value })} />
+                <Select value={item.warmth} options={WARMTH_OPTIONS} onChange={(value) => props.onUpdate(item.id, { warmth: value as Garment["warmth"] })} />
+                <SeasonPicker seasons={item.seasons} onChange={(seasons) => props.onUpdate(item.id, { seasons })} />
               </div>
             </div>
             <div className="row-actions">
@@ -556,21 +591,38 @@ export function RecommendationView(props: {
       <div className="outfit-grid">
         {props.recommendations?.outfits.map((outfit) => (
           <article className="outfit" key={outfit.id}>
-            <div className="score">{outfit.score}</div>
+            <div className="score">匹配度 {outfit.score}</div>
             <div className="item-stack">
               {outfit.items.map((item) => (
                 <div className="mini-item" key={item.id}>
-                  <span>{CATEGORY_LABELS[item.category]}</span>
-                  <strong>{item.name}</strong>
+                  <GarmentThumbnail item={item} />
+                  <div>
+                    <span>{CATEGORY_LABELS[item.category]}</span>
+                    <strong>{displayGarmentName(item)}</strong>
+                  </div>
                 </div>
               ))}
             </div>
             <ul>
-              {outfit.reasons.map((reason) => (
+              {outfit.reasons.slice(0, 2).map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
-            {outfit.alternatives.length ? <p className="alt">可替换：{outfit.alternatives.map((item) => item.name).join(" / ")}</p> : null}
+            {outfit.reasons.length > 2 || outfit.alternatives.length ? (
+              <details className="outfit-more">
+                <summary>更多理由和替代单品</summary>
+                {outfit.reasons.length > 2 ? (
+                  <ul>
+                    {outfit.reasons.slice(2).map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {outfit.alternatives.length ? (
+                  <p className="alt">可替换：{outfit.alternatives.map((item) => displayGarmentName(item)).join(" / ")}</p>
+                ) : null}
+              </details>
+            ) : null}
             <div className="outfit-actions">
               <button className="secondary" disabled={props.recordingOutfitId === outfit.id} onClick={() => props.onRecordWearLog(outfit)}>
                 <Check size={16} />
@@ -622,12 +674,50 @@ function SettingsView(props: {
   );
 }
 
-function Select({ value, values, onChange }: { value: string; values: string[]; onChange: (value: string) => void }) {
+function GarmentThumbnail({ item }: { item: Garment }) {
+  const [failed, setFailed] = useState(false);
+  const meta = garmentMeta(item);
+  const alt = [meta.brand, item.name].filter(Boolean).join(" ");
+
+  useEffect(() => {
+    setFailed(false);
+  }, [item.imageUrl]);
+
+  return (
+    <div className="thumb">
+      {item.imageUrl && !failed ? <img src={item.imageUrl} alt={alt || item.name} loading="lazy" onError={() => setFailed(true)} /> : <Shirt size={24} />}
+    </div>
+  );
+}
+
+function SeasonPicker({ seasons, onChange }: { seasons: Garment["seasons"]; onChange: (seasons: Garment["seasons"]) => void }) {
+  function toggle(value: Garment["seasons"][number]) {
+    onChange(seasons.includes(value) ? seasons.filter((season) => season !== value) : [...seasons, value]);
+  }
+
+  return (
+    <div className="season-picker" aria-label="季节">
+      {SEASON_OPTIONS.map((option) => (
+        <button
+          className={seasons.includes(option.value as Garment["seasons"][number]) ? "season-chip active" : "season-chip"}
+          key={option.value}
+          aria-pressed={seasons.includes(option.value as Garment["seasons"][number])}
+          type="button"
+          onClick={() => toggle(option.value as Garment["seasons"][number])}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Select({ value, options, onChange }: { value: string; options: SelectOption[]; onChange: (value: string) => void }) {
   return (
     <select value={value} onChange={(event) => onChange(event.target.value)}>
-      {values.map((option) => (
-        <option key={option} value={option}>
-          {option}
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
         </option>
       ))}
     </select>
@@ -643,8 +733,24 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function splitList(value: string): string[] {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+function toOptions<T extends string>(labels: Record<T, string>): SelectOption[] {
+  return Object.entries(labels).map(([value, label]) => ({ value, label: label as string }));
+}
+
+function withCurrentOption(options: SelectOption[], value: string): SelectOption[] {
+  if (options.some((option) => option.value === value)) {
+    return options;
+  }
+  return [{ value, label: COLOR_LABELS[value] || value || COLOR_LABELS.unknown }, ...options];
+}
+
+function garmentMeta(item: Garment): GarmentWithMeta {
+  return item as GarmentWithMeta;
+}
+
+function displayGarmentName(item: Garment): string {
+  const meta = garmentMeta(item);
+  return [meta.brand, item.name].filter(Boolean).join(" ");
 }
 
 export function buildRecommendationWearLogInput(outfit: OutfitRecommendation, occasion: string, weather: WeatherSnapshot | null) {

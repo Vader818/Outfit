@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { Garment, TaobaoDetailProp, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
-import { normalizeTaobaoBatch, type SourceOrderItemDraft } from "./services/importTaobao";
+import { buildGarmentDisplayInfo, isTrustedProductImage, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -23,7 +23,9 @@ export interface DbImportResult {
 }
 
 export interface GarmentUpdate {
+  brand?: string;
   name?: string;
+  rawName?: string;
   category?: string;
   color?: string;
   warmth?: string;
@@ -103,7 +105,9 @@ export function migrate(db: AppDatabase): void {
     CREATE TABLE IF NOT EXISTS garments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source_order_item_id INTEGER UNIQUE,
+      brand TEXT,
       name TEXT NOT NULL,
+      raw_name TEXT,
       category TEXT NOT NULL,
       color TEXT NOT NULL,
       warmth TEXT NOT NULL,
@@ -145,13 +149,28 @@ export function migrate(db: AppDatabase): void {
   `);
   ensureColumn(db, "source_order_items", "page_type", "TEXT");
   ensureColumn(db, "source_order_items", "item_id", "TEXT");
+  ensureColumn(db, "source_order_items", "order_id", "TEXT");
+  ensureColumn(db, "source_order_items", "order_time", "TEXT");
+  ensureColumn(db, "source_order_items", "sku", "TEXT");
+  ensureColumn(db, "source_order_items", "quantity", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "source_order_items", "payment", "REAL");
+  ensureColumn(db, "source_order_items", "status", "TEXT");
+  ensureColumn(db, "source_order_items", "refund_text", "TEXT");
+  ensureColumn(db, "source_order_items", "item_url", "TEXT");
+  ensureColumn(db, "source_order_items", "image_url", "TEXT");
+  ensureColumn(db, "source_order_items", "raw_text", "TEXT");
   ensureColumn(db, "source_order_items", "detail_url", "TEXT");
   ensureColumn(db, "source_order_items", "detail_title", "TEXT");
   ensureColumn(db, "source_order_items", "detail_props", "TEXT");
   ensureColumn(db, "source_order_items", "detail_description", "TEXT");
   ensureColumn(db, "source_order_items", "detail_images", "TEXT");
   ensureColumn(db, "source_order_items", "detail_raw_text", "TEXT");
+  ensureColumn(db, "source_order_items", "is_refunded", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "source_order_items", "is_apparel", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "garments", "brand", "TEXT");
+  ensureColumn(db, "garments", "raw_name", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_source_order_items_item_id ON source_order_items(item_id)");
+  backfillGarmentDisplayData(db);
 }
 
 export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbImportResult {
@@ -236,14 +255,14 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
   `);
   const insertGarment = db.prepare(`
     INSERT OR IGNORE INTO garments (
-      source_order_item_id, name, category, color, warmth, seasons, styles, formality,
+      source_order_item_id, brand, name, raw_name, category, color, warmth, seasons, styles, formality,
       image_url, owned, confirmed, excluded, confidence, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const selectGarmentBySource = db.prepare("SELECT id FROM garments WHERE source_order_item_id = ?");
+  const selectGarmentBySource = db.prepare("SELECT id, brand, name, raw_name, image_url, confirmed FROM garments WHERE source_order_item_id = ?");
   const updateGarmentFromSource = db.prepare(`
     UPDATE garments
-    SET name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
+    SET brand = ?, name = ?, raw_name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
       formality = ?, image_url = ?, confidence = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
     WHERE source_order_item_id = ?
   `);
@@ -255,14 +274,14 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
     }
     if (!sourceItem.isApparel) return 0;
 
-    const classification = classifyGarment(sourceItem.detailTitle || sourceItem.title, [
+    const displayInfo = buildGarmentDisplayInfo(sourceItem);
+    const classification = classifyGarment(displayInfo.rawName, [
       sourceItem.sku,
       sourceItem.detailProps.map((prop) => `${prop.name} ${prop.value}`).join(" "),
       sourceItem.detailDescription
     ].filter(Boolean).join(" "));
     if (!classification) return 0;
-    const garmentName = sourceItem.detailTitle || sourceItem.title;
-    const garmentImage = sourceItem.detailImages[0] || sourceItem.imageUrl;
+    const garmentImage = preferredImage(sourceItem);
     const garmentNotes = sourceItem.detailProps.length || sourceItem.detailDescription
       ? [
           sourceItem.detailProps.map((prop) => `${prop.name}: ${prop.value}`).join("; "),
@@ -270,17 +289,21 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
         ].filter(Boolean).join("\n")
       : "";
 
-    const existingGarment = selectGarmentBySource.get(sourceItemId) as { id: number } | undefined;
+    const existingGarment = selectGarmentBySource.get(sourceItemId) as Pick<GarmentRow, "id" | "brand" | "name" | "raw_name" | "image_url" | "confirmed"> | undefined;
     if (existingGarment) {
+      const isConfirmed = Boolean(existingGarment.confirmed);
+      const preserveName = shouldPreserveConfirmedName(existingGarment.name, displayInfo, isConfirmed);
       updateGarmentFromSource.run(
-        garmentName,
+        displayInfo.brand || existingGarment.brand || "",
+        preserveName ? existingGarment.name : displayInfo.name,
+        displayInfo.rawName || existingGarment.raw_name || existingGarment.name,
         classification.category,
         classification.color,
         classification.warmth,
         JSON.stringify(classification.seasons),
         JSON.stringify(classification.styles),
         classification.formality,
-        garmentImage,
+        chooseImageForUpdate(existingGarment.image_url || "", garmentImage, isConfirmed),
         classification.confidence,
         garmentNotes,
         sourceItemId
@@ -290,7 +313,9 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
 
     const garmentResult = insertGarment.run(
       sourceItemId,
-      garmentName,
+      displayInfo.brand,
+      displayInfo.name,
+      displayInfo.rawName,
       classification.category,
       classification.color,
       classification.warmth,
@@ -411,7 +436,9 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     throw new Error("衣服不存在");
   }
   const next = {
+    brand: update.brand ?? current.brand ?? "",
     name: update.name ?? current.name,
+    rawName: update.rawName ?? current.raw_name ?? current.name,
     category: update.category ?? current.category,
     color: update.color ?? current.color,
     warmth: update.warmth ?? current.warmth,
@@ -427,12 +454,14 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
 
   db.prepare(`
     UPDATE garments
-    SET name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
+    SET brand = ?, name = ?, raw_name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
       formality = ?, image_url = ?, owned = ?, confirmed = ?, excluded = ?, notes = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
+    next.brand,
     next.name,
+    next.rawName,
     next.category,
     next.color,
     next.warmth,
@@ -522,7 +551,9 @@ function weatherCacheKey(latitude: number, longitude: number): string {
 interface GarmentRow {
   id: number;
   source_order_item_id: number | null;
+  brand: string | null;
   name: string;
+  raw_name: string | null;
   category: Garment["category"];
   color: string;
   warmth: Garment["warmth"];
@@ -543,7 +574,9 @@ function rowToGarment(row: GarmentRow): Garment {
   return {
     id: row.id,
     sourceOrderItemId: row.source_order_item_id ?? undefined,
+    brand: row.brand ?? "",
     name: row.name,
+    rawName: row.raw_name ?? row.name,
     category: row.category,
     color: row.color,
     warmth: row.warmth,
@@ -559,6 +592,163 @@ function rowToGarment(row: GarmentRow): Garment {
     itemUrl: row.item_url ?? undefined,
     detailUrl: row.detail_url ?? undefined
   };
+}
+
+interface GarmentDisplayBackfillRow {
+  garment_id: number;
+  source_order_item_id: number | null;
+  garment_brand: string | null;
+  garment_name: string;
+  raw_name: string | null;
+  image_url: string | null;
+  confirmed: number;
+  external_key: string | null;
+  source: string | null;
+  page_type: string | null;
+  item_id: string | null;
+  order_id: string | null;
+  order_time: string | null;
+  title: string | null;
+  sku: string | null;
+  quantity: number | null;
+  payment: number | null;
+  status: string | null;
+  refund_text: string | null;
+  item_url: string | null;
+  source_image_url: string | null;
+  raw_text: string | null;
+  detail_url: string | null;
+  detail_title: string | null;
+  detail_props: string | null;
+  detail_description: string | null;
+  detail_images: string | null;
+  detail_raw_text: string | null;
+  is_refunded: number | null;
+  is_apparel: number | null;
+}
+
+function backfillGarmentDisplayData(db: AppDatabase): void {
+  const rows = db.prepare(`
+    SELECT
+      garments.id AS garment_id,
+      garments.source_order_item_id,
+      garments.brand AS garment_brand,
+      garments.name AS garment_name,
+      garments.raw_name,
+      garments.image_url,
+      garments.confirmed,
+      source_order_items.external_key,
+      source_order_items.source,
+      source_order_items.page_type,
+      source_order_items.item_id,
+      source_order_items.order_id,
+      source_order_items.order_time,
+      source_order_items.title,
+      source_order_items.sku,
+      source_order_items.quantity,
+      source_order_items.payment,
+      source_order_items.status,
+      source_order_items.refund_text,
+      source_order_items.item_url,
+      source_order_items.image_url AS source_image_url,
+      source_order_items.raw_text,
+      source_order_items.detail_url,
+      source_order_items.detail_title,
+      source_order_items.detail_props,
+      source_order_items.detail_description,
+      source_order_items.detail_images,
+      source_order_items.detail_raw_text,
+      source_order_items.is_refunded,
+      source_order_items.is_apparel
+    FROM garments
+    LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+  `).all() as unknown as GarmentDisplayBackfillRow[];
+  const updateDisplay = db.prepare(`
+    UPDATE garments
+    SET brand = ?, name = ?, raw_name = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+
+  for (const row of rows) {
+    const sourceItem = backfillRowToSourceItem(row);
+    const displayInfo = sourceItem ? buildGarmentDisplayInfo(sourceItem) : {
+      brand: row.garment_brand || "",
+      name: row.garment_name,
+      rawName: row.raw_name || row.garment_name
+    };
+    const isConfirmed = Boolean(row.confirmed);
+    const preserveName = shouldPreserveConfirmedName(row.garment_name, displayInfo, isConfirmed);
+    const nextBrand = displayInfo.brand || row.garment_brand || "";
+    const nextName = preserveName ? row.garment_name : displayInfo.name;
+    const nextRawName = row.raw_name || displayInfo.rawName || row.garment_name;
+    const nextImage = chooseImageForUpdate(row.image_url || "", sourceItem ? preferredImage(sourceItem) : "", isConfirmed);
+
+    if (
+      nextBrand !== (row.garment_brand || "") ||
+      nextName !== row.garment_name ||
+      nextRawName !== (row.raw_name || "") ||
+      nextImage !== (row.image_url || "")
+    ) {
+      updateDisplay.run(nextBrand, nextName, nextRawName, nextImage, row.garment_id);
+    }
+  }
+}
+
+function backfillRowToSourceItem(row: GarmentDisplayBackfillRow): SourceOrderItemDraft | null {
+  if (!row.source_order_item_id || !row.title) return null;
+  return {
+    externalKey: row.external_key || String(row.source_order_item_id),
+    source: row.source || "",
+    pageType: (row.page_type || "order-list") as SourceOrderItemDraft["pageType"],
+    itemId: row.item_id || "",
+    orderId: row.order_id || "",
+    orderTime: row.order_time || "",
+    title: row.title,
+    sku: row.sku || "",
+    quantity: row.quantity || 1,
+    payment: row.payment,
+    status: row.status || "",
+    refundText: row.refund_text || "",
+    itemUrl: row.item_url || "",
+    imageUrl: row.source_image_url || "",
+    rawText: row.raw_text || "",
+    detailUrl: row.detail_url || "",
+    detailTitle: row.detail_title || "",
+    detailProps: safeJson<TaobaoDetailProp[]>(row.detail_props || "[]", []),
+    detailDescription: row.detail_description || "",
+    detailImages: safeJson<string[]>(row.detail_images || "[]", []),
+    detailRawText: row.detail_raw_text || "",
+    isRefunded: Boolean(row.is_refunded),
+    isApparel: Boolean(row.is_apparel)
+  };
+}
+
+function chooseImageForUpdate(currentImage: string, candidateImage: string, isConfirmed: boolean): string {
+  const current = currentImage || "";
+  const candidate = candidateImage || "";
+  if (isConfirmed && isTrustedProductImage(current)) return current;
+  if (candidate) return candidate;
+  return isTrustedProductImage(current) ? current : "";
+}
+
+function shouldPreserveConfirmedName(currentName: string, displayInfo: { brand: string; name: string; rawName: string }, isConfirmed: boolean): boolean {
+  if (!isConfirmed) return false;
+  const current = currentName.trim();
+  if (!current) return false;
+  if (normalizeNameForComparison(current) === normalizeNameForComparison(displayInfo.rawName)) return false;
+  if (/订单详情|交易快照|加入购物车|申请售后|再买一单|7天无理由/.test(current)) return false;
+  if (
+    /订单详情|交易快照/.test(displayInfo.rawName) &&
+    current.length >= 12 &&
+    normalizeNameForComparison(displayInfo.rawName).includes(normalizeNameForComparison(current))
+  ) {
+    return false;
+  }
+  return normalizeNameForComparison(current) !== normalizeNameForComparison(displayInfo.name);
+}
+
+function normalizeNameForComparison(value: string): string {
+  return value.replace(/\s+/g, "").toLowerCase();
 }
 
 function ensureColumn(db: AppDatabase, tableName: string, columnName: string, definition: string): void {

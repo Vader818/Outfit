@@ -4,6 +4,7 @@ import type { Garment, GarmentCategory, GarmentWarmth, WeatherSnapshot } from ".
 
 function garment(overrides: Partial<Garment> & Pick<Garment, "id" | "name" | "category">): Garment {
   return {
+    brand: "",
     color: "black",
     warmth: "medium",
     seasons: ["spring", "autumn"],
@@ -14,6 +15,7 @@ function garment(overrides: Partial<Garment> & Pick<Garment, "id" | "name" | "ca
     confirmed: true,
     excluded: false,
     confidence: 0.8,
+    rawName: overrides.rawName ?? overrides.name,
     ...overrides
   };
 }

@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createDatabase, importTaobaoBatchIntoDb, listGarments, migrate } from "../server/db";
+import { createDatabase, importTaobaoBatchIntoDb, listGarments, migrate, updateGarment } from "../server/db";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -292,5 +292,279 @@ describe("database import", () => {
       "detail_raw_text",
       "detail_url"
     ]));
+  });
+
+  it("backfills brand, raw name, short name, and trusted images when migrating existing garments", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE source_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        external_key TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        page_type TEXT,
+        item_id TEXT,
+        order_id TEXT,
+        order_time TEXT,
+        title TEXT NOT NULL,
+        sku TEXT,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        payment REAL,
+        status TEXT,
+        refund_text TEXT,
+        item_url TEXT,
+        image_url TEXT,
+        raw_text TEXT,
+        detail_url TEXT,
+        detail_title TEXT,
+        detail_props TEXT,
+        detail_description TEXT,
+        detail_images TEXT,
+        detail_raw_text TEXT,
+        is_refunded INTEGER NOT NULL DEFAULT 0,
+        is_apparel INTEGER NOT NULL DEFAULT 0,
+        imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE garments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_order_item_id INTEGER UNIQUE,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        color TEXT NOT NULL,
+        warmth TEXT NOT NULL,
+        seasons TEXT NOT NULL,
+        styles TEXT NOT NULL,
+        formality TEXT NOT NULL,
+        image_url TEXT,
+        owned INTEGER NOT NULL DEFAULT 1,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        excluded INTEGER NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 0,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    db.prepare(`
+      INSERT INTO source_order_items (
+        id, external_key, source, page_type, item_id, title, sku, image_url,
+        detail_title, detail_props, detail_images, is_apparel
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      1,
+      "legacy-unconfirmed",
+      "taobao-selenium",
+      "item-detail",
+      "505",
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      "颜色分类: 深灰色",
+      "https://gw.alicdn.com/tfs/TB1platform_80x36.png",
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      JSON.stringify([{ name: "品牌", value: "UTIMUS" }]),
+      JSON.stringify([
+        "https://gw.alicdn.com/tfs/TB1platform_80x36.png",
+        "https://img.alicdn.com/imgextra/i2/123456/O1CN01real-product.jpg"
+      ]),
+      1
+    );
+    db.prepare(`
+      INSERT INTO garments (
+        source_order_item_id, name, category, color, warmth, seasons, styles,
+        formality, image_url, confirmed, confidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      1,
+      "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      "top",
+      "gray",
+      "light",
+      JSON.stringify(["summer"]),
+      JSON.stringify(["casual"]),
+      "casual",
+      "https://gw.alicdn.com/tfs/TB1platform_80x36.png",
+      0,
+      0.9
+    );
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "UTIMUS",
+      rawName: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      name: "宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
+      imageUrl: "https://img.alicdn.com/imgextra/i2/123456/O1CN01real-product.jpg"
+    });
+  });
+
+  it("does not overwrite a confirmed garment name during migration backfill", () => {
+    const db = createDatabase(":memory:");
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=606",
+      items: [
+        {
+          itemId: "606",
+          detailTitle: "BOSIE/小方领蓝色短袖衬衫 夏季通勤上衣",
+          detailProps: [{ name: "品牌", value: "BOSIE" }],
+          detailImages: ["https://img.alicdn.com/imgextra/i1/606/O1CN01shirt.jpg"]
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      name: "我手动改过的衬衫",
+      confirmed: true,
+      imageUrl: "https://gw.alicdn.com/tfs/TB1platform_80x36.png"
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "BOSIE",
+      rawName: "BOSIE/小方领蓝色短袖衬衫 夏季通勤上衣",
+      name: "我手动改过的衬衫",
+      imageUrl: "https://img.alicdn.com/imgextra/i1/606/O1CN01shirt.jpg",
+      confirmed: true
+    });
+  });
+
+  it("preserves a confirmed manually edited name that starts with the brand", () => {
+    const db = createDatabase(":memory:");
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      items: [
+        {
+          itemId: "607",
+          detailTitle: "BOSIE/小方领蓝色短袖衬衫 夏季通勤上衣",
+          detailProps: [{ name: "品牌", value: "BOSIE" }],
+          detailImages: ["https://img.alicdn.com/imgextra/i1/607/O1CN01shirt.jpg"]
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      name: "BOSIE 蓝衬衫",
+      confirmed: true
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "BOSIE",
+      rawName: "BOSIE/小方领蓝色短袖衬衫 夏季通勤上衣",
+      name: "BOSIE 蓝衬衫",
+      confirmed: true
+    });
+  });
+
+  it("cleans a confirmed garment when its name is still the captured order text", () => {
+    const db = createDatabase(":memory:");
+    const noisyName =
+      "2025-10-10 UTIMUS 订单详情 交易成功 UTIMUS拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G [交易快照] 深灰色;M 大促价保 7天无理由退货 加入购物车申请售后";
+
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      pageUrl: "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+      items: [
+        {
+          itemId: "707",
+          orderId: "9000000000000000007",
+          title: noisyName,
+          sku: "颜色分类: 深灰色; 尺码: M",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=707"
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      name: noisyName,
+      confirmed: true
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "UTIMUS",
+      rawName: noisyName,
+      name: "拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G",
+      confirmed: true
+    });
+  });
+
+  it("repairs a confirmed garment from an older partial brand backfill", () => {
+    const db = createDatabase(":memory:");
+    const noisyName =
+      "2025-10-10 UTIMUS 订单详情 交易成功 UTIMUS拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G [交易快照] 深灰色;M 大促价保 7天无理由退货 加入购物车申请售后";
+
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "708",
+          orderId: "9000000000000000008",
+          title: noisyName,
+          sku: "颜色分类: 深灰色; 尺码: M",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=708"
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      brand: "UTIMU",
+      name: "UTIMUS拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G",
+      rawName: noisyName,
+      confirmed: true
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "UTIMUS",
+      name: "拼接长袖打底衫基础款秋冬保暖软糯磨毛套头卫衣纯色270G",
+      rawName: noisyName,
+      confirmed: true
+    });
+  });
+
+  it("repairs a confirmed garment from an older multi-word brand backfill", () => {
+    const db = createDatabase(":memory:");
+    const noisyName =
+      "2026-03-23 Gnomes lab 订单详情 交易成功 Gnomes lab 25AW碳素磨毛亲肤舒适纯棉活页色织格纹通勤衬衫 [交易快照] 黑色;S 大促价保 极速退款 7天无理由退货 加入购物车申请售后";
+
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "808",
+          orderId: "9000000000000000008",
+          title: noisyName,
+          sku: "颜色分类: 黑色; 尺码: S",
+          status: "交易成功"
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      brand: "Gnomes",
+      name: "lab 25AW碳素磨毛亲肤舒适纯棉活页色织格纹通勤衬衫",
+      rawName: noisyName,
+      confirmed: true
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      brand: "Gnomes lab",
+      name: "25AW碳素磨毛亲肤舒适纯棉活页色织格纹通勤衬衫",
+      rawName: noisyName,
+      confirmed: true
+    });
   });
 });
