@@ -56,6 +56,19 @@ NAME_BEFORE_PARAM_NAMES = {
 }
 PARAM_NAMES = VALUE_BEFORE_PARAM_NAMES | NAME_BEFORE_PARAM_NAMES
 MAX_DETAIL_PROPS = 80
+DEFAULT_PROFILE_DIR = Path("output/chrome-taobao-profile")
+DEFAULT_RETRY_COUNT = 2
+DEFAULT_READY_TIMEOUT = 45
+DEFAULT_MIN_SCROLL_DELAY_SECONDS = 1.4
+DEFAULT_MAX_SCROLL_DELAY_SECONDS = 3.2
+RISK_URL_PATTERN = re.compile(r"punish|captcha|baxia|sec\.taobao|verify|_____tmd_____", re.I)
+RISK_TEXT_PATTERN = re.compile(r"安全验证|验证码|拖动滑块|滑块|访问受限|访问被拒绝|风险|异常访问|验证身份")
+LOGIN_TEXT_PATTERN = re.compile(r"扫码登录|手机扫码登录|密码登录|短信登录|登录页面|打开\s*淘宝APP")
+EMPTY_SHELL_TEXT_PATTERN = re.compile(r"淘宝网首页|购物车\d*|收藏夹|帮助中心|免费开店|千牛卖家中心|登录|注册")
+
+
+class RetryableCaptureError(RuntimeError):
+    pass
 
 
 def clean_text(value: Any) -> str:
@@ -350,16 +363,38 @@ def build_capture_payload(snapshot: dict[str, Any], captured_at: str | None = No
 
 def validate_item_detail_payload(payload: dict[str, Any]) -> None:
     page_url = clean_text(payload.get("pageUrl", ""))
-    if "login.taobao.com" in page_url:
-        raise RuntimeError("Capture is still on Taobao login page; scan the QR code and run again with a longer --login-wait.")
-    if payload.get("pageType") != "item-detail":
-        raise RuntimeError(f"Capture is not an item detail page: {page_url}")
     items = payload.get("items")
     item = items[0] if isinstance(items, list) and items else {}
+    detail_title = clean_text(item.get("detailTitle", ""))
+    detail_props = item.get("detailProps", [])
+    detail_images = item.get("detailImages", [])
+    detail_description = clean_text(item.get("detailDescription", ""))
+    detail_raw_text = clean_text(item.get("detailRawText", ""))
+    page_text = clean_text("\n".join([detail_title, detail_description, detail_raw_text]))
+
+    if "login.taobao.com" in page_url or LOGIN_TEXT_PATTERN.search(page_text):
+        raise RetryableCaptureError("Capture is still on Taobao login page / QR login needed; scan the QR code and run again with a longer --login-wait.")
+    if RISK_URL_PATTERN.search(page_url) or RISK_TEXT_PATTERN.search(page_text):
+        raise RuntimeError("Capture is on a Taobao risk/captcha page; handle the verification manually before running again. This script does not bypass verification.")
+    if payload.get("pageType") != "item-detail":
+        raise RuntimeError(f"Capture is not an item detail page: {page_url}")
+    if is_empty_shell_capture(detail_props, detail_images, detail_description, detail_raw_text):
+        raise RetryableCaptureError("Capture reached an empty shell page; product content did not load yet.")
     if not clean_text(item.get("itemId", "")):
-        raise RuntimeError("Capture did not find a Taobao item id; page may still be loading or login may not be complete.")
-    if not clean_text(item.get("detailTitle", "")):
-        raise RuntimeError("Capture did not find a product title; page may still be loading.")
+        raise RetryableCaptureError("Capture did not find a Taobao item id; page may still be loading or login may not be complete.")
+    if not detail_title:
+        raise RetryableCaptureError("Capture did not find a product title; page may still be loading.")
+
+
+def is_empty_shell_capture(detail_props: Any, detail_images: Any, detail_description: str, detail_raw_text: str) -> bool:
+    props = detail_props if isinstance(detail_props, list) else []
+    images = detail_images if isinstance(detail_images, list) else []
+    text = clean_text("\n".join([detail_description, detail_raw_text]))
+    if props or images:
+        return False
+    if len(text) > 220:
+        return False
+    return bool(EMPTY_SHELL_TEXT_PATTERN.search(text))
 
 
 def build_collector_snapshot_script() -> str:
@@ -440,14 +475,18 @@ def ensure_local_webdriver_bypasses_proxy() -> None:
     os.environ["no_proxy"] = value
 
 
-def create_chrome_driver() -> Any:
+def create_chrome_driver(profile_dir: Path | None = DEFAULT_PROFILE_DIR) -> Any:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
 
     ensure_local_webdriver_bypasses_proxy()
+    if profile_dir is not None:
+        profile_dir.mkdir(parents=True, exist_ok=True)
     options = Options()
     options.add_argument("--lang=zh-CN")
     options.add_argument("--start-maximized")
+    if profile_dir is not None:
+        options.add_argument(f"--user-data-dir={profile_dir}")
     return webdriver.Chrome(options=options)
 
 
@@ -465,33 +504,76 @@ def write_payload(payload: dict[str, Any], output_dir: Path) -> Path:
     return path
 
 
-def capture_with_browser(url: str, login_wait: int, output_dir: Path) -> Path:
-    driver = create_chrome_driver()
+def capture_with_browser(
+    url: str,
+    login_wait: int,
+    output_dir: Path,
+    profile_dir: Path = DEFAULT_PROFILE_DIR,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    ready_timeout: int = DEFAULT_READY_TIMEOUT,
+    min_scroll_delay: float = DEFAULT_MIN_SCROLL_DELAY_SECONDS,
+    max_scroll_delay: float = DEFAULT_MAX_SCROLL_DELAY_SECONDS,
+) -> Path:
+    driver = create_chrome_driver(profile_dir)
     try:
         driver.get(url)
-        wait_for_page_ready(driver)
+        wait_for_page_ready(driver, ready_timeout)
         wait_for_manual_login(login_wait)
-        wait_for_page_ready(driver)
-        scroll_for_lazy_content(driver)
-        snapshot = collect_snapshot(driver)
-        payload = build_capture_payload(snapshot)
-        validate_item_detail_payload(payload)
-        return write_payload(payload, output_dir)
+        last_error: RetryableCaptureError | None = None
+        for attempt in range(max(0, retry_count) + 1):
+            if attempt > 0:
+                print(f"Retrying Taobao capture after retryable page state ({attempt}/{retry_count}): {last_error}")
+                time.sleep(random.uniform(min_scroll_delay, max_scroll_delay))
+                driver.refresh()
+            wait_for_page_ready(driver, ready_timeout)
+            scroll_for_lazy_content(driver, min_delay_seconds=min_scroll_delay, max_delay_seconds=max_scroll_delay)
+            snapshot = collect_snapshot(driver)
+            payload = build_capture_payload(snapshot)
+            try:
+                validate_item_detail_payload(payload)
+                return write_payload(payload, output_dir)
+            except RetryableCaptureError as error:
+                last_error = error
+                if attempt >= max(0, retry_count):
+                    raise
+        if last_error:
+            raise last_error
+        raise RuntimeError("Capture failed before a page snapshot could be validated.")
     finally:
         driver.quit()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Capture visible Taobao item detail data into an Outfit-compatible JSON payload.")
+    parser = argparse.ArgumentParser(
+        description="Capture visible Taobao item detail data into an Outfit-compatible JSON payload.",
+        epilog=(
+            "First run: scan the QR code in the opened Chrome window. Later runs reuse --profile-dir. "
+            "If Taobao shows verification, handle it manually; this script does not bypass captcha or risk controls."
+        ),
+    )
     parser.add_argument("--url", required=True, help="Taobao/Tmall item detail URL to open in Chrome.")
     parser.add_argument("--login-wait", type=int, default=30, help="Seconds to wait for manual QR login before capturing.")
     parser.add_argument("--output-dir", type=Path, default=Path("output/taobao-captures"), help="Directory for captured JSON files.")
+    parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR, help="Persistent Chrome user data directory for reusing Taobao login state.")
+    parser.add_argument("--retry-count", type=int, default=DEFAULT_RETRY_COUNT, help="Retries for retryable page states such as login or empty content shells.")
+    parser.add_argument("--ready-timeout", type=int, default=DEFAULT_READY_TIMEOUT, help="Seconds to wait for the page body and document readiness.")
+    parser.add_argument("--min-scroll-delay", type=float, default=DEFAULT_MIN_SCROLL_DELAY_SECONDS, help="Minimum seconds between lazy-load scroll steps.")
+    parser.add_argument("--max-scroll-delay", type=float, default=DEFAULT_MAX_SCROLL_DELAY_SECONDS, help="Maximum seconds between lazy-load scroll steps.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    output_path = capture_with_browser(args.url, args.login_wait, args.output_dir)
+    output_path = capture_with_browser(
+        args.url,
+        args.login_wait,
+        args.output_dir,
+        args.profile_dir,
+        args.retry_count,
+        args.ready_timeout,
+        args.min_scroll_delay,
+        args.max_scroll_delay,
+    )
     print(f"Wrote Taobao capture JSON: {output_path}")
     return 0
 
