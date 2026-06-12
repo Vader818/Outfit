@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
+import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
+import { defaultThumbnailOutputDir, downloadGarmentThumbnail, type ThumbnailRefreshResult } from "./services/thumbnails";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -43,6 +45,15 @@ export interface GarmentUpdate {
   notes?: string;
 }
 
+export interface ThumbnailRefreshOptions {
+  captureRoot?: string;
+  outputDir?: string;
+  maxTotalDownloads?: number;
+  maxDownloadsPerGarment?: number;
+  delayMs?: number;
+  fetcher?: typeof fetch;
+}
+
 interface PurchasedSourceRow {
   id: number;
   title: string;
@@ -59,6 +70,25 @@ interface StoredDetailRow {
   detail_description: string | null;
   detail_images: string | null;
   detail_raw_text: string | null;
+}
+
+interface ThumbnailRefreshRow {
+  id: number;
+  name: string;
+  raw_name: string | null;
+  category: Garment["category"];
+  image_url: string | null;
+  item_id: string | null;
+  source_title: string | null;
+  sku: string | null;
+  source_image_url: string | null;
+  detail_title: string | null;
+  detail_images: string | null;
+}
+
+interface CaptureImageRecord {
+  title: string;
+  images: string[];
 }
 
 export const DEFAULT_PERSONAL_PROFILE: PersonalProfile = {
@@ -331,7 +361,7 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
       sourceItem.detailDescription
     ].filter(Boolean).join(" "));
     if (!classification || !isWardrobeImportCategory(classification.category)) return 0;
-    const garmentImage = preferredImage(sourceItem);
+    const garmentImage = preferredImage(sourceItem, classification.category);
     const garmentNotes = sourceItem.detailProps.length || sourceItem.detailDescription
       ? [
           sourceItem.detailProps.map((prop) => `${prop.name}: ${prop.value}`).join("; "),
@@ -541,6 +571,82 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     WHERE garments.id = ?
   `).get(id) as unknown as GarmentRow;
   return rowToGarment(updated);
+}
+
+export async function refreshGarmentThumbnails(db: AppDatabase, options: ThumbnailRefreshOptions = {}): Promise<ThumbnailRefreshResult> {
+  const captureRoot = options.captureRoot || join(process.cwd(), "output", "taobao-captures");
+  const outputDir = options.outputDir || defaultThumbnailOutputDir();
+  const maxTotalDownloads = Math.max(1, Math.min(options.maxTotalDownloads ?? 8, 24));
+  const maxDownloadsPerGarment = Math.max(1, Math.min(options.maxDownloadsPerGarment ?? 4, 6));
+  const captureIndex = await readCaptureImageIndex(captureRoot);
+  const rows = db.prepare(`
+    SELECT
+      garments.id,
+      garments.name,
+      garments.raw_name,
+      garments.category,
+      garments.image_url,
+      source_order_items.item_id,
+      source_order_items.title AS source_title,
+      source_order_items.sku,
+      source_order_items.image_url AS source_image_url,
+      source_order_items.detail_title,
+      source_order_items.detail_images
+    FROM garments
+    LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    WHERE garments.excluded = 0
+    ORDER BY garments.id ASC
+  `).all() as unknown as ThumbnailRefreshRow[];
+  const updateImage = db.prepare("UPDATE garments SET image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+
+  let attemptedDownloads = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    if (attemptedDownloads >= maxTotalDownloads) break;
+    if ((row.image_url || "").startsWith("/api/garment-thumbnails/")) {
+      skipped += 1;
+      continue;
+    }
+
+    const candidates = thumbnailCandidatesForRow(row, captureIndex);
+    if (!candidates.length) {
+      skipped += 1;
+      continue;
+    }
+
+    const downloaded = await downloadGarmentThumbnail({
+      garmentId: row.id,
+      itemId: row.item_id || undefined,
+      category: row.category,
+      title: row.detail_title || row.raw_name || row.source_title || row.name,
+      sku: row.sku || "",
+      imageUrl: row.source_image_url || "",
+      detailImages: candidates,
+      outputDir,
+      maxDownloads: Math.min(maxDownloadsPerGarment, maxTotalDownloads - attemptedDownloads),
+      delayMs: options.delayMs,
+      fetcher: options.fetcher,
+      onAttempt: () => {
+        attemptedDownloads += 1;
+      }
+    });
+
+    if (downloaded) {
+      updateImage.run(downloaded.localUrl, row.id);
+      updated += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+
+  return {
+    scanned: rows.length,
+    attemptedDownloads,
+    updated,
+    skipped
+  };
 }
 
 export function deleteGarment(db: AppDatabase, id: number): void {
@@ -766,6 +872,7 @@ interface GarmentDisplayBackfillRow {
   garment_brand: string | null;
   garment_name: string;
   raw_name: string | null;
+  category: Garment["category"];
   image_url: string | null;
   confirmed: number;
   external_key: string | null;
@@ -801,6 +908,7 @@ function backfillGarmentDisplayData(db: AppDatabase): void {
       garments.brand AS garment_brand,
       garments.name AS garment_name,
       garments.raw_name,
+      garments.category,
       garments.image_url,
       garments.confirmed,
       source_order_items.external_key,
@@ -847,7 +955,7 @@ function backfillGarmentDisplayData(db: AppDatabase): void {
     const nextBrand = displayInfo.brand || row.garment_brand || "";
     const nextName = preserveName ? row.garment_name : displayInfo.name;
     const nextRawName = row.raw_name || displayInfo.rawName || row.garment_name;
-    const nextImage = chooseImageForUpdate(row.image_url || "", sourceItem ? preferredImage(sourceItem) : "", isConfirmed);
+    const nextImage = chooseImageForUpdate(row.image_url || "", sourceItem ? preferredImage(sourceItem, row.category) : "", isConfirmed);
 
     if (
       nextBrand !== (row.garment_brand || "") ||
@@ -892,9 +1000,14 @@ function backfillRowToSourceItem(row: GarmentDisplayBackfillRow): SourceOrderIte
 function chooseImageForUpdate(currentImage: string, candidateImage: string, isConfirmed: boolean): string {
   const current = currentImage || "";
   const candidate = candidateImage || "";
+  if (isLocalThumbnailImage(current)) return current;
   if (isConfirmed && isTrustedProductImage(current)) return current;
   if (candidate) return candidate;
   return isTrustedProductImage(current) ? current : "";
+}
+
+function isLocalThumbnailImage(value: string): boolean {
+  return value.startsWith("/api/garment-thumbnails/");
 }
 
 function shouldPreserveConfirmedName(currentName: string, displayInfo: { brand: string; name: string; rawName: string }, isConfirmed: boolean): boolean {
@@ -915,6 +1028,83 @@ function shouldPreserveConfirmedName(currentName: string, displayInfo: { brand: 
 
 function normalizeNameForComparison(value: string): string {
   return value.replace(/\s+/g, "").toLowerCase();
+}
+
+async function readCaptureImageIndex(captureRoot: string): Promise<Map<string, CaptureImageRecord>> {
+  const index = new Map<string, CaptureImageRecord>();
+  const files = await listJsonFiles(captureRoot);
+  for (const file of files) {
+    try {
+      const payload = JSON.parse(await readFile(file, "utf8")) as { items?: unknown[] };
+      if (!Array.isArray(payload.items)) continue;
+      for (const item of payload.items) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        const itemId = cleanDbText(record.itemId || "");
+        if (!itemId) continue;
+        const existing = index.get(itemId) || { title: "", images: [] };
+        const images = [
+          ...existing.images,
+          cleanDbText(record.imageUrl || ""),
+          ...toStringList(record.detailImages)
+        ].filter(Boolean);
+        index.set(itemId, {
+          title: existing.title || cleanDbText(record.detailTitle || record.title || ""),
+          images: uniqueDbStrings(images)
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return index;
+}
+
+async function listJsonFiles(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const fullPath = join(root, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...(await listJsonFiles(fullPath)));
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".json")) {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+function thumbnailCandidatesForRow(row: ThumbnailRefreshRow, captureIndex: Map<string, CaptureImageRecord>): string[] {
+  const captureRecord = row.item_id ? captureIndex.get(row.item_id) : undefined;
+  return uniqueDbStrings([
+    ...toStringList(row.detail_images ? safeJson<string[]>(row.detail_images, []) : []),
+    ...(captureRecord?.images || [])
+  ]);
+}
+
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => cleanDbText(item)).filter(Boolean);
+}
+
+function uniqueDbStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const cleaned = cleanDbText(value);
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    unique.push(cleaned);
+  }
+  return unique;
+}
+
+function cleanDbText(value: unknown): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function ensureColumn(db: AppDatabase, tableName: string, columnName: string, definition: string): void {

@@ -191,6 +191,13 @@ export interface TaobaoWardrobeFilterSummary {
   skippedNonApparel: number;
 }
 
+export interface ThumbnailRefreshResult {
+  scanned: number;
+  attemptedDownloads: number;
+  updated: number;
+  skipped: number;
+}
+
 export type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type CaptureJobMode = "orders" | "item-detail";
 

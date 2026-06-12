@@ -429,6 +429,31 @@ describe("database import", () => {
     });
   });
 
+  it("preserves local thumbnail URLs during migration backfill", () => {
+    const db = createDatabase(":memory:");
+    importTaobaoBatchIntoDb(db, {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      items: [
+        {
+          itemId: "608",
+          detailTitle: "范斯低帮休闲帆布鞋",
+          detailImages: ["https://img.alicdn.com/imgextra/i1/608/O1CN01shoe_!!608-0-item_pic.jpg"]
+        }
+      ]
+    });
+    const garment = listGarments(db)[0];
+    updateGarment(db, garment.id, {
+      imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
+    });
+
+    migrate(db);
+
+    expect(listGarments(db)[0]).toMatchObject({
+      imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
+    });
+  });
+
   it("preserves a confirmed manually edited name that starts with the brand", () => {
     const db = createDatabase(":memory:");
     importTaobaoBatchIntoDb(db, {

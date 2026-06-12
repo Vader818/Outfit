@@ -36,13 +36,18 @@ const COLOR_KEYWORDS: Array<[string, RegExp]> = [
 const NON_WEARABLE_PRODUCT_PATTERN = /手机壳|保护套|保护壳|蓝牙耳机|耳机|牙刷|水果|李子|零食|饼干|鸭脖|沐浴露|洗面奶|面霜|爽肤水|纸巾|抽纸|饮用水|香皂|肥皂|台灯|收纳袋|收纳盒|置物架|鞋架|衣柜|衣服柜|橱柜|隔板|行李箱|流量卡/i;
 
 export function classifyGarment(title: string, sku = ""): Classification | null {
-  const text = `${title} ${sku}`.trim();
-  if (NON_WEARABLE_PRODUCT_PATTERN.test(text)) {
+  const titleText = title.trim();
+  const text = `${titleText} ${sku}`.trim();
+  if (NON_WEARABLE_PRODUCT_PATTERN.test(titleText)) {
     return null;
   }
 
-  const category = detectCategory(title) ?? detectCategory(text);
+  const titleCategory = detectCategory(titleText);
+  const category = titleCategory ?? detectCategory(text);
   if (!category) {
+    return null;
+  }
+  if (!titleCategory && NON_WEARABLE_PRODUCT_PATTERN.test(text)) {
     return null;
   }
 

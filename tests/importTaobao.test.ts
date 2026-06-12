@@ -505,4 +505,37 @@ describe("normalizeTaobaoBatch", () => {
       confirmed: false
     });
   });
+
+  it("keeps a detail-page shoe capture when noisy recommendation text mentions non-wearable products", () => {
+    const result = normalizeTaobaoBatch({
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      capturedAt: "2026-06-12T06:30:24.288Z",
+      pageUrl: "https://item.taobao.com/item.htm?id=730265944941&mi_id=0000kvR33tP8WeTUGthRdUQAHT0MRqnCBOgxkzAWa42ymH4",
+      items: [
+        {
+          itemId: "730265944941",
+          detailUrl: "https://item.taobao.com/item.htm?id=730265944941&mi_id=0000kvR33tP8WeTUGthRdUQAHT0MRqnCBOgxkzAWa42ymH4",
+          detailTitle: "332.0012人付款 ASICS GEL-1130 男女运动鞋老爹鞋1201A256-113 1201A255-028-004",
+          detailProps: [
+            { name: "品牌", value: "Asics/亚瑟士" },
+            { name: "功能", value: "耐磨,透气" },
+            { name: "适用场景", value: "休闲" }
+          ],
+          detailImages: ["https://img.alicdn.com/asics-shoe.jpg"],
+          detailDescription: "本店推荐 看了又看 蓝牙耳机 手机壳 休闲零食 饮用水 参数信息 品牌 Asics/亚瑟士 运动系列 休闲",
+          detailRawText: "ASICS GEL-1130 男女运动鞋老爹鞋 已售 3000+ 颜色分类 银白棕 鞋码 42 看了又看 蓝牙耳机 手机壳 休闲零食 饮用水"
+        }
+      ]
+    });
+
+    expect(result.summary.totalItems).toBe(1);
+    expect(result.summary.skippedNonApparel).toBe(0);
+    expect(result.summary.createdGarments).toBe(1);
+    expect(result.garmentDrafts[0]).toMatchObject({
+      brand: "Asics/亚瑟士",
+      category: "shoes",
+      imageUrl: "https://img.alicdn.com/asics-shoe.jpg"
+    });
+  });
 });

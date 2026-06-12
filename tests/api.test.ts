@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../server/db";
@@ -760,6 +761,94 @@ describe("API routes", () => {
     });
   });
 
+  it("refreshes local garment thumbnails from captured Taobao image candidates with download limits", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-captures-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, {
+      thumbnailCaptureRoot: captureRoot,
+      thumbnailOutputDir,
+      thumbnailDelayMs: 0,
+      thumbnailMaxDownloads: 3
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes("tiny")) {
+        return new Response(pngBody(91, 14), {
+          status: 200,
+          headers: { "content-type": "image/png" }
+        });
+      }
+      return new Response(pngBody(900, 700), {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const importResponse = await realFetch(`${baseUrl}/api/import/taobao-batch`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        source: "taobao-selenium-order-list",
+        pageType: "order-list",
+        items: [
+          {
+            itemId: "1041553367966",
+            orderId: "900000000000000001",
+            title: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
+            sku: "颜色分类: 曜石黑/银白色; 鞋码: 42",
+            status: "交易成功",
+            itemUrl: "https://item.taobao.com/item.htm?id=1041553367966",
+            imageUrl: "https://gw.alicdn.com/imgextra/i2/O1CN01IBkgQN26Fy77Dv9zk_!!6000000007633-2-tps-80-36.png"
+          }
+        ]
+      })
+    });
+    expect(importResponse.status).toBe(200);
+    const captureDir = path.join(captureRoot, "cap_test");
+    mkdirSync(captureDir, { recursive: true });
+    writeFileSync(path.join(captureDir, "capture.json"), JSON.stringify({
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=1041553367966",
+      items: [
+        {
+          itemId: "1041553367966",
+          detailTitle: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
+          detailImages: [
+            "https://img.alicdn.com/imgextra/i4/363607599/O1CN01tiny_!!4611686018427385391-0-item_pic.jpg",
+            "https://gw.alicdn.com/bao/uploaded/i4/363607599/O1CN01shoe.jpg"
+          ]
+        }
+      ]
+    }), "utf8");
+
+    const refreshResponse = await realFetch(`${baseUrl}/api/garments/thumbnails/refresh`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const refreshBody = await refreshResponse.json();
+    const garments = await (await realFetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    })).json() as Array<{ imageUrl: string }>;
+    const thumbnailResponse = await realFetch(`${baseUrl}${garments[0].imageUrl}`);
+
+    expect(refreshResponse.status).toBe(200);
+    expect(refreshBody).toMatchObject({ scanned: 1, attemptedDownloads: 2, updated: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-1041553367966.png");
+    expect(thumbnailResponse.status).toBe(200);
+    expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
+  });
+
   it("serves repeated weather requests from SQLite cache", async () => {
     const realFetch = globalThis.fetch.bind(globalThis);
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
@@ -897,4 +986,21 @@ function sessionCookie(response: Response): string {
   const setCookie = response.headers.get("set-cookie");
   expect(setCookie).toEqual(expect.any(String));
   return setCookie!.split(";")[0];
+}
+
+function makePng(width: number, height: number): Uint8Array {
+  const bytes = Buffer.alloc(33);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write("IHDR", 12, "ascii");
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  bytes[24] = 8;
+  bytes[25] = 2;
+  return bytes;
+}
+
+function pngBody(width: number, height: number): ArrayBuffer {
+  const bytes = makePng(width, height);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

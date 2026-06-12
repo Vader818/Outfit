@@ -1,17 +1,26 @@
 import express, { type Request, type Response } from "express";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
-import type { AppDatabase, GarmentUpdate } from "./db";
+import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
+import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
+import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
 import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
-export function createApiApp(db: AppDatabase): express.Express {
+export interface ApiAppOptions {
+  thumbnailCaptureRoot?: string;
+  thumbnailOutputDir?: string;
+  thumbnailMaxDownloads?: number;
+  thumbnailDelayMs?: number;
+}
+
+export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): express.Express {
   const app = express();
   app.use(express.json({ limit: "5mb" }));
+  app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true });
@@ -101,6 +110,10 @@ export function createApiApp(db: AppDatabase): express.Express {
 
   app.get("/api/garments", (_request, response) => {
     handle(response, () => listGarments(db));
+  });
+
+  app.post("/api/garments/thumbnails/refresh", (request, response) => {
+    void handleAsync(response, () => refreshGarmentThumbnails(db, thumbnailRefreshOptions(options, request.body)));
   });
 
   app.get("/api/profile", (_request, response) => {
@@ -206,6 +219,31 @@ function handle<T>(response: Response, callback: () => T): void {
   } catch (error) {
     sendError(response, error);
   }
+}
+
+async function handleAsync<T>(response: Response, callback: () => Promise<T>): Promise<void> {
+  try {
+    response.json(await callback());
+  } catch (error) {
+    sendError(response, error);
+  }
+}
+
+function thumbnailRefreshOptions(options: ApiAppOptions, body: unknown): ThumbnailRefreshOptions {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  return {
+    captureRoot: options.thumbnailCaptureRoot,
+    outputDir: options.thumbnailOutputDir,
+    maxTotalDownloads: boundedNumber(record.maxDownloads, options.thumbnailMaxDownloads ?? 8, 1, 24),
+    maxDownloadsPerGarment: boundedNumber(record.maxDownloadsPerGarment, 4, 1, 6),
+    delayMs: boundedNumber(record.delayMs, options.thumbnailDelayMs ?? 900, 0, 5000)
+  };
+}
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function sendError(response: Response, error: unknown): void {

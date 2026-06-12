@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -147,6 +147,13 @@ export async function updateGarment(id: number, update: Partial<Garment>): Promi
 export async function deleteGarment(id: number): Promise<void> {
   await request<void>(`/api/garments/${id}`, {
     method: "DELETE"
+  });
+}
+
+export async function refreshGarmentThumbnails(options: { maxDownloads?: number } = {}): Promise<ThumbnailRefreshResult> {
+  return request<ThumbnailRefreshResult>("/api/garments/thumbnails/refresh", {
+    method: "POST",
+    body: JSON.stringify(options)
   });
 }
 

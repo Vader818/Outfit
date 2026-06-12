@@ -109,6 +109,51 @@ describe("Taobao Selenium capture artifacts", () => {
     expect(fileSystem.readFileSync(path.join("captures", "newest.json"), "utf8")).toBe(newestText);
   });
 
+  it("reads the newest JSON artifact from capture job subdirectories", () => {
+    const newestPayload = {
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      items: [{ itemId: "730265944941", detailTitle: "ASICS GEL-1130 男女运动鞋老爹鞋" }]
+    };
+    const newestText = JSON.stringify(newestPayload, null, 2);
+    const subdir = path.join("captures", "cap_mqajq2fs_dc2e4804");
+    const newestPath = path.join(subdir, "730265944941-20260612-143024.json");
+    const fileSystem: CaptureFileSystem = {
+      readdirSync: (directory) => {
+        if (directory === "captures") return ["old.json", "cap_mqajq2fs_dc2e4804"];
+        if (directory === subdir) return ["730265944941-20260612-143024.json"];
+        return [];
+      },
+      statSync: (filePath) => {
+        if (filePath === path.join("captures", "old.json")) {
+          return { mtimeMs: 100, isFile: () => true };
+        }
+        if (filePath === subdir) {
+          return { mtimeMs: 300, isFile: () => false, isDirectory: () => true };
+        }
+        if (filePath === newestPath) {
+          return { mtimeMs: 300, isFile: () => true };
+        }
+        throw new Error(`unexpected stat path ${filePath}`);
+      },
+      readFileSync: (filePath) => {
+        if (filePath === path.join("captures", "old.json")) return JSON.stringify({ items: [{ itemId: "old" }] });
+        if (filePath === newestPath) return newestText;
+        throw new Error(`unexpected read path ${filePath}`);
+      }
+    };
+
+    const result = readLatestTaobaoCapture("captures", fileSystem);
+
+    expect(result).toMatchObject({
+      outputDir: "captures",
+      fileName: "730265944941-20260612-143024.json",
+      path: newestPath,
+      jsonText: newestText,
+      payload: newestPayload
+    });
+  });
+
   it("reports when no JSON artifact exists", () => {
     expect(() => readLatestTaobaoCapture("captures", fakeFileSystem({
       "notes.txt": { text: "skip me", mtimeMs: 300 }

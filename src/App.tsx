@@ -38,6 +38,7 @@ import {
   previewTaobaoImport,
   readLatestTaobaoCapture,
   recordWearLog,
+  refreshGarmentThumbnails,
   login,
   logout,
   register as registerAccount,
@@ -61,6 +62,7 @@ type BusyAction =
   | "capture-orders"
   | "capture-item"
   | "read-capture"
+  | "refresh-thumbnails"
   | "bulk-confirm"
   | "locate"
   | "save-settings"
@@ -285,6 +287,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
+  const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
   const [occasion, setOccasion] = useState("casual");
   const [latitude, setLatitude] = useState(() => localStorage.getItem("outfit.latitude") || "39.9042");
   const [longitude, setLongitude] = useState(() => localStorage.getItem("outfit.longitude") || "116.4074");
@@ -446,6 +449,21 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  async function refreshThumbnails() {
+    setBusyAction("refresh-thumbnails");
+    setError("");
+    setThumbnailRefreshMessage("");
+    try {
+      const result = await refreshGarmentThumbnails({ maxDownloads: 8 });
+      setThumbnailRefreshMessage(`缩略图更新 ${result.updated} 件，尝试下载 ${result.attemptedDownloads} 张`);
+      await refreshGarments();
+    } catch (thumbnailError) {
+      setError(thumbnailError instanceof Error ? thumbnailError.message : "缩略图刷新失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function locate() {
     if (!navigator.geolocation) return;
     setBusyAction("locate");
@@ -593,6 +611,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             onUpdate={updateOne}
             onDelete={deleteOne}
             onBulkConfirm={bulkConfirm}
+            onRefreshThumbnails={refreshThumbnails}
+            thumbnailRefreshMessage={thumbnailRefreshMessage}
           />
         )}
         {tab === "history" && (
@@ -885,6 +905,8 @@ export function WardrobeView(props: {
   onUpdate: (id: number, update: Partial<Garment>) => void;
   onDelete: (id: number) => void;
   onBulkConfirm: () => void;
+  onRefreshThumbnails?: () => void;
+  thumbnailRefreshMessage?: string;
 }) {
   const filters = props.filters ?? {
     status: "all",
@@ -914,6 +936,12 @@ export function WardrobeView(props: {
             <RefreshCw size={18} />
             刷新
           </button>
+          {props.onRefreshThumbnails ? (
+            <button className="secondary btn btn-soft" disabled={props.busyAction === "refresh-thumbnails"} onClick={props.onRefreshThumbnails}>
+              <Shirt size={18} />
+              {props.busyAction === "refresh-thumbnails" ? "处理中" : "补缩略图"}
+            </button>
+          ) : null}
           <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
             <Check size={18} />
             选择当前结果
@@ -928,6 +956,7 @@ export function WardrobeView(props: {
           </button>
         </div>
       </header>
+      {props.thumbnailRefreshMessage ? <p className="inline-feedback">{props.thumbnailRefreshMessage}</p> : null}
       <div className="filter-bar">
         <input
           className="input input-bordered input-sm"

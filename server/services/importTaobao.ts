@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Garment, GarmentCategory, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoImportPreview, TaobaoPageType, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
 import { classifyGarment } from "./classify";
+import { rankThumbnailCandidates } from "./thumbnails";
 
 export interface SourceOrderItemDraft {
   externalKey: string;
@@ -125,7 +126,7 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
       seasons: classification.seasons,
       styles: classification.styles,
       formality: classification.formality,
-      imageUrl: preferredImage(sourceItem),
+      imageUrl: preferredImage(sourceItem, classification.category),
       owned: true,
       confirmed: false,
       excluded: false,
@@ -208,7 +209,7 @@ export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
       warmth: classification.warmth,
       seasons: classification.seasons,
       confidence: classification.confidence,
-      imageUrl: preferredImage(item)
+      imageUrl: preferredImage(item, classification.category)
     });
   }
 
@@ -394,9 +395,15 @@ export function buildGarmentDisplayInfo(item: SourceOrderItemDraft): GarmentDisp
   };
 }
 
-export function preferredImage(item: SourceOrderItemDraft): string {
-  const candidates = [...item.detailImages, item.imageUrl].map(cleanText).filter(Boolean);
-  return candidates.find(isTrustedProductImage) || "";
+export function preferredImage(item: SourceOrderItemDraft, category?: GarmentCategory): string {
+  const inferredCategory = category || classifyGarment(displayTitle(item), classificationContext(item))?.category || "top";
+  return rankThumbnailCandidates({
+    category: inferredCategory,
+    title: displayTitle(item),
+    sku: item.sku,
+    imageUrl: item.imageUrl,
+    detailImages: item.detailImages
+  })[0]?.url || "";
 }
 
 export function isTrustedProductImage(value: string): boolean {

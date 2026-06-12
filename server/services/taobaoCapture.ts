@@ -27,7 +27,7 @@ export interface TaobaoLatestCaptureResult {
 
 export interface CaptureFileSystem {
   readdirSync(path: string): string[];
-  statSync(path: string): { mtimeMs: number; isFile: () => boolean };
+  statSync(path: string): { mtimeMs: number; isFile: () => boolean; isDirectory?: () => boolean };
   readFileSync(path: string, encoding: BufferEncoding): string;
 }
 
@@ -38,6 +38,7 @@ export interface ReadLatestTaobaoCaptureOptions {
 const OUTPUT_DIR = "output/taobao-captures";
 const DEFAULT_ORDER_MAX_PAGES = 3;
 const DEFAULT_LOGIN_WAIT_SECONDS = 60;
+const MAX_CAPTURE_SCAN_DEPTH = 2;
 
 interface InternalCaptureJob extends CaptureJob {
   child?: {
@@ -176,15 +177,7 @@ export function readTaobaoCaptureJobArtifact(id: string, options: ReadLatestTaob
 }
 
 export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: CaptureFileSystem = fs, options: ReadLatestTaobaoCaptureOptions = {}): TaobaoLatestCaptureResult {
-  const fileNames = readCaptureDirectory(outputDir, fileSystem);
-  const candidates = fileNames
-    .filter((fileName) => fileName.toLowerCase().endsWith(".json"))
-    .map((fileName) => {
-      const filePath = path.join(outputDir, fileName);
-      const stat = fileSystem.statSync(filePath);
-      return stat.isFile() ? { fileName, filePath, mtimeMs: stat.mtimeMs } : null;
-    })
-    .filter((candidate): candidate is { fileName: string; filePath: string; mtimeMs: number } => Boolean(candidate))
+  const candidates = collectJsonArtifacts(outputDir, fileSystem)
     .sort((left, right) => right.mtimeMs - left.mtimeMs || right.fileName.localeCompare(left.fileName));
 
   const latest = candidates[0];
@@ -294,14 +287,7 @@ function refreshJobFromArtifact(job: InternalCaptureJob): void {
 
 function findLatestJsonArtifact(outputDir: string): { fileName: string; filePath: string; mtimeMs: number } | null {
   try {
-    return fs.readdirSync(outputDir)
-      .filter((fileName) => fileName.toLowerCase().endsWith(".json"))
-      .map((fileName) => {
-        const filePath = path.join(outputDir, fileName);
-        const stat = fs.statSync(filePath);
-        return stat.isFile() ? { fileName, filePath, mtimeMs: stat.mtimeMs } : null;
-      })
-      .filter((candidate): candidate is { fileName: string; filePath: string; mtimeMs: number } => Boolean(candidate))
+    return collectJsonArtifacts(outputDir, fs)
       .sort((left, right) => right.mtimeMs - left.mtimeMs || right.fileName.localeCompare(left.fileName))[0] ?? null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -340,4 +326,20 @@ function readCaptureDirectory(outputDir: string, fileSystem: CaptureFileSystem):
     }
     throw error;
   }
+}
+
+function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, depth = 0): Array<{ fileName: string; filePath: string; mtimeMs: number }> {
+  const candidates: Array<{ fileName: string; filePath: string; mtimeMs: number }> = [];
+  for (const fileName of readCaptureDirectory(outputDir, fileSystem)) {
+    const filePath = path.join(outputDir, fileName);
+    const stat = fileSystem.statSync(filePath);
+    if (stat.isFile() && fileName.toLowerCase().endsWith(".json")) {
+      candidates.push({ fileName, filePath, mtimeMs: stat.mtimeMs });
+      continue;
+    }
+    if (depth < MAX_CAPTURE_SCAN_DEPTH && stat.isDirectory?.()) {
+      candidates.push(...collectJsonArtifacts(filePath, fileSystem, depth + 1));
+    }
+  }
+  return candidates;
 }

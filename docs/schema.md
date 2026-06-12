@@ -218,6 +218,13 @@ interface TaobaoWardrobeFilterSummary {
   skippedNonApparel: number;
 }
 
+interface ThumbnailRefreshResult {
+  scanned: number;
+  attemptedDownloads: number;
+  updated: number;
+  skipped: number;
+}
+
 interface TaobaoImportPreviewItem {
   sourceItemKey: string;
   brand: string;
@@ -415,6 +422,7 @@ ON source_order_items(item_id);
 | `data/outfit.sqlite` | 本地衣橱数据库 | 否 |
 | `data/outfit.sqlite-*` | SQLite WAL/SHM 等辅助文件 | 否 |
 | `output/taobao-captures` | 淘宝采集 JSON，任务式采集会使用 `<jobId>` 子目录 | 否 |
+| `output/garment-thumbnails` | 从淘宝采集图片候选低频下载的本地衣橱缩略图 | 否 |
 | `output/chrome-taobao-profile` | Selenium Chrome 用户数据目录 | 否 |
 | `logs` | 本地日志 | 否 |
 

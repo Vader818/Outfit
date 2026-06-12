@@ -431,6 +431,31 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 ]
 ```
 
+## POST /api/garments/thumbnails/refresh
+
+从 `source_order_items` 和 `output/taobao-captures` 中收集同一 `itemId` 的图片候选，按 URL 信号和轻量图片头校验选择商品图，低频下载到 `output/garment-thumbnails`，并把成功项的 `garments.image_url` 更新为 `/api/garment-thumbnails/<file>`。
+
+请求体可省略。可选字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `maxDownloads` | number | `8` | 本次刷新最多实际下载尝试次数，范围 `1` 到 `24` |
+| `maxDownloadsPerGarment` | number | `4` | 单件衣服最多尝试候选数，范围 `1` 到 `6` |
+| `delayMs` | number | `900` | 候选下载间隔毫秒数，范围 `0` 到 `5000` |
+
+响应：`ThumbnailRefreshResult`
+
+```json
+{
+  "scanned": 31,
+  "attemptedDownloads": 4,
+  "updated": 4,
+  "skipped": 27
+}
+```
+
+本地缩略图通过 `GET /api/garment-thumbnails/<file>` 读取，供衣服库和推荐卡片中的 `<img>` 直接使用。
+
 ## PUT /api/garments/:id
 
 更新衣橱条目。

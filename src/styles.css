@@ -805,6 +805,13 @@ li + li {
   font-weight: 750;
 }
 
+.inline-feedback {
+  color: #166534;
+  font-size: 14px;
+  font-weight: 700;
+  margin: -6px 0 0;
+}
+
 .banner {
   width: min(100%, 1200px);
   margin-bottom: 14px;
