@@ -23,7 +23,7 @@ Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单�
 
 ```powershell
 npm ci
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.lock.txt
 python -m pip install pytest
 ```
 
@@ -64,19 +64,22 @@ Node/TypeScript 测试：
 npm test
 ```
 
+类型检查、依赖审计与构建：
+
+```powershell
+npm run typecheck
+npm run lint
+npm run audit:prod
+npm run build
+```
+
 Python 采集脚本测试：
 
 ```powershell
 python -m pytest -q
 ```
 
-TypeScript 类型检查与 Vite 构建：
-
-```powershell
-npm run build
-```
-
-GitHub Actions 会执行同样的 Node 测试、Python pytest 和 TypeScript build。
+GitHub Actions 会执行 Node 测试、类型检查、构建、npm audit、Python pytest 和 Python 依赖审计。
 
 ## 淘宝采集与导入流程
 
@@ -128,16 +131,47 @@ python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.ht
 - 导入预览不会写入数据库，可用于在正式导入前检查自动分类、置信度、重复项和跳过原因。
 - 商品详情采集可以补充品牌、商品名、详情图、参数和描述；后导入的详情会合并到已购 SKU。
 - 导入后的条目可以在应用中手动确认、编辑、排除或标记为未拥有。
+- 衣橱和推荐卡片默认只显示本地缓存缩略图 `/api/garment-thumbnails/...`；没有本地缩略图时显示占位图，不直接加载远程商品图片。需要本地化图片时，先使用应用内“刷新缩略图”让后端受控下载。
 
 ## 隐私边界
 
 - API 只监听 `127.0.0.1`，默认不对局域网开放。
+- Express 会发送基础安全响应头，并对 mutating API 做本地 Origin/Sec-Fetch-Site 校验。
 - 淘宝账号、密码、Cookie、浏览器凭据不会被应用 API 保存。
 - 书签脚本只读取当前页面可见 DOM、页面脚本中的商品字段和图片 URL，不读取 `document.cookie`、`localStorage`、`sessionStorage` 或密码字段。
 - Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；该目录在本机保存。
 - 采集 JSON 位于 `output/taobao-captures`，SQLite 位于 `data/outfit.sqlite`，两者可能包含购买商品信息。
 - 天气接口会向 Open-Meteo 发送经纬度。前端会把经纬度保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`。
-- `.gitignore` 已忽略 `data/*.sqlite*`、`output/`、`logs/`、`node_modules/` 和 `dist/`，不要把本地采集产物或数据库提交到仓库。
+- PWA service worker 只缓存静态 shell，不缓存衣橱、订单、推荐、导出或任何 `/api` 响应。
+- `.gitignore` 已忽略 `data/`、`output/`、`logs/`、`node_modules/` 和 `dist/`，不要把本地采集产物、Chrome profile 或数据库提交到仓库。
+
+## 数据删除、导出与备份
+
+- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着记录、推荐历史和个人画像。
+- `output/chrome-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Selenium Chrome 退出淘宝登录态。
+- `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
+- `output/garment-thumbnails` 是本地缩略图缓存。
+- `GET /api/export` 导出的是敏感备份，分享或同步前请确认接收方和存放位置可信。
+
+查看隐私清理计划但不删除任何文件：
+
+```powershell
+npm run privacy:clean
+```
+
+清理采集产物、缩略图、日志和本地数据库：
+
+```powershell
+npm run privacy:clean -- --confirm
+```
+
+如需同时清除 Selenium 淘宝登录态，需要额外显式加入：
+
+```powershell
+npm run privacy:clean -- --confirm --include-login-state
+```
+
+本项目不会在安装、测试、构建、启动或 CI 中自动运行 `privacy:clean`。
 
 ## 文档
 

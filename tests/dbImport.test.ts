@@ -26,6 +26,13 @@ const payload = {
 };
 
 describe("database import", () => {
+  it("configures a SQLite busy timeout for local database writes", () => {
+    const db = createDatabase(":memory:");
+    const row = db.prepare("PRAGMA busy_timeout").get() as { timeout: number };
+
+    expect(row.timeout).toBe(5000);
+  });
+
   it("imports source order items and creates deduplicated garment drafts", () => {
     const db = createDatabase(":memory:");
 

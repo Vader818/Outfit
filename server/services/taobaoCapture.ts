@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,7 +27,7 @@ export interface TaobaoLatestCaptureResult {
 
 export interface CaptureFileSystem {
   readdirSync(path: string): string[];
-  statSync(path: string): { mtimeMs: number; isFile: () => boolean; isDirectory?: () => boolean };
+  statSync(path: string): { mtimeMs: number; size?: number; isFile: () => boolean; isDirectory?: () => boolean };
   readFileSync(path: string, encoding: BufferEncoding): string;
 }
 
@@ -39,12 +39,15 @@ const OUTPUT_DIR = "output/taobao-captures";
 const DEFAULT_ORDER_MAX_PAGES = 3;
 const DEFAULT_LOGIN_WAIT_SECONDS = 60;
 const MAX_CAPTURE_SCAN_DEPTH = 2;
+const MAX_CAPTURE_ARTIFACT_BYTES = 20 * 1024 * 1024;
 
 interface InternalCaptureJob extends CaptureJob {
   child?: {
+    pid?: number;
     kill?: () => unknown;
     on?: (event: string, callback: (code: number | null, signal: NodeJS.Signals | null) => void) => unknown;
   };
+  logFd?: number;
 }
 
 const captureJobs = new Map<string, InternalCaptureJob>();
@@ -84,6 +87,11 @@ export function startTaobaoCaptureJob(input: {
   loginWait?: number;
   url?: string;
 }): CaptureJob {
+  const activeJob = findActiveCaptureJob();
+  if (activeJob) {
+    throw new ApiError("CAPTURE_JOB_RUNNING", "已有 Selenium 采集任务正在运行，请等待完成或取消后再启动。", 409);
+  }
+
   const id = createCaptureJobId();
   const outputDir = `${OUTPUT_DIR}/${id}`;
   const logPath = `${outputDir}/capture.log`;
@@ -92,10 +100,12 @@ export function startTaobaoCaptureJob(input: {
   const args = buildCaptureArgs(input, outputDir);
   const now = new Date().toISOString();
   const command = process.env.PYTHON || "python";
+  const logFd = fs.openSync(logPath, "a");
+  fs.writeSync(logFd, `[${now}] Starting ${input.mode} capture: ${command} ${args.join(" ")}\n`);
   const child = spawn(command, args, {
     cwd: process.cwd(),
     detached: false,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", logFd, logFd],
     shell: false
   });
   const job: InternalCaptureJob = {
@@ -108,7 +118,8 @@ export function startTaobaoCaptureJob(input: {
     message: "Selenium 采集任务已启动。请在打开的 Chrome 中登录或处理验证。",
     createdAt: now,
     updatedAt: now,
-    child
+    child,
+    logFd
   };
 
   captureJobs.set(id, job);
@@ -125,6 +136,7 @@ export function startTaobaoCaptureJob(input: {
       job.message = job.error;
     }
     job.updatedAt = new Date().toISOString();
+    closeJobLog(job);
     delete job.child;
   });
 
@@ -146,10 +158,11 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
     throw new ApiError("NOT_FOUND", "采集任务不存在", 404);
   }
   if (job.status === "running" || job.status === "pending") {
-    job.child?.kill?.();
+    terminateCaptureProcess(job);
     job.status = "cancelled";
     job.message = "采集任务已取消。";
     job.updatedAt = new Date().toISOString();
+    closeJobLog(job);
     delete job.child;
   }
   return publicJob(job);
@@ -165,6 +178,7 @@ export function readTaobaoCaptureJobArtifact(id: string, options: ReadLatestTaob
   job.artifactPath = latest.path;
   job.message = "采集产物已读取。";
   job.updatedAt = new Date().toISOString();
+  closeJobLog(job);
   return {
     jobId: id,
     outputDir: latest.outputDir,
@@ -184,8 +198,14 @@ export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: Capt
   if (!latest) {
     throw new Error(`没有找到 Selenium 采集产物：${outputDir}`);
   }
+  if (latest.size !== undefined && latest.size > MAX_CAPTURE_ARTIFACT_BYTES) {
+    throw new ApiError("CAPTURE_ARTIFACT_TOO_LARGE", `Selenium 采集产物超过 ${MAX_CAPTURE_ARTIFACT_BYTES} 字节上限：${latest.fileName}`, 413);
+  }
 
   const jsonText = fileSystem.readFileSync(latest.filePath, "utf8");
+  if (Buffer.byteLength(jsonText, "utf8") > MAX_CAPTURE_ARTIFACT_BYTES) {
+    throw new ApiError("CAPTURE_ARTIFACT_TOO_LARGE", `Selenium 采集产物超过 ${MAX_CAPTURE_ARTIFACT_BYTES} 字节上限：${latest.fileName}`, 413);
+  }
   let payload: unknown;
   try {
     payload = JSON.parse(jsonText);
@@ -271,8 +291,18 @@ function createCaptureJobId(): string {
 }
 
 function publicJob(job: InternalCaptureJob): CaptureJob {
-  const { child: _child, ...rest } = job;
+  const { child: _child, logFd: _logFd, ...rest } = job;
   return { ...rest };
+}
+
+function findActiveCaptureJob(): InternalCaptureJob | null {
+  for (const job of captureJobs.values()) {
+    refreshJobFromArtifact(job);
+    if (job.status === "running" || job.status === "pending") {
+      return job;
+    }
+  }
+  return null;
 }
 
 function refreshJobFromArtifact(job: InternalCaptureJob): void {
@@ -283,9 +313,10 @@ function refreshJobFromArtifact(job: InternalCaptureJob): void {
   job.artifactPath = artifact.filePath;
   job.message = "采集完成，产物已生成。";
   job.updatedAt = new Date().toISOString();
+  closeJobLog(job);
 }
 
-function findLatestJsonArtifact(outputDir: string): { fileName: string; filePath: string; mtimeMs: number } | null {
+function findLatestJsonArtifact(outputDir: string): { fileName: string; filePath: string; mtimeMs: number; size?: number } | null {
   try {
     return collectJsonArtifacts(outputDir, fs)
       .sort((left, right) => right.mtimeMs - left.mtimeMs || right.fileName.localeCompare(left.fileName))[0] ?? null;
@@ -328,13 +359,13 @@ function readCaptureDirectory(outputDir: string, fileSystem: CaptureFileSystem):
   }
 }
 
-function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, depth = 0): Array<{ fileName: string; filePath: string; mtimeMs: number }> {
-  const candidates: Array<{ fileName: string; filePath: string; mtimeMs: number }> = [];
+function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, depth = 0): Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> {
+  const candidates: Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> = [];
   for (const fileName of readCaptureDirectory(outputDir, fileSystem)) {
     const filePath = path.join(outputDir, fileName);
     const stat = fileSystem.statSync(filePath);
     if (stat.isFile() && fileName.toLowerCase().endsWith(".json")) {
-      candidates.push({ fileName, filePath, mtimeMs: stat.mtimeMs });
+      candidates.push({ fileName, filePath, mtimeMs: stat.mtimeMs, size: stat.size });
       continue;
     }
     if (depth < MAX_CAPTURE_SCAN_DEPTH && stat.isDirectory?.()) {
@@ -342,4 +373,34 @@ function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, 
     }
   }
   return candidates;
+}
+
+function terminateCaptureProcess(job: InternalCaptureJob): void {
+  const pid = job.pid || job.child?.pid;
+  try {
+    job.child?.kill?.();
+  } catch {
+    // Best-effort cancellation continues with platform process-tree cleanup.
+  }
+  if (process.platform === "win32" && pid && !isTestRuntime()) {
+    try {
+      execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+    } catch {
+      // The child may already be gone.
+    }
+  }
+}
+
+function closeJobLog(job: InternalCaptureJob): void {
+  if (job.logFd === undefined) return;
+  try {
+    fs.closeSync(job.logFd);
+  } catch {
+    // Closing a process-owned fd is best effort.
+  }
+  delete job.logFd;
+}
+
+function isTestRuntime(): boolean {
+  return Boolean(process.env.VITEST || process.env.VITEST_WORKER_ID || process.env.NODE_ENV === "test");
 }

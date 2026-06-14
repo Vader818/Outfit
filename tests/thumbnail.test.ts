@@ -79,6 +79,89 @@ describe("thumbnail image probing and download", () => {
     });
     expect(existsSync(join(outputDir, "garment-42-1041553367966.png"))).toBe(true);
   });
+
+  it("rejects non-Taobao and private thumbnail URLs before fetching", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 7,
+      category: "top",
+      title: "白色衬衫",
+      candidates: [
+        "http://127.0.0.1/private.jpg",
+        "http://localhost/private.jpg",
+        "https://192.168.1.20/private.jpg",
+        "file:///tmp/private.jpg",
+        "data:image/png;base64,AAAA",
+        "https://example.com/remote.jpg"
+      ],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      maxDownloads: 6,
+      delayMs: 0,
+      fetcher: fetchMock
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects thumbnail downloads with an oversized content length", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+      status: 200,
+      headers: {
+        "content-type": "image/png",
+        "content-length": String(6 * 1024 * 1024)
+      }
+    }));
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 8,
+      category: "top",
+      title: "白色衬衫",
+      candidates: ["https://img.alicdn.com/imgextra/i1/123/O1CN01shirt.jpg"],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      delayMs: 0,
+      fetcher: fetchMock
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(outputDir, "garment-8-unknown.png"))).toBe(false);
+  });
+
+  it("aborts thumbnail streams that exceed the configured byte limit", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+    const failures: string[] = [];
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 9,
+      category: "top",
+      title: "白色衬衫",
+      candidates: ["https://img.alicdn.com/imgextra/i1/123/O1CN01shirt.jpg"],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      maxBytes: 16,
+      delayMs: 0,
+      fetcher: fetchMock,
+      onFailure: (event) => failures.push(event.reason)
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(failures).toContain("size_limit_exceeded");
+    expect(existsSync(join(outputDir, "garment-9-unknown.png"))).toBe(false);
+  });
 });
 
 function makePng(width: number, height: number): Uint8Array {

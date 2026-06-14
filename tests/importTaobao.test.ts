@@ -1,7 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { normalizeTaobaoBatch } from "../server/services/importTaobao";
+import { isTrustedProductImage, normalizeTaobaoBatch } from "../server/services/importTaobao";
 
 describe("normalizeTaobaoBatch", () => {
+  it("rejects import batches with too many items", () => {
+    expect(() => normalizeTaobaoBatch({
+      source: "taobao-bookmarklet",
+      items: Array.from({ length: 1001 }, (_, index) => ({
+        itemId: String(index),
+        title: "白色衬衫",
+        status: "交易成功"
+      }))
+    })).toThrow(/items/);
+  });
+
+  it("rejects captured item text fields that exceed import limits", () => {
+    expect(() => normalizeTaobaoBatch({
+      source: "taobao-bookmarklet",
+      items: [
+        {
+          itemId: "too-long",
+          title: "白色衬衫",
+          status: "交易成功",
+          rawText: "x".repeat(8001)
+        }
+      ]
+    })).toThrow(/rawText/);
+  });
+
+  it("does not throw on malformed percent-encoded image URLs", () => {
+    expect(() => isTrustedProductImage("https://img.alicdn.com/a/%E0%A4%A.jpg")).not.toThrow();
+    expect(isTrustedProductImage("https://img.alicdn.com/a/%E0%A4%A.jpg")).toBe(true);
+  });
+
   it("filters refunded and non-apparel items while creating a garment draft", () => {
     const result = normalizeTaobaoBatch({
       source: "taobao-bookmarklet",

@@ -1,14 +1,15 @@
 import express, { type Request, type Response } from "express";
+import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
 import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
-import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "./services/taobaoCapture";
+import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -19,7 +20,21 @@ export interface ApiAppOptions {
 
 export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): express.Express {
   const app = express();
+  const loginRateLimiter = createLoginRateLimiter();
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        imgSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"]
+      }
+    },
+    referrerPolicy: { policy: "no-referrer" }
+  }));
   app.use(express.json({ limit: "5mb" }));
+  app.use(rejectUntrustedMutatingRequests);
   app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
 
   app.get("/api/health", (_request, response) => {
@@ -42,10 +57,21 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
 
   app.post("/api/auth/login", (request, response) => {
     try {
-      const user = authenticateUser(db, validateAuthCredentials(request.body));
+      const credentials = validateAuthCredentials(request.body);
+      loginRateLimiter.assertAllowed(request, credentials.username);
+      const user = authenticateUser(db, credentials);
+      loginRateLimiter.reset(request, credentials.username);
       setSessionCookie(response, createSession(db, user.id));
       response.json({ hasAccount: true, user });
     } catch (error) {
+      if (error instanceof ApiError && error.code === "INVALID_CREDENTIALS") {
+        try {
+          const credentials = validateAuthCredentials(request.body);
+          loginRateLimiter.recordFailure(request, credentials.username);
+        } catch {
+          // Validation errors are handled by the original error response.
+        }
+      }
       sendError(response, error);
     }
   });
@@ -74,13 +100,14 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.post("/api/capture/taobao-orders", (request, response) => {
-    handle(response, () => startTaobaoOrderCapture(request.body));
+    handle(response, () => {
+      throw legacyCaptureDisabled();
+    });
   });
 
   app.post("/api/capture/taobao-item", (request, response) => {
     handle(response, () => {
-      validateCaptureJobRequest({ ...(request.body || {}), mode: "item-detail" });
-      return startTaobaoItemCapture(request.body);
+      throw legacyCaptureDisabled();
     });
   });
 
@@ -125,12 +152,12 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.put("/api/garments/:id", (request, response) => {
-    handle(response, () => updateGarment(db, Number(request.params.id), validateGarmentUpdate(request.body) as GarmentUpdate));
+    handle(response, () => updateGarment(db, validatePositiveIntegerParam(request.params.id), validateGarmentUpdate(request.body) as GarmentUpdate));
   });
 
   app.delete("/api/garments/:id", (request, response) => {
     try {
-      deleteGarment(db, Number(request.params.id));
+      deleteGarment(db, validatePositiveIntegerParam(request.params.id));
       response.status(204).end();
     } catch (error) {
       sendError(response, error);
@@ -163,9 +190,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
 
   app.get("/api/weather", async (request, response) => {
     try {
-      const latitude = Number(request.query.latitude);
-      const longitude = Number(request.query.longitude);
-      validateWeatherQuery(latitude, longitude);
+      const { latitude, longitude } = validateWeatherQuery(request.query.latitude, request.query.longitude);
       const cached = getCachedWeather(db, latitude, longitude);
       if (cached) {
         response.json(cached);
@@ -205,7 +230,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
         recentlyWornGarmentIds,
         userProfile: effectiveProfile
       });
-      saveRecommendationRun(db, { ...request.body, userProfile: effectiveProfile }, result);
+      saveRecommendationRun(db, { ...recommendationRequest, userProfile: effectiveProfile }, result);
       return result;
     });
   });
@@ -247,9 +272,9 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
 }
 
 function sendError(response: Response, error: unknown): void {
-  const message = error instanceof Error ? error.message : "服务器错误";
-  const status = error instanceof ApiError ? error.status : 400;
-  const code = error instanceof ApiError ? error.code : "BAD_REQUEST";
+  const message = error instanceof ApiError ? error.message : "服务器错误";
+  const status = error instanceof ApiError ? error.status : 500;
+  const code = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
   const details = error instanceof ApiError ? error.details : undefined;
   response.status(status).json({
     error: {
@@ -258,6 +283,91 @@ function sendError(response: Response, error: unknown): void {
       ...(details === undefined ? {} : { details })
     }
   });
+}
+
+function rejectUntrustedMutatingRequests(request: Request, response: Response, next: () => void): void {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+    next();
+    return;
+  }
+  if (isTrustedMutatingRequest(request)) {
+    next();
+    return;
+  }
+  sendError(response, new ApiError("ORIGIN_NOT_ALLOWED", "请求来源不被允许", 403));
+}
+
+function isTrustedMutatingRequest(request: Request): boolean {
+  const fetchSite = request.headers["sec-fetch-site"];
+  if (fetchSite === "cross-site") return false;
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    const requestHost = request.headers.host || "";
+    if (parsed.host === requestHost) return true;
+    return isLocalHostname(parsed.hostname) && isLocalRequestHost(requestHost);
+  } catch {
+    return false;
+  }
+}
+
+function isLocalRequestHost(value: string): boolean {
+  const host = value.split(":")[0]?.replace(/^\[/, "").replace(/\]$/, "") || "";
+  return isLocalHostname(host);
+}
+
+function isLocalHostname(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function createLoginRateLimiter(): {
+  assertAllowed: (request: Request, username: string) => void;
+  recordFailure: (request: Request, username: string) => void;
+  reset: (request: Request, username: string) => void;
+} {
+  const failures = new Map<string, { count: number; firstFailureAt: number }>();
+  const maxFailures = 5;
+  const windowMs = 15 * 60 * 1000;
+
+  function key(request: Request, username: string): string {
+    return `${username.toLowerCase()}|${request.socket.remoteAddress || "unknown"}`;
+  }
+
+  function currentEntry(request: Request, username: string): { count: number; firstFailureAt: number } | undefined {
+    const entryKey = key(request, username);
+    const entry = failures.get(entryKey);
+    if (!entry) return undefined;
+    if (Date.now() - entry.firstFailureAt > windowMs) {
+      failures.delete(entryKey);
+      return undefined;
+    }
+    return entry;
+  }
+
+  return {
+    assertAllowed(request, username) {
+      const entry = currentEntry(request, username);
+      if (entry && entry.count >= maxFailures) {
+        throw new ApiError("LOGIN_RATE_LIMITED", "登录失败次数过多，请稍后再试", 429);
+      }
+    },
+    recordFailure(request, username) {
+      const entryKey = key(request, username);
+      const entry = currentEntry(request, username);
+      if (!entry) {
+        failures.set(entryKey, { count: 1, firstFailureAt: Date.now() });
+        return;
+      }
+      entry.count += 1;
+      failures.set(entryKey, entry);
+    },
+    reset(request, username) {
+      failures.delete(key(request, username));
+    }
+  };
 }
 
 function isTruthyQueryFlag(value: unknown): boolean {
@@ -274,6 +384,10 @@ function readSessionCookie(request: Request): string | undefined {
     }
   }
   return undefined;
+}
+
+function legacyCaptureDisabled(): ApiError {
+  return new ApiError("LEGACY_CAPTURE_DISABLED", "旧版 detached 采集接口已禁用，请使用 /api/capture/jobs。", 410);
 }
 
 function setSessionCookie(response: Response, token: string): void {

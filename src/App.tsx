@@ -1292,16 +1292,30 @@ function GarmentThumbnail({ item }: { item: Garment }) {
   const [failed, setFailed] = useState(false);
   const meta = garmentMeta(item);
   const alt = [meta.brand, item.name].filter(Boolean).join(" ");
+  const thumbnailUrl = localThumbnailUrl(item.imageUrl);
 
   useEffect(() => {
     setFailed(false);
-  }, [item.imageUrl]);
+  }, [thumbnailUrl]);
 
   return (
     <div className="thumb">
-      {item.imageUrl && !failed ? <img src={item.imageUrl} alt={alt || item.name} loading="lazy" onError={() => setFailed(true)} /> : <Shirt size={24} />}
+      {thumbnailUrl && !failed ? (
+        <img
+          src={thumbnailUrl}
+          alt={alt || item.name}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      ) : <Shirt size={24} />}
     </div>
   );
+}
+
+function localThumbnailUrl(value: string): string {
+  return value.startsWith("/api/garment-thumbnails/") ? value : "";
 }
 
 function SeasonPicker({ seasons, onChange }: { seasons: Garment["seasons"]; onChange: (seasons: Garment["seasons"]) => void }) {

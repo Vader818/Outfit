@@ -34,6 +34,17 @@ export const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as cons
 
 const COLOR_PATTERN = /^[a-z][a-z-]{1,30}$/i;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,32}$/;
+const STRING_ARRAY_MAX_ITEMS = 32;
+const STRING_ARRAY_MAX_ITEM_LENGTH = 64;
+const GARMENT_STRING_LIMITS: Partial<Record<keyof GarmentUpdate, number>> = {
+  brand: 120,
+  name: 120,
+  rawName: 180,
+  color: 120,
+  imageUrl: 2048,
+  size: 120,
+  notes: 1000
+};
 
 export function assertRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -125,12 +136,17 @@ export function validateCaptureJobRequest(value: unknown): {
 }
 
 export function validateWeatherQuery(latitudeValue: unknown, longitudeValue: unknown): { latitude: number; longitude: number } {
-  const latitude = Number(latitudeValue);
-  const longitude = Number(longitudeValue);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    throw new ValidationError("latitude 和 longitude 必须是数字");
-  }
+  const latitude = boundedNumber(latitudeValue, "latitude", -90, 90);
+  const longitude = boundedNumber(longitudeValue, "longitude", -180, 180);
   return { latitude, longitude };
+}
+
+export function validatePositiveIntegerParam(value: unknown, name = "id"): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new ValidationError(`${name} 必须是正整数`);
+  }
+  return parsed;
 }
 
 export function validateRecommendationRequest(value: unknown): {
@@ -193,6 +209,10 @@ function copyOptionalString<T extends Record<string, unknown>, K extends keyof G
 ): void {
   if (!(key in source)) return;
   const value = stringValue(source[key], String(key));
+  const maxLength = GARMENT_STRING_LIMITS[key];
+  if (maxLength !== undefined && value.length > maxLength) {
+    throw new ValidationError(`${String(key)} 不能超过 ${maxLength} 个字符`);
+  }
   check?.(value);
   target[key] = value as never;
 }
@@ -215,7 +235,16 @@ function stringArray(value: unknown, name: string): string[] {
   if (!Array.isArray(value)) {
     throw new ValidationError(`${name} 必须是字符串数组`);
   }
-  return Array.from(new Set(value.map((item) => stringValue(item, name).trim()).filter(Boolean)));
+  if (value.length > STRING_ARRAY_MAX_ITEMS) {
+    throw new ValidationError(`${name} 最多包含 ${STRING_ARRAY_MAX_ITEMS} 项`);
+  }
+  return Array.from(new Set(value.map((item) => {
+    const text = stringValue(item, name).trim();
+    if (text.length > STRING_ARRAY_MAX_ITEM_LENGTH) {
+      throw new ValidationError(`${name} 单项不能超过 ${STRING_ARRAY_MAX_ITEM_LENGTH} 个字符`);
+    }
+    return text;
+  }).filter(Boolean)));
 }
 
 function stringValue(value: unknown, name: string): string {

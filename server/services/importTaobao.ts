@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Garment, GarmentCategory, TaobaoCapturedBatch, TaobaoCapturedItem, TaobaoDetailProp, TaobaoImportPreview, TaobaoPageType, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
+import { ValidationError } from "../validation";
 import { classifyGarment } from "./classify";
 import { rankThumbnailCandidates } from "./thumbnails";
 
@@ -63,6 +64,12 @@ const PRODUCT_TITLE_PATTERNS = [
   /([A-Za-z][A-Za-z0-9._ -]{0,40}\/[^¥￥]{8,160}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi,
   /([\u4e00-\u9fffA-Za-z0-9/·._ -]{12,160}?(?:T恤|t恤|tee|上衣|短袖|长袖|衬衫|外套|裤|鞋|裙|连衣裙|卫衣|毛衣|针织|背心|吊带|靴|包|帽|围巾)[\u4e00-\u9fffA-Za-z0-9/·._ -]{0,60}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi
 ];
+const MAX_IMPORT_ITEMS = 1000;
+const MAX_RAW_TEXT_LENGTH = 8000;
+const MAX_DETAIL_DESCRIPTION_LENGTH = 4000;
+const MAX_DETAIL_IMAGES = 24;
+const MAX_DETAIL_PROPS = 80;
+const MAX_URL_LENGTH = 2048;
 
 export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   const batch = assertBatch(payload);
@@ -230,6 +237,9 @@ function assertBatch(payload: unknown): TaobaoCapturedBatch {
   if (!Array.isArray(batch.items)) {
     throw new Error("导入内容缺少 items 数组");
   }
+  if (batch.items.length > MAX_IMPORT_ITEMS) {
+    throw new ValidationError(`items 最多包含 ${MAX_IMPORT_ITEMS} 条`);
+  }
   return batch;
 }
 
@@ -284,36 +294,36 @@ function cleanText(value: string): string {
 
 function normalizeItem(item: TaobaoCapturedItem, source: string, batchPageType: TaobaoPageType, pageUrl: string): SourceOrderItemDraft {
   const pageType = item.pageType || batchPageType || guessPageType(pageUrl);
-  const itemUrl = cleanText(item.itemUrl || "");
-  const detailUrl = cleanText(item.detailUrl || (pageType === "item-detail" ? itemUrl || pageUrl : ""));
-  const itemId = cleanText(item.itemId || extractItemId(itemUrl) || extractItemId(detailUrl) || "");
-  const detailTitle = cleanText(item.detailTitle || "");
-  const title = cleanText(item.title || detailTitle);
-  const detailImages = normalizeStringList(item.detailImages);
-  const imageUrl = cleanText(item.imageUrl || "");
+  const itemUrl = limitedText(item.itemUrl || "", "itemUrl", MAX_URL_LENGTH);
+  const detailUrl = limitedText(item.detailUrl || (pageType === "item-detail" ? itemUrl || pageUrl : ""), "detailUrl", MAX_URL_LENGTH);
+  const itemId = limitedText(item.itemId || extractItemId(itemUrl) || extractItemId(detailUrl) || "", "itemId", 120);
+  const detailTitle = limitedText(item.detailTitle || "", "detailTitle", 300);
+  const title = limitedText(item.title || detailTitle, "title", 300);
+  const detailImages = normalizeStringList(item.detailImages, "detailImages", MAX_DETAIL_IMAGES, MAX_URL_LENGTH);
+  const imageUrl = limitedText(item.imageUrl || "", "imageUrl", MAX_URL_LENGTH);
 
   return {
     externalKey: stableKey({ ...item, itemId, itemUrl, detailUrl, title }),
     source,
     pageType,
     itemId,
-    orderId: cleanText(item.orderId || ""),
-    orderTime: cleanText(item.orderTime || ""),
+    orderId: limitedText(item.orderId || "", "orderId", 120),
+    orderTime: limitedText(item.orderTime || "", "orderTime", 120),
     title,
-    sku: cleanText(item.sku || ""),
+    sku: limitedText(item.sku || "", "sku", 500),
     quantity: toInteger(item.quantity, 1),
     payment: toMoney(item.payment),
-    status: cleanText(item.status || ""),
-    refundText: cleanText(item.refundText || ""),
+    status: limitedText(item.status || "", "status", 120),
+    refundText: limitedText(item.refundText || "", "refundText", 300),
     itemUrl,
     imageUrl,
-    rawText: cleanText(item.rawText || ""),
+    rawText: limitedText(item.rawText || "", "rawText", MAX_RAW_TEXT_LENGTH),
     detailUrl,
     detailTitle,
     detailProps: normalizeDetailProps(item.detailProps),
-    detailDescription: cleanText(item.detailDescription || ""),
+    detailDescription: limitedText(item.detailDescription || "", "detailDescription", MAX_DETAIL_DESCRIPTION_LENGTH),
     detailImages,
-    detailRawText: cleanText(item.detailRawText || ""),
+    detailRawText: limitedText(item.detailRawText || "", "detailRawText", MAX_RAW_TEXT_LENGTH),
     isRefunded: false,
     isApparel: false
   };
@@ -409,7 +419,7 @@ export function preferredImage(item: SourceOrderItemDraft, category?: GarmentCat
 export function isTrustedProductImage(value: string): boolean {
   const url = cleanText(value);
   if (!url) return false;
-  const lower = decodeURIComponent(url).toLowerCase();
+  const lower = safeDecode(url).toLowerCase();
   if (!/^https?:\/\//i.test(url) && !/^\/\//.test(url)) return false;
   if (/\.(?:svg|gif)(?:[?#].*)?$/i.test(lower)) return false;
   if (/logo|sprite|icon|avatar|placeholder|transparent|loading|wangwang|shop[_-]?card|store[_-]?card/.test(lower)) return false;
@@ -487,20 +497,26 @@ function escapeRegExp(value: string): string {
 
 function normalizeDetailProps(value: unknown): TaobaoDetailProp[] {
   if (!Array.isArray(value)) return [];
+  if (value.length > MAX_DETAIL_PROPS) {
+    throw new ValidationError(`detailProps 最多包含 ${MAX_DETAIL_PROPS} 项`);
+  }
   const props: TaobaoDetailProp[] = [];
   for (const prop of value) {
     if (!prop || typeof prop !== "object") continue;
     const record = prop as Record<string, unknown>;
-    const name = cleanText(String(record.name ?? ""));
-    const propValue = cleanText(String(record.value ?? ""));
+    const name = limitedText(record.name ?? "", "detailProps.name", 120);
+    const propValue = limitedText(record.value ?? "", "detailProps.value", 1000);
     if (name && propValue) props.push({ name, value: propValue });
   }
   return props;
 }
 
-function normalizeStringList(value: unknown): string[] {
+function normalizeStringList(value: unknown, name: string, maxItems: number, maxItemLength: number): string[] {
   if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map((item) => cleanText(String(item ?? ""))).filter(Boolean))).slice(0, 12);
+  if (value.length > maxItems) {
+    throw new ValidationError(`${name} 最多包含 ${maxItems} 项`);
+  }
+  return Array.from(new Set(value.map((item) => limitedText(item ?? "", name, maxItemLength)).filter(Boolean)));
 }
 
 function extractItemId(url: string | undefined): string {
@@ -527,4 +543,20 @@ function toMoney(value: unknown): number | null {
   if (value === undefined || value === null || value === "") return null;
   const parsed = Number.parseFloat(String(value).replace(/[^\d.]/g, ""));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function limitedText(value: unknown, name: string, maxLength: number): string {
+  const cleaned = cleanText(String(value ?? ""));
+  if (cleaned.length > maxLength) {
+    throw new ValidationError(`${name} 不能超过 ${maxLength} 个字符`);
+  }
+  return cleaned;
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

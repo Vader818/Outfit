@@ -352,6 +352,68 @@ describe("App", () => {
     expect(markup).not.toContain(">winter<");
   });
 
+  it("does not render remote garment image URLs by default", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+
+    const markup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
+
+    expect(markup).not.toContain("https://img.alicdn.com/remote-shirt.jpg");
+    expect(markup).not.toContain("<img");
+  });
+
+  it("renders local cached garment thumbnails with privacy-preserving image attributes", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+
+    const markup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(405, "本地缩略图衬衫", "top", { imageUrl: "/api/garment-thumbnails/garment-405-shirt.png" })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
+
+    expect(markup).toContain('src="/api/garment-thumbnails/garment-405-shirt.png"');
+    expect(markup).toContain('loading="lazy"');
+    expect(markup).toContain('decoding="async"');
+    expect(markup).toContain('referrerPolicy="no-referrer"');
+  });
+
   it("renders empty states for wardrobe and recommendation views", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {

@@ -111,7 +111,21 @@ export function createDatabase(databasePath = defaultDatabasePath()): AppDatabas
   if (databasePath !== ":memory:") {
     mkdirSync(dirname(databasePath), { recursive: true });
   }
-  const db = new DatabaseSync(databasePath);
+  const databaseOptions = {
+    timeout: 5000,
+    allowExtension: false,
+    enableForeignKeyConstraints: true,
+    defensive: true,
+    limits: {
+      length: 10 * 1024 * 1024,
+      variableNumber: 1000
+    }
+  };
+  const db = new DatabaseSync(databasePath, databaseOptions);
+  db.exec("PRAGMA busy_timeout = 5000");
+  if (databasePath !== ":memory:") {
+    db.exec("PRAGMA journal_mode = WAL");
+  }
   migrate(db);
   return db;
 }

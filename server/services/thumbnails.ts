@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import type { GarmentCategory } from "../../src/shared/types";
 
@@ -30,9 +31,13 @@ export interface DownloadGarmentThumbnailInput extends ThumbnailCandidateInput {
   outputDir?: string;
   publicBasePath?: string;
   maxDownloads?: number;
+  maxBytes?: number;
+  timeoutMs?: number;
+  allowedHostSuffixes?: string[];
   delayMs?: number;
   fetcher?: typeof fetch;
   onAttempt?: (url: string) => void;
+  onFailure?: (event: ThumbnailDownloadFailure) => void;
 }
 
 export interface DownloadedThumbnail {
@@ -49,10 +54,31 @@ export interface ThumbnailRefreshResult {
   skipped: number;
 }
 
+export type ThumbnailDownloadFailureReason =
+  | "invalid_url"
+  | "blocked_host"
+  | "blocked_address"
+  | "http_error"
+  | "content_type"
+  | "content_length_exceeded"
+  | "size_limit_exceeded"
+  | "invalid_image"
+  | "timeout"
+  | "fetch_error";
+
+export interface ThumbnailDownloadFailure {
+  url: string;
+  reason: ThumbnailDownloadFailureReason;
+  detail?: string;
+}
+
 const DEFAULT_THUMBNAIL_DIR = join(process.cwd(), "output", "garment-thumbnails");
 const DEFAULT_PUBLIC_BASE_PATH = "/api/garment-thumbnails";
 const DEFAULT_MAX_DOWNLOADS_PER_GARMENT = 4;
 const DEFAULT_DOWNLOAD_DELAY_MS = 900;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 5000;
+const DEFAULT_MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024;
+const DEFAULT_ALLOWED_IMAGE_HOST_SUFFIXES = [".alicdn.com", ".taobaocdn.com"];
 const MIN_IMAGE_SIDE = 180;
 
 export function defaultThumbnailOutputDir(): string {
@@ -178,20 +204,46 @@ async function tryDownloadCandidate(options: {
   publicBasePath: string;
   fetcher: typeof fetch;
 }): Promise<DownloadedThumbnail | null> {
+  const maxBytes = Math.max(1, options.input.maxBytes ?? DEFAULT_MAX_THUMBNAIL_BYTES);
+  const timeoutMs = Math.max(1, options.input.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS);
+  const urlCheck = validateDownloadUrl(options.candidate.url, options.input.allowedHostSuffixes);
+  if (!urlCheck.ok) {
+    recordDownloadFailure(options.input, options.candidate.url, urlCheck.reason);
+    return null;
+  }
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
   try {
     const response = await options.fetcher(options.candidate.url, {
       headers: {
         "user-agent": "Mozilla/5.0 Outfit local thumbnail fetcher",
         "accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8"
-      }
+      },
+      signal: abortController.signal
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      recordDownloadFailure(options.input, options.candidate.url, "http_error", String(response.status));
+      return null;
+    }
     const contentType = response.headers.get("content-type") || "";
-    if (contentType && !/^image\//i.test(contentType)) return null;
+    if (contentType && !/^image\//i.test(contentType)) {
+      recordDownloadFailure(options.input, options.candidate.url, "content_type", contentType);
+      return null;
+    }
 
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const contentLength = parseContentLength(response.headers.get("content-length"));
+    if (contentLength !== null && contentLength > maxBytes) {
+      recordDownloadFailure(options.input, options.candidate.url, "content_length_exceeded", String(contentLength));
+      return null;
+    }
+
+    const bytes = await readResponseBody(response, maxBytes);
     const imageInfo = readImageInfo(bytes);
-    if (!imageInfo || !isCategoryCompatibleImage(imageInfo, options.input.category)) return null;
+    if (!imageInfo || !isCategoryCompatibleImage(imageInfo, options.input.category)) {
+      recordDownloadFailure(options.input, options.candidate.url, "invalid_image");
+      return null;
+    }
 
     const fileName = localThumbnailFileName(options.input, imageInfo);
     const filePath = join(options.outputDir, fileName);
@@ -202,9 +254,138 @@ async function tryDownloadCandidate(options: {
       filePath,
       imageInfo
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ThumbnailDownloadError) {
+      recordDownloadFailure(options.input, options.candidate.url, error.reason);
+    } else if ((error as Error).name === "AbortError") {
+      recordDownloadFailure(options.input, options.candidate.url, "timeout");
+    } else {
+      recordDownloadFailure(options.input, options.candidate.url, "fetch_error", error instanceof Error ? error.message : undefined);
+    }
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+function validateDownloadUrl(value: string, allowedHostSuffixes = DEFAULT_ALLOWED_IMAGE_HOST_SUFFIXES): { ok: true } | { ok: false; reason: ThumbnailDownloadFailureReason } {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, reason: "invalid_url" };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, reason: "invalid_url" };
+  }
+  if (isBlockedAddressHost(parsed.hostname)) {
+    return { ok: false, reason: "blocked_address" };
+  }
+  if (!isAllowedImageHost(parsed.hostname, allowedHostSuffixes)) {
+    return { ok: false, reason: "blocked_host" };
+  }
+  return { ok: true };
+}
+
+function isAllowedImageHost(hostname: string, allowedHostSuffixes: string[]): boolean {
+  const normalized = normalizeHostname(hostname);
+  return allowedHostSuffixes.some((suffix) => {
+    const cleaned = suffix.toLowerCase();
+    const withoutWildcard = cleaned.startsWith("*.") ? cleaned.slice(1) : cleaned;
+    if (withoutWildcard.startsWith(".")) {
+      return normalized.endsWith(withoutWildcard) && normalized.length > withoutWildcard.length;
+    }
+    return normalized === withoutWildcard || normalized.endsWith(`.${withoutWildcard}`);
+  });
+}
+
+function isBlockedAddressHost(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (!normalized || normalized === "localhost" || normalized.endsWith(".localhost")) return true;
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) return isBlockedIpv4(normalized);
+  if (ipVersion === 6) return isBlockedIpv6(normalized);
+  return false;
+}
+
+function isBlockedIpv4(value: string): boolean {
+  const parts = value.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
+}
+
+function isBlockedIpv6(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd")
+  );
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+}
+
+function parseContentLength(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function readResponseBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ThumbnailDownloadError("size_limit_exceeded");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+class ThumbnailDownloadError extends Error {
+  reason: ThumbnailDownloadFailureReason;
+
+  constructor(reason: ThumbnailDownloadFailureReason) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
+function recordDownloadFailure(input: DownloadGarmentThumbnailInput, url: string, reason: ThumbnailDownloadFailureReason, detail?: string): void {
+  input.onFailure?.({
+    url,
+    reason,
+    ...(detail ? { detail } : {})
+  });
 }
 
 function isCategoryCompatibleImage(info: ImageInfo, category: GarmentCategory): boolean {

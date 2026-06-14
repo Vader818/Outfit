@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDatabase } from "../server/db";
+import { createDatabase, type AppDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
 
 vi.mock("node:child_process", () => ({
@@ -13,6 +13,7 @@ vi.mock("node:child_process", () => ({
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
 const spawnMock = vi.mocked(spawn);
 let nextTestUserId = 0;
+let spawnedChild: { pid: number; unref: ReturnType<typeof vi.fn>; kill: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
 
 const payload = {
   source: "taobao-bookmarklet",
@@ -57,7 +58,8 @@ const recommendationWeather = {
 };
 
 beforeEach(() => {
-  spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn(), kill: vi.fn(), on: vi.fn() } as never);
+  spawnedChild = { pid: 4321, unref: vi.fn(), kill: vi.fn(), on: vi.fn() };
+  spawnMock.mockReturnValue(spawnedChild as never);
 });
 
 afterEach(async () => {
@@ -75,6 +77,22 @@ afterEach(async () => {
 });
 
 describe("API routes", () => {
+  it("sets baseline browser security headers", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/health`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
   it("supports first-run registration, login, status, and logout", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
@@ -188,7 +206,111 @@ describe("API routes", () => {
     expect(afterLogoutResponse.status).toBe(401);
   });
 
-  it("starts Taobao Selenium captures without waiting for the browser run", async () => {
+  it("rate limits repeated failed login attempts", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    await registerTestUser(baseUrl);
+
+    let lastResponse: Response | null = null;
+    for (let index = 0; index < 6; index += 1) {
+      lastResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ username: `test_user_${nextTestUserId}`, password: "wrong-password" })
+      });
+    }
+
+    expect(lastResponse?.status).toBe(429);
+    expect(await lastResponse!.json()).toMatchObject({
+      error: { code: "LOGIN_RATE_LIMITED" }
+    });
+  });
+
+  it("rejects mutating API requests from untrusted origins", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: {
+        ...jsonHeaders(authCookie),
+        origin: "https://evil.example"
+      },
+      body: JSON.stringify({ garmentIds: [1], context: {} })
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { code: "ORIGIN_NOT_ALLOWED" }
+    });
+  });
+
+  it("validates weather coordinate ranges and garment id params", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const weatherResponse = await fetch(`${baseUrl}/api/weather?latitude=91&longitude=116`, {
+      headers: { cookie: authCookie }
+    });
+    expect(weatherResponse.status).toBe(400);
+    expect(await weatherResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("latitude") }
+    });
+
+    const garmentResponse = await fetch(`${baseUrl}/api/garments/NaN`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ confirmed: true })
+    });
+    expect(garmentResponse.status).toBe(400);
+    expect(await garmentResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("id") }
+    });
+  });
+
+  it("hides unexpected internal error details from API responses", async () => {
+    const brokenDb = {
+      prepare: () => {
+        throw new Error("C:\\secret\\outfit.sqlite is locked");
+      }
+    } as unknown as AppDatabase;
+    const app = createApiApp(brokenDb);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/api/auth/status`);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "服务器错误"
+      }
+    });
+  });
+
+  it("hides legacy detached Taobao Selenium capture APIs", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
     const server = app.listen(0);
@@ -203,36 +325,21 @@ describe("API routes", () => {
       headers: jsonHeaders(authCookie),
       body: JSON.stringify({ maxPages: 2, loginWait: 45 })
     });
-    expect(ordersResponse.status).toBe(200);
+    expect(ordersResponse.status).toBe(410);
     expect(await ordersResponse.json()).toMatchObject({
-      started: true,
-      mode: "orders",
-      pid: 4321,
-      outputDir: "output/taobao-captures"
+      error: { code: "LEGACY_CAPTURE_DISABLED" }
     });
-    expect(spawnMock).toHaveBeenLastCalledWith(
-      "python",
-      ["scripts/taobao_order_selenium_capture.py", "--max-pages", "2", "--login-wait", "45"],
-      expect.objectContaining({ cwd: process.cwd(), detached: true, stdio: "ignore" })
-    );
 
     const itemResponse = await fetch(`${baseUrl}/api/capture/taobao-item`, {
       method: "POST",
       headers: jsonHeaders(authCookie),
       body: JSON.stringify({ url: "https://item.taobao.com/item.htm?id=808", loginWait: 30 })
     });
-    expect(itemResponse.status).toBe(200);
+    expect(itemResponse.status).toBe(410);
     expect(await itemResponse.json()).toMatchObject({
-      started: true,
-      mode: "item-detail",
-      pid: 4321,
-      outputDir: "output/taobao-captures"
+      error: { code: "LEGACY_CAPTURE_DISABLED" }
     });
-    expect(spawnMock).toHaveBeenLastCalledWith(
-      "python",
-      ["scripts/taobao_selenium_capture.py", "--url", "https://item.taobao.com/item.htm?id=808", "--login-wait", "30"],
-      expect.objectContaining({ cwd: process.cwd(), detached: true, stdio: "ignore" })
-    );
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("rejects item Selenium capture requests without an item URL", async () => {
@@ -251,11 +358,10 @@ describe("API routes", () => {
       body: JSON.stringify({ url: "not a url" })
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(410);
     expect(await response.json()).toMatchObject({
       error: {
-        code: "VALIDATION_ERROR",
-        message: "请输入有效的淘宝或天猫商品链接"
+        code: "LEGACY_CAPTURE_DISABLED"
       }
     });
     expect(spawnMock).not.toHaveBeenCalled();
@@ -282,7 +388,8 @@ describe("API routes", () => {
     expect(job).toMatchObject({
       status: "running",
       pid: 4321,
-      outputDir: expect.stringContaining("output/taobao-captures/")
+      outputDir: expect.stringContaining("output/taobao-captures/"),
+      logPath: expect.stringContaining("capture.log")
     });
     expect(job.id).toMatch(/^cap_/);
     expect(spawnMock).toHaveBeenLastCalledWith(
@@ -290,6 +397,19 @@ describe("API routes", () => {
       expect.arrayContaining(["scripts/taobao_order_selenium_capture.py", "--max-pages", "2", "--login-wait", "45", "--output-dir", job.outputDir]),
       expect.objectContaining({ cwd: process.cwd(), stdio: expect.anything() })
     );
+    const spawnOptions = spawnMock.mock.calls.at(-1)?.[2] as { stdio: unknown[] };
+    expect(spawnOptions.stdio[1]).not.toBe("ignore");
+    expect(spawnOptions.stdio[2]).not.toBe("ignore");
+
+    const conflictResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    expect(conflictResponse.status).toBe(409);
+    expect(await conflictResponse.json()).toMatchObject({
+      error: { code: "CAPTURE_JOB_RUNNING" }
+    });
 
     mkdirSync(job.outputDir, { recursive: true });
     const payload = {
@@ -321,6 +441,39 @@ describe("API routes", () => {
         keptItems: 1
       }
     });
+  });
+
+  it("cancels a running capture job and allows a new one to start", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string };
+
+    const cancelResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(cancelResponse.status).toBe(200);
+    expect(await cancelResponse.json()).toMatchObject({ status: "cancelled" });
+    expect(spawnedChild.kill).toHaveBeenCalled();
+
+    const nextResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    expect(nextResponse.status).toBe(200);
   });
 
   it("previews a Taobao import without writing garments", async () => {
@@ -649,6 +802,56 @@ describe("API routes", () => {
       recommendationRuns: expect.any(Array),
       sourceOrderItems: expect.any(Array)
     });
+  });
+
+  it("stores only the sanitized recommendation request in history", async () => {
+    const db = createDatabase(":memory:");
+    const insert = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run("白色T恤", "top", "white", "light", JSON.stringify(["summer"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.9, "");
+    insert.run("深蓝牛仔裤", "bottom", "blue", "medium", JSON.stringify(["spring", "autumn"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.9, "");
+    insert.run("白色运动鞋", "shoes", "white", "light", JSON.stringify(["summer"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.9, "");
+
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        occasion: "casual",
+        weather: recommendationWeather,
+        debugToken: "do-not-store",
+        recentlyWornGarmentIds: ["bad", 999, 999],
+        userProfile: {
+          preferredColors: ["white", "blue"]
+        }
+      })
+    });
+    expect(response.status).toBe(200);
+
+    const runs = await (await fetch(`${baseUrl}/api/recommendation-runs`, {
+      headers: { cookie: authCookie }
+    })).json() as Array<{ input: Record<string, unknown> }>;
+
+    expect(runs[0].input).toEqual({
+      weather: recommendationWeather,
+      occasion: "casual",
+      recentlyWornGarmentIds: [999],
+      userProfile: expect.objectContaining({
+        preferredColors: ["white", "blue"]
+      })
+    });
+    expect(runs[0].input).not.toHaveProperty("debugToken");
   });
 
   it("rejects invalid wear log payloads", async () => {

@@ -2,7 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { readLatestTaobaoCapture, type CaptureFileSystem } from "../server/services/taobaoCapture";
 
-function fakeFileSystem(files: Record<string, { text: string; mtimeMs: number; isFile?: boolean }>): CaptureFileSystem {
+function fakeFileSystem(files: Record<string, { text: string; mtimeMs: number; isFile?: boolean; size?: number }>): CaptureFileSystem {
   return {
     readdirSync: () => Object.keys(files),
     statSync: (filePath) => {
@@ -14,6 +14,7 @@ function fakeFileSystem(files: Record<string, { text: string; mtimeMs: number; i
       }
       return {
         mtimeMs: file.mtimeMs,
+        size: file.size ?? Buffer.byteLength(file.text, "utf8"),
         isFile: () => file.isFile !== false
       };
     },
@@ -158,5 +159,11 @@ describe("Taobao Selenium capture artifacts", () => {
     expect(() => readLatestTaobaoCapture("captures", fakeFileSystem({
       "notes.txt": { text: "skip me", mtimeMs: 300 }
     }))).toThrow("没有找到 Selenium 采集产物");
+  });
+
+  it("rejects oversized JSON artifacts before parsing", () => {
+    expect(() => readLatestTaobaoCapture("captures", fakeFileSystem({
+      "huge.json": { text: "{}", mtimeMs: 300, size: 20 * 1024 * 1024 + 1 }
+    }))).toThrow(/超过/);
   });
 });
