@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture } from "../src/api";
+import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -115,6 +115,56 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/capture/jobs/cap_123/artifact?wardrobeOnly=1", expect.objectContaining({
       method: "GET"
     }));
+  });
+
+  it("uses local vision model and garment vision endpoints", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        modelRoot: "output/models",
+        models: [],
+        jobs: []
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "vision_1",
+        modelId: "rembg-isnet",
+        status: "running",
+        message: "本地模型下载已启动",
+        startedAt: "2026-06-18T00:00:00.000Z",
+        updatedAt: "2026-06-18T00:00:00.000Z"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "vision_2",
+        modelId: "clip-vit-base-patch32",
+        status: "running",
+        message: "本地模型验证已启动",
+        startedAt: "2026-06-18T00:00:00.000Z",
+        updatedAt: "2026-06-18T00:00:00.000Z"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 1,
+        name: "白衬衫",
+        cutoutImageUrl: "/api/garment-thumbnails/garment-1-cutout.png"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        category: "top",
+        styles: ["smart-casual"],
+        patterns: ["solid"],
+        tags: ["cotton"],
+        scores: []
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getVisionModels()).resolves.toMatchObject({ modelRoot: "output/models" });
+    await expect(downloadVisionModel("rembg-isnet")).resolves.toMatchObject({ id: "vision_1" });
+    await expect(verifyVisionModel("clip-vit-base-patch32")).resolves.toMatchObject({ id: "vision_2" });
+    await expect(createGarmentCutout(1)).resolves.toMatchObject({ cutoutImageUrl: expect.stringContaining("cutout") });
+    await expect(analyzeGarmentVisionTags(1)).resolves.toMatchObject({ tags: ["cotton"] });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/vision/models", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/vision/models/rembg-isnet/download", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/vision/models/clip-vit-base-patch32/verify", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/garments/1/cutout", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/garments/1/vision-tags", expect.objectContaining({ method: "POST" }));
   });
 
   it("previews Taobao imports before writing them", async () => {

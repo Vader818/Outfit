@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -178,6 +178,9 @@ export function migrate(db: AppDatabase): void {
       materials TEXT NOT NULL DEFAULT '[]',
       patterns TEXT NOT NULL DEFAULT '[]',
       tags TEXT NOT NULL DEFAULT '[]',
+      cutout_image_url TEXT,
+      vision_tags TEXT,
+      vision_updated_at TEXT,
       image_url TEXT,
       owned INTEGER NOT NULL DEFAULT 1,
       confirmed INTEGER NOT NULL DEFAULT 0,
@@ -261,6 +264,9 @@ export function migrate(db: AppDatabase): void {
   ensureColumn(db, "garments", "materials", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "garments", "patterns", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "garments", "tags", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "garments", "cutout_image_url", "TEXT");
+  ensureColumn(db, "garments", "vision_tags", "TEXT");
+  ensureColumn(db, "garments", "vision_updated_at", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_source_order_items_item_id ON source_order_items(item_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)");
@@ -524,6 +530,19 @@ export function listGarments(db: AppDatabase): Garment[] {
   return rows.map(rowToGarment);
 }
 
+export function getGarmentById(db: AppDatabase, id: number): Garment {
+  const row = db.prepare(`
+    SELECT garments.*, source_order_items.item_url, source_order_items.detail_url
+    FROM garments
+    LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    WHERE garments.id = ?
+  `).get(id) as unknown as GarmentRow | undefined;
+  if (!row) {
+    throw new Error("衣服不存在");
+  }
+  return rowToGarment(row);
+}
+
 export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate): Garment {
   const current = db.prepare("SELECT * FROM garments WHERE id = ?").get(id) as GarmentRow | undefined;
   if (!current) {
@@ -585,6 +604,32 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     WHERE garments.id = ?
   `).get(id) as unknown as GarmentRow;
   return rowToGarment(updated);
+}
+
+export function updateGarmentCutoutImage(db: AppDatabase, id: number, cutoutImageUrl: string): Garment {
+  const updatedAt = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE garments
+    SET cutout_image_url = ?, vision_updated_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(cutoutImageUrl, updatedAt, id);
+  if (Number(result.changes) === 0) {
+    throw new Error("衣服不存在");
+  }
+  return getGarmentById(db, id);
+}
+
+export function saveGarmentVisionTags(db: AppDatabase, id: number, suggestion: VisionTagSuggestion): VisionTagSuggestion {
+  const updatedAt = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE garments
+    SET vision_tags = ?, vision_updated_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(JSON.stringify(suggestion), updatedAt, id);
+  if (Number(result.changes) === 0) {
+    throw new Error("衣服不存在");
+  }
+  return suggestion;
 }
 
 export async function refreshGarmentThumbnails(db: AppDatabase, options: ThumbnailRefreshOptions = {}): Promise<ThumbnailRefreshResult> {
@@ -848,6 +893,9 @@ interface GarmentRow {
   materials: string | null;
   patterns: string | null;
   tags: string | null;
+  cutout_image_url: string | null;
+  vision_tags: string | null;
+  vision_updated_at: string | null;
   item_url: string | null;
   detail_url: string | null;
 }
@@ -876,7 +924,10 @@ function rowToGarment(row: GarmentRow): Garment {
     confidence: row.confidence,
     notes: row.notes ?? "",
     itemUrl: row.item_url ?? undefined,
-    detailUrl: row.detail_url ?? undefined
+    detailUrl: row.detail_url ?? undefined,
+    cutoutImageUrl: row.cutout_image_url ?? undefined,
+    visionTags: row.vision_tags ? safeJson<VisionTagSuggestion | undefined>(row.vision_tags, undefined) : undefined,
+    visionUpdatedAt: row.vision_updated_at ?? undefined
   };
 }
 

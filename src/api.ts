@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -154,6 +154,36 @@ export async function refreshGarmentThumbnails(options: { maxDownloads?: number 
   return request<ThumbnailRefreshResult>("/api/garments/thumbnails/refresh", {
     method: "POST",
     body: JSON.stringify(options)
+  });
+}
+
+export async function getVisionModels(): Promise<VisionModelsResponse> {
+  return request<VisionModelsResponse>("/api/vision/models", {
+    method: "GET"
+  });
+}
+
+export async function downloadVisionModel(id: VisionModelId): Promise<VisionModelJob> {
+  return request<VisionModelJob>(`/api/vision/models/${id}/download`, {
+    method: "POST"
+  });
+}
+
+export async function verifyVisionModel(id: VisionModelId): Promise<VisionModelJob> {
+  return request<VisionModelJob>(`/api/vision/models/${id}/verify`, {
+    method: "POST"
+  });
+}
+
+export async function createGarmentCutout(id: number): Promise<Garment> {
+  return request<Garment>(`/api/garments/${id}/cutout`, {
+    method: "POST"
+  });
+}
+
+export async function analyzeGarmentVisionTags(id: number): Promise<VisionTagSuggestion> {
+  return request<VisionTagSuggestion>(`/api/garments/${id}/vision-tags`, {
+    method: "POST"
   });
 }
 

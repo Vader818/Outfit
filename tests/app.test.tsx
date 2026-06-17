@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthView, HistoryInsightsView, ImportView, MainApp, SessionSummary, SettingsView } from "../src/App";
-import type { Garment, OutfitRecommendation, RecommendationResult, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, OutfitRecommendation, RecommendationResult, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -414,6 +414,104 @@ describe("App", () => {
     expect(markup).toContain('referrerPolicy="no-referrer"');
   });
 
+  it("prefers local cutout images over original thumbnails when available", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+      }) => ReactNode;
+    }).WardrobeView;
+
+    const markup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(406, "透明背景衬衫", "top", {
+        imageUrl: "/api/garment-thumbnails/garment-406-shirt.png",
+        cutoutImageUrl: "/api/garment-thumbnails/garment-406-shirt-cutout.png"
+      })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
+
+    expect(markup).toContain('src="/api/garment-thumbnails/garment-406-shirt-cutout.png"');
+    expect(markup).not.toContain('src="/api/garment-thumbnails/garment-406-shirt.png"');
+  });
+
+  it("renders local vision actions and suggestion confirmation controls in the wardrobe", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+        onCutoutGarment?: (id: number) => void;
+        onAnalyzeGarmentVision?: (id: number) => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const onUpdate = vi.fn();
+    const onCutoutGarment = vi.fn();
+    const onAnalyzeGarmentVision = vi.fn();
+
+    const tree = WardrobeView?.({
+      garments: [
+        makeGarment(405, "本地缩略图衬衫", "top", {
+          imageUrl: "/api/garment-thumbnails/garment-405-shirt.png",
+          visionTags: {
+            category: "top",
+            styles: ["smart-casual"],
+            patterns: ["solid"],
+            tags: ["cotton"],
+            scores: [{ label: "top", score: 0.92 }]
+          }
+        })
+      ],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate,
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      onCutoutGarment,
+      onAnalyzeGarmentVision
+    });
+
+    const markup = renderToStaticMarkup(<>{tree}</>);
+    expect(markup).toContain("去背景");
+    expect(markup).toContain("分析图片");
+    expect(markup).toContain("视觉建议");
+    expect(markup).toContain("smart-casual");
+    expect(markup).toContain("cotton");
+
+    findButtonsByText(tree, "去背景")[0].props.onClick();
+    findButtonsByText(tree, "分析图片")[0].props.onClick();
+    findButtonsByText(tree, "应用建议")[0].props.onClick();
+
+    expect(onCutoutGarment).toHaveBeenCalledWith(405);
+    expect(onAnalyzeGarmentVision).toHaveBeenCalledWith(405);
+    expect(onUpdate).toHaveBeenCalledWith(405, {
+      category: "top",
+      styles: ["smart-casual"],
+      patterns: ["solid"],
+      tags: ["cotton"]
+    });
+  });
+
   it("renders empty states for wardrobe and recommendation views", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -506,6 +604,157 @@ describe("App", () => {
     expect(markup).toContain("较黑黄");
     expect(markup).toContain("白色,蓝色");
     expect(markup).toContain("黄色,棕色");
+  });
+
+  it("renders local vision model status and download controls in settings", () => {
+    const visionModels: VisionModelsResponse = {
+      modelRoot: "output\\models",
+      models: [
+        {
+          id: "rembg-isnet",
+          label: "rembg isnet-general-use",
+          kind: "background-removal",
+          installed: false,
+          path: "output\\models\\rembg",
+          message: "未下载"
+        },
+        {
+          id: "clip-vit-base-patch32",
+          label: "Xenova clip-vit-base-patch32",
+          kind: "tagging",
+          installed: true,
+          path: "output\\models\\huggingface\\Xenova\\clip-vit-base-patch32",
+          message: "已可用"
+        }
+      ],
+      jobs: []
+    };
+    const onDownloadVisionModel = vi.fn();
+
+    const tree = SettingsView({
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: false,
+      profile: {
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        colorDisposition: "cool-clean",
+        temperatureSensitivity: "neutral",
+        preferredColors: ["white"],
+        avoidedColors: [],
+        preferredStyles: []
+      },
+      visionModels,
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn(),
+      onRefreshVisionModels: vi.fn(),
+      onDownloadVisionModel
+    });
+    const markup = renderToStaticMarkup(<>{tree}</>);
+
+    expect(markup).toContain("本地视觉模型");
+    expect(markup).toContain("不会上传图片");
+    expect(markup).toContain("rembg isnet-general-use");
+    expect(markup).toContain("未下载");
+    expect(markup).toContain("Xenova clip-vit-base-patch32");
+    expect(markup).toContain("已可用");
+    expect(markup).toContain("output\\models");
+
+    findButtonsByText(tree, "下载")[0].props.onClick();
+    expect(onDownloadVisionModel).toHaveBeenCalledWith("rembg-isnet");
+  });
+
+  it("renders local vision enablement, verification controls, and job states in settings", () => {
+    const visionModels: VisionModelsResponse = {
+      modelRoot: "output\\models",
+      models: [
+        {
+          id: "rembg-isnet",
+          label: "rembg isnet-general-use",
+          kind: "background-removal",
+          installed: false,
+          path: "output\\models\\rembg",
+          message: "未下载",
+          job: {
+            id: "vision_running",
+            modelId: "rembg-isnet",
+            action: "download",
+            status: "running",
+            message: "本地模型下载已启动",
+            startedAt: "2026-06-18T00:00:00.000Z",
+            updatedAt: "2026-06-18T00:00:00.000Z"
+          }
+        },
+        {
+          id: "clip-vit-base-patch32",
+          label: "Xenova clip-vit-base-patch32",
+          kind: "tagging",
+          installed: true,
+          path: "output\\models\\huggingface\\Xenova\\clip-vit-base-patch32",
+          message: "已可用",
+          job: {
+            id: "vision_failed",
+            modelId: "clip-vit-base-patch32",
+            action: "verify",
+            status: "failed",
+            message: "模型验证失败",
+            startedAt: "2026-06-18T00:00:00.000Z",
+            updatedAt: "2026-06-18T00:01:00.000Z",
+            error: "clip model missing"
+          }
+        }
+      ],
+      jobs: []
+    };
+    const onVerifyVisionModel = vi.fn();
+    const onVisionEnabled = vi.fn();
+
+    const tree = SettingsView({
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: false,
+      profile: {
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        colorDisposition: "cool-clean",
+        temperatureSensitivity: "neutral",
+        preferredColors: ["white"],
+        avoidedColors: [],
+        preferredStyles: []
+      },
+      visionModels,
+      visionEnabled: true,
+      onVisionEnabled,
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn(),
+      onRefreshVisionModels: vi.fn(),
+      onDownloadVisionModel: vi.fn(),
+      onVerifyVisionModel
+    });
+    const markup = renderToStaticMarkup(<>{tree}</>);
+
+    expect(markup).toContain("启用本地视觉");
+    expect(markup).toContain("下载中");
+    expect(markup).toContain("失败");
+    expect(markup).toContain("clip model missing");
+
+    const enabledVerifyButton = findButtonsByText(tree, "验证").find((button) => !button.props.disabled);
+    expect(enabledVerifyButton).toEqual(expect.any(Object));
+    enabledVerifyButton?.props.onClick();
+    expect(onVerifyVisionModel).toHaveBeenCalledWith("clip-vit-base-patch32");
+
+    findInputsByType(tree, "checkbox")[0].props.onChange({ target: { checked: false } });
+    expect(onVisionEnabled).toHaveBeenCalledWith(false);
   });
 
   it("renders wardrobe detail fields for size materials patterns and tags", async () => {
@@ -824,6 +1073,29 @@ function findButtonsByTitle(node: ReactNode, title: string): ReactElement[] {
 
     const props = current.props as { children?: ReactNode; title?: string };
     if (current.type === "button" && props.title === title) {
+      matches.push(current);
+    }
+    visit(props.children);
+  }
+
+  visit(node);
+  return matches;
+}
+
+function findInputsByType(node: ReactNode, type: string): ReactElement[] {
+  const matches: ReactElement[] = [];
+
+  function visit(current: ReactNode) {
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (!isValidElement(current)) {
+      return;
+    }
+
+    const props = current.props as { children?: ReactNode; type?: string };
+    if (current.type === "input" && props.type === type) {
       matches.push(current);
     }
     visit(props.children);

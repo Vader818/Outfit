@@ -8,6 +8,7 @@ import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
+import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
 import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
@@ -16,6 +17,9 @@ export interface ApiAppOptions {
   thumbnailOutputDir?: string;
   thumbnailMaxDownloads?: number;
   thumbnailDelayMs?: number;
+  visionModelRoot?: string;
+  runRembg?: VisionServiceOptions["runRembg"];
+  inferVisionTags?: VisionServiceOptions["inferVisionTags"];
 }
 
 export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): express.Express {
@@ -139,8 +143,28 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     handle(response, () => listGarments(db));
   });
 
+  app.get("/api/vision/models", (_request, response) => {
+    void handleAsync(response, () => getVisionModelResponse(visionOptions(options)));
+  });
+
+  app.post("/api/vision/models/:id/download", (request, response) => {
+    handle(response, () => startVisionModelDownload(request.params.id, visionOptions(options)));
+  });
+
+  app.post("/api/vision/models/:id/verify", (request, response) => {
+    handle(response, () => startVisionModelVerification(request.params.id, visionOptions(options)));
+  });
+
   app.post("/api/garments/thumbnails/refresh", (request, response) => {
     void handleAsync(response, () => refreshGarmentThumbnails(db, thumbnailRefreshOptions(options, request.body)));
+  });
+
+  app.post("/api/garments/:id/cutout", (request, response) => {
+    void handleAsync(response, () => createGarmentCutout(db, validatePositiveIntegerParam(request.params.id), visionOptions(options)));
+  });
+
+  app.post("/api/garments/:id/vision-tags", (request, response) => {
+    void handleAsync(response, () => createGarmentVisionTags(db, validatePositiveIntegerParam(request.params.id), visionOptions(options)));
   });
 
   app.get("/api/profile", (_request, response) => {
@@ -262,6 +286,15 @@ function thumbnailRefreshOptions(options: ApiAppOptions, body: unknown): Thumbna
     maxTotalDownloads: boundedNumber(record.maxDownloads, options.thumbnailMaxDownloads ?? 8, 1, 24),
     maxDownloadsPerGarment: boundedNumber(record.maxDownloadsPerGarment, 4, 1, 6),
     delayMs: boundedNumber(record.delayMs, options.thumbnailDelayMs ?? 900, 0, 5000)
+  };
+}
+
+function visionOptions(options: ApiAppOptions): VisionServiceOptions {
+  return {
+    modelRoot: options.visionModelRoot,
+    thumbnailOutputDir: options.thumbnailOutputDir,
+    runRembg: options.runRembg,
+    inferVisionTags: options.inferVisionTags
   };
 }
 

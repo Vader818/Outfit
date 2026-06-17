@@ -42,6 +42,9 @@ export interface Garment {
   detailUrl?: string;
   lastWornAt?: string;
   wearCount?: number;
+  cutoutImageUrl?: string;
+  visionTags?: VisionTagSuggestion;
+  visionUpdatedAt?: string;
 }
 
 export interface WeatherSnapshot {
@@ -145,6 +148,52 @@ export interface OutfitExport {
   sourceOrderItems: unknown[];
   wearLogs: WearLogEntry[];
   recommendationRuns: RecommendationRunEntry[];
+}
+
+export type VisionModelId = "rembg-isnet" | "clip-vit-base-patch32";
+export type VisionModelKind = "background-removal" | "tagging";
+export type VisionJobStatus = "running" | "succeeded" | "failed";
+export type VisionJobAction = "download" | "verify";
+
+export interface VisionModelStatus {
+  id: VisionModelId;
+  label: string;
+  kind: VisionModelKind;
+  installed: boolean;
+  path: string;
+  message: string;
+  job?: VisionModelJob;
+}
+
+export interface VisionModelJob {
+  id: string;
+  modelId: VisionModelId;
+  action: VisionJobAction;
+  status: VisionJobStatus;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
+  pid?: number;
+  error?: string;
+}
+
+export interface VisionModelsResponse {
+  modelRoot: string;
+  models: VisionModelStatus[];
+  jobs: VisionModelJob[];
+}
+
+export interface VisionTagScore {
+  label: string;
+  score: number;
+}
+
+export interface VisionTagSuggestion {
+  category?: GarmentCategory;
+  styles: string[];
+  patterns: string[];
+  tags: string[];
+  scores: VisionTagScore[];
 }
 
 export type TaobaoPageType = "order-list" | "item-detail";

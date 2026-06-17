@@ -456,6 +456,115 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 本地缩略图通过 `GET /api/garment-thumbnails/<file>` 读取，供衣服库和推荐卡片中的 `<img>` 直接使用。
 
+## GET /api/vision/models
+
+返回本地视觉模型状态。该接口只检查本机文件和最近一次进程内 job，不下载模型。`rembg-isnet` 会接受 `isnet-general-use`、`u2netp` 或 `silueta` 中任一已存在模型；`clip-vit-base-patch32` 需要配置、分词、预处理文件和至少一个 ONNX 文件都在本机。
+
+响应：`VisionModelsResponse`
+
+```json
+{
+  "modelRoot": "<repo>\\output\\models",
+  "models": [
+    {
+      "id": "rembg-isnet",
+      "label": "rembg isnet-general-use",
+      "kind": "background-removal",
+      "installed": true,
+      "path": "<repo>\\output\\models\\rembg",
+      "message": "已可用：u2netp",
+      "job": {
+        "id": "vision_m3v7u0qk_a1b2c3d4",
+        "modelId": "rembg-isnet",
+        "action": "verify",
+        "status": "succeeded",
+        "message": "本地模型验证通过：rembg isnet-general-use",
+        "startedAt": "2026-06-18T12:00:00.000Z",
+        "updatedAt": "2026-06-18T12:00:03.000Z"
+      }
+    },
+    {
+      "id": "clip-vit-base-patch32",
+      "label": "Xenova clip-vit-base-patch32",
+      "kind": "tagging",
+      "installed": false,
+      "path": "<repo>\\output\\models\\huggingface\\Xenova\\clip-vit-base-patch32",
+      "message": "未下载"
+    }
+  ],
+  "jobs": []
+}
+```
+
+## POST /api/vision/models/:id/download
+
+显式启动本地模型下载或预热任务。应用启动、状态查询和普通衣橱操作不会自动下载模型。
+
+支持的 `id`：
+
+| id | 说明 |
+| --- | --- |
+| `rembg-isnet` | `rembg` 的 `isnet-general-use` 去背景模型 |
+| `clip-vit-base-patch32` | Transformers.js 可用的 `Xenova/clip-vit-base-patch32` |
+
+响应：`VisionModelJob`
+
+```json
+{
+  "id": "vision_m3v7u0qk_a1b2c3d4",
+  "modelId": "rembg-isnet",
+  "action": "download",
+  "status": "running",
+  "message": "本地模型下载已启动：rembg isnet-general-use",
+  "startedAt": "2026-06-17T12:00:00.000Z",
+  "updatedAt": "2026-06-17T12:00:00.000Z",
+  "pid": 12345
+}
+```
+
+## POST /api/vision/models/:id/verify
+
+显式启动本地模型验证任务。验证任务会调用 `npm run models:verify` 的同一套加载逻辑，对 rembg 和 CLIP 使用临时小图做本地推理加载检查。该接口不会下载模型；缺文件或加载失败时 job 会变为 `failed`。
+
+响应：`VisionModelJob`
+
+```json
+{
+  "id": "vision_m3v7u0qk_a1b2c3d4",
+  "modelId": "clip-vit-base-patch32",
+  "action": "verify",
+  "status": "running",
+  "message": "本地模型验证已启动：Xenova clip-vit-base-patch32",
+  "startedAt": "2026-06-18T12:00:00.000Z",
+  "updatedAt": "2026-06-18T12:00:00.000Z",
+  "pid": 12345
+}
+```
+
+## POST /api/garments/:id/cutout
+
+对衣物本地缩略图执行本地去背景，并把透明背景 PNG 路径写入 `garments.cutout_image_url`。只接受 `/api/garment-thumbnails/...` 本地缩略图作为输入；没有缩略图时返回 `VISION_INPUT_NOT_FOUND`；未下载去背景模型时返回 HTTP 409，错误码 `VISION_MODEL_MISSING`。
+
+响应：更新后的 `Garment`。
+
+## POST /api/garments/:id/vision-tags
+
+使用本地 CLIP 模型生成分类、风格、图案和标签建议，并写入 `garments.vision_tags`。该接口不会覆盖 `category`、`styles`、`patterns`、`tags`；前端需要用户点击“应用建议”后才会走 `PUT /api/garments/:id` 更新正式字段。
+
+响应：`VisionTagSuggestion`
+
+```json
+{
+  "category": "top",
+  "styles": ["smart-casual"],
+  "patterns": ["solid"],
+  "tags": ["cotton"],
+  "scores": [
+    { "label": "top", "score": 0.92 }
+  ]
+}
+```
+
 ## PUT /api/garments/:id
 
 更新衣橱条目。

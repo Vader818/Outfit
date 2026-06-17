@@ -13,7 +13,14 @@ vi.mock("node:child_process", () => ({
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
 const spawnMock = vi.mocked(spawn);
 let nextTestUserId = 0;
-let spawnedChild: { pid: number; unref: ReturnType<typeof vi.fn>; kill: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+let spawnedChild: {
+  pid: number;
+  unref: ReturnType<typeof vi.fn>;
+  kill: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  stdout: { on: ReturnType<typeof vi.fn> };
+  stderr: { on: ReturnType<typeof vi.fn> };
+};
 
 const payload = {
   source: "taobao-bookmarklet",
@@ -58,7 +65,14 @@ const recommendationWeather = {
 };
 
 beforeEach(() => {
-  spawnedChild = { pid: 4321, unref: vi.fn(), kill: vi.fn(), on: vi.fn() };
+  spawnedChild = {
+    pid: 4321,
+    unref: vi.fn(),
+    kill: vi.fn(),
+    on: vi.fn(),
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() }
+  };
   spawnMock.mockReturnValue(spawnedChild as never);
 });
 
@@ -1050,6 +1064,311 @@ describe("API routes", () => {
     expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-1041553367966.png");
     expect(thumbnailResponse.status).toBe(200);
     expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
+  });
+
+  it("reports local vision model status and starts explicit download jobs", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const statusResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const status = await statusResponse.json() as { models: Array<{ id: string; installed: boolean; path: string }> };
+
+    expect(statusResponse.status).toBe(200);
+    expect(status.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rembg-isnet", installed: false, path: expect.stringContaining("rembg") }),
+      expect.objectContaining({ id: "clip-vit-base-patch32", installed: false, path: expect.stringContaining("clip-vit-base-patch32") })
+    ]));
+
+    const downloadResponse = await fetch(`${baseUrl}/api/vision/models/rembg-isnet/download`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const downloadJob = await downloadResponse.json() as { id: string; modelId: string; status: string; message: string };
+
+    expect(downloadResponse.status).toBe(200);
+    expect(downloadJob).toMatchObject({
+      modelId: "rembg-isnet",
+      status: "running",
+      message: expect.stringContaining("本地模型下载")
+    });
+    expect(downloadJob.id).toMatch(/^vision_/);
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      expect.arrayContaining(["scripts/models.mjs", "download", "rembg"]),
+      expect.objectContaining({
+        cwd: process.cwd(),
+        env: expect.objectContaining({ OUTFIT_MODEL_ROOT: modelRoot })
+      })
+    );
+    expect(spawnedChild.stdout.on).toHaveBeenCalledWith("data", expect.any(Function));
+    expect(spawnedChild.stderr.on).toHaveBeenCalledWith("data", expect.any(Function));
+  });
+
+  it("reuses running vision jobs and reports succeeded or failed jobs in model status", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const listeners = new Map<string, (code?: number) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const firstResponse = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/download`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const firstJob = await firstResponse.json() as { id: string; status: string };
+    const secondResponse = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/download`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const secondJob = await secondResponse.json() as { id: string; status: string };
+
+    expect(secondJob.id).toBe(firstJob.id);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    listeners.get("close")?.(1);
+    const failedStatusResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const failedStatus = await failedStatusResponse.json() as { models: Array<{ id: string; job?: { status: string; error?: string } }> };
+
+    expect(failedStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job).toMatchObject({
+      id: firstJob.id,
+      status: "failed",
+      error: expect.stringContaining("模型下载失败")
+    });
+
+    const verifyListeners = new Map<string, (code?: number) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      verifyListeners.set(event, callback);
+      return spawnedChild;
+    });
+    const verifyResponse = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/verify`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const verifyJob = await verifyResponse.json() as { id: string; status: string; message: string };
+
+    expect(verifyJob).toMatchObject({
+      status: "running",
+      message: expect.stringContaining("验证")
+    });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      expect.arrayContaining(["scripts/models.mjs", "verify", "clip"]),
+      expect.objectContaining({ env: expect.objectContaining({ OUTFIT_MODEL_ROOT: modelRoot }) })
+    );
+
+    verifyListeners.get("close")?.(0);
+    const succeededStatusResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const succeededStatus = await succeededStatusResponse.json() as { models: Array<{ id: string; job?: { id: string; status: string } }> };
+
+    expect(succeededStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job).toMatchObject({
+      id: verifyJob.id,
+      status: "succeeded"
+    });
+  });
+
+  it("generates cutout images from local thumbnails and stores visual metadata", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      runRembg: async ({ outputPath }) => {
+        writeFileSync(outputPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      }
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const body = await response.json() as { cutoutImageUrl?: string };
+    const garments = await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ cutoutImageUrl?: string; visionUpdatedAt?: string }>;
+
+    expect(response.status).toBe(200);
+    expect(body.cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-shirt-cutout.png");
+    expect(garments[0]).toMatchObject({
+      cutoutImageUrl: "/api/garment-thumbnails/garment-1-shirt-cutout.png",
+      visionUpdatedAt: expect.any(String)
+    });
+  });
+
+  it("runs the default rembg wrapper with Python for garment cutouts", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      if (event === "close") callback(0);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, { thumbnailOutputDir, visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+
+    expect(response.status).toBe(200);
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.env.PYTHON || "python",
+      expect.arrayContaining(["scripts/vision_rembg.py", "--input", path.join(thumbnailOutputDir, "garment-1-shirt.png")]),
+      expect.objectContaining({ cwd: process.cwd() })
+    );
+  });
+
+  it("returns tag suggestions without overwriting garment fields", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const clipDir = path.join(modelRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    writeFileSync(path.join(clipDir, "config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "preprocessor_config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "special_tokens_map.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "tokenizer.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "tokenizer_config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "vocab.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "merges.txt"), "", "utf8");
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), "fake-model", "utf8");
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("黑色短靴", "shoes", "black", "medium", JSON.stringify(["autumn"]), JSON.stringify(["casual"]), "casual", "/api/garment-thumbnails/garment-1-boot.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      visionModelRoot: modelRoot,
+      inferVisionTags: async () => ({
+        category: "shoes",
+        styles: ["formal"],
+        patterns: ["solid"],
+        tags: ["leather"],
+        scores: [{ label: "shoes", score: 0.93 }]
+      })
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/vision-tags`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const suggestion = await response.json();
+    const garments = await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ category: string; styles: string[]; patterns?: string[]; tags?: string[]; visionTags?: unknown }>;
+
+    expect(response.status).toBe(200);
+    expect(suggestion).toMatchObject({
+      category: "shoes",
+      styles: ["formal"],
+      tags: ["leather"],
+      scores: [expect.objectContaining({ label: "shoes" })]
+    });
+    expect(garments[0]).toMatchObject({
+      category: "shoes",
+      styles: ["casual"],
+      patterns: [],
+      tags: [],
+      visionTags: suggestion
+    });
+  });
+
+  it("fails vision actions clearly when the required local model is missing", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色T恤", "top", "white", "light", JSON.stringify(["summer"]), JSON.stringify(["casual"]), "casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const cutoutResponse = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const response = await fetch(`${baseUrl}/api/garments/1/vision-tags`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+
+    expect(cutoutResponse.status).toBe(409);
+    expect(await cutoutResponse.json()).toMatchObject({
+      error: {
+        code: "VISION_MODEL_MISSING",
+        message: expect.stringContaining("rembg-isnet")
+      }
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "VISION_MODEL_MISSING",
+        message: expect.stringContaining("clip-vit-base-patch32")
+      }
+    });
   });
 
   it("serves repeated weather requests from SQLite cache", async () => {

@@ -141,6 +141,7 @@ python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.ht
 - 书签脚本只读取当前页面可见 DOM、页面脚本中的商品字段和图片 URL，不读取 `document.cookie`、`localStorage`、`sessionStorage` 或密码字段。
 - Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；该目录在本机保存。
 - 采集 JSON 位于 `output/taobao-captures`，SQLite 位于 `data/outfit.sqlite`，两者可能包含购买商品信息。
+- 本地视觉模型只在用户点击下载或显式运行模型脚本时下载到 `output/models`；去背景和图片标签建议只读取本地缩略图，不调用付费 AI API，也不上传衣物图片。
 - 天气接口会向 Open-Meteo 发送经纬度。前端会把经纬度保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`。
 - PWA service worker 只缓存静态 shell，不缓存衣橱、订单、推荐、导出或任何 `/api` 响应。
 - `.gitignore` 已忽略 `data/`、`output/`、`logs/`、`node_modules/` 和 `dist/`，不要把本地采集产物、Chrome profile 或数据库提交到仓库。
@@ -172,6 +173,39 @@ npm run privacy:clean -- --confirm --include-login-state
 ```
 
 本项目不会在安装、测试、构建、启动或 CI 中自动运行 `privacy:clean`。
+
+## 本地视觉模型
+
+本地视觉能力是可选增强，不影响导入、衣橱、推荐和备份等核心功能。应用不会在启动时自动下载模型。
+
+安装 Python 依赖：
+
+```powershell
+python -m pip install -r requirements.lock.txt
+```
+
+查看模型状态：
+
+```powershell
+npm run models:status
+```
+
+显式下载或预热模型：
+
+```powershell
+npm run models:download:rembg
+npm run models:download:clip
+npm run models:verify
+```
+
+说明：
+
+- `rembg` 去背景模型默认使用 `isnet-general-use`，模型目录为 `output/models/rembg`；低配置或网络较慢时可以运行 `npm run models:download:rembg -- --model u2netp` 或 `npm run models:download:rembg -- --model silueta`，运行时会按 `isnet-general-use`、`u2netp`、`silueta` 顺序选择本地已存在模型。
+- CLIP 标签建议模型使用 `Xenova/clip-vit-base-patch32`，缓存目录在 `output/models/huggingface` 下。
+- `npm run models:verify` 会用临时小图实际加载 rembg 和 CLIP，而不只是检查文件是否存在。
+- 设置页提供本地视觉启用开关、模型下载按钮和验证按钮；开关只控制本地视觉增强入口，不会触发自动下载。
+- 如果当前环境设置了 `HTTP_PROXY` 或 `HTTPS_PROXY`，模型脚本会在下载时自动为 Node 启用环境代理。
+- `output/models` 位于已忽略的 `output/` 目录内，不会进入 Git；如以后清理模型缓存，需要在删除前明确确认。
 
 ## 文档
 

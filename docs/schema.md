@@ -59,6 +59,9 @@ interface Garment {
   detailUrl?: string;
   lastWornAt?: string;
   wearCount?: number;
+  cutoutImageUrl?: string;
+  visionTags?: VisionTagSuggestion;
+  visionUpdatedAt?: string;
 }
 ```
 
@@ -87,6 +90,54 @@ interface Garment {
 | `itemUrl` / `detailUrl` | 从来源表联查出的淘宝链接 |
 | `lastWornAt` | 最近穿着时间，预留展示字段 |
 | `wearCount` | 穿着次数，预留展示字段 |
+| `cutoutImageUrl` | 本地去背景透明 PNG 路径 |
+| `visionTags` | 本地视觉模型生成的标签建议，用户确认前不覆盖正式字段 |
+| `visionUpdatedAt` | 最近一次视觉处理或分析时间 |
+
+### 本地视觉模型类型
+
+```ts
+type VisionModelId = "rembg-isnet" | "clip-vit-base-patch32";
+type VisionModelKind = "background-removal" | "tagging";
+type VisionJobStatus = "running" | "succeeded" | "failed";
+type VisionJobAction = "download" | "verify";
+
+interface VisionModelStatus {
+  id: VisionModelId;
+  label: string;
+  kind: VisionModelKind;
+  installed: boolean;
+  path: string;
+  message: string;
+  job?: VisionModelJob;
+}
+
+interface VisionModelJob {
+  id: string;
+  modelId: VisionModelId;
+  action: VisionJobAction;
+  status: VisionJobStatus;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
+  pid?: number;
+  error?: string;
+}
+
+interface VisionModelsResponse {
+  modelRoot: string;
+  models: VisionModelStatus[];
+  jobs: VisionModelJob[];
+}
+
+interface VisionTagSuggestion {
+  category?: GarmentCategory;
+  styles: string[];
+  patterns: string[];
+  tags: string[];
+  scores: Array<{ label: string; score: number }>;
+}
+```
 
 ### WeatherSnapshot
 
@@ -358,6 +409,13 @@ ON source_order_items(item_id);
 | `seasons` | TEXT | NOT NULL | JSON 编码的 `Season[]` |
 | `styles` | TEXT | NOT NULL | JSON 编码的风格标签 |
 | `formality` | TEXT | NOT NULL | `Formality` |
+| `size` | TEXT |  | 尺码 |
+| `materials` | TEXT | NOT NULL DEFAULT '[]' | JSON 编码的材质标签 |
+| `patterns` | TEXT | NOT NULL DEFAULT '[]' | JSON 编码的图案标签 |
+| `tags` | TEXT | NOT NULL DEFAULT '[]' | JSON 编码的用户或系统标签 |
+| `cutout_image_url` | TEXT |  | 本地去背景透明 PNG 路径 |
+| `vision_tags` | TEXT |  | JSON 编码的 `VisionTagSuggestion` |
+| `vision_updated_at` | TEXT |  | 最近一次视觉处理时间 |
 | `image_url` | TEXT |  | 展示图片 |
 | `owned` | INTEGER | NOT NULL DEFAULT 1 | 是否拥有 |
 | `confirmed` | INTEGER | NOT NULL DEFAULT 0 | 是否确认 |
@@ -424,6 +482,7 @@ ON source_order_items(item_id);
 | `output/taobao-captures` | 淘宝采集 JSON，任务式采集会使用 `<jobId>` 子目录 | 否 |
 | `output/garment-thumbnails` | 从淘宝采集图片候选低频下载的本地衣橱缩略图 | 否 |
 | `output/chrome-taobao-profile` | Selenium Chrome 用户数据目录 | 否 |
+| `output/models` | 本地可选视觉模型缓存 | 否 |
 | `logs` | 本地日志 | 否 |
 
 这些路径已在 `.gitignore` 中忽略。

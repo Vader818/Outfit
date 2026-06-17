@@ -650,6 +650,35 @@ select:focus {
   font-weight: 800;
 }
 
+.vision-suggestion {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 8px;
+  background: rgba(204, 251, 241, 0.35);
+}
+
+.vision-suggestion > span {
+  color: var(--app-primary-strong);
+  font-weight: 800;
+}
+
+.vision-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vision-chip-row b {
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: #115e59;
+  background: #ccfbf1;
+  font-size: 12px;
+}
+
 .season-picker {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -828,6 +857,104 @@ li + li {
   max-width: 720px;
 }
 
+.settings-note {
+  margin: 0;
+}
+
+.vision-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+}
+
+.vision-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--app-primary);
+}
+
+.vision-models {
+  display: grid;
+  gap: 10px;
+}
+
+.model-root {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--app-muted);
+  background: var(--app-soft);
+  font-size: 13px;
+}
+
+.vision-model-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(217, 226, 236, 0.9);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.vision-model-row svg {
+  color: var(--app-primary);
+}
+
+.vision-model-row strong,
+.vision-model-row span,
+.vision-model-row small {
+  display: block;
+}
+
+.vision-model-row span,
+.vision-model-row small {
+  margin-top: 2px;
+  color: var(--app-muted);
+}
+
+.vision-state {
+  width: max-content;
+  max-width: 100%;
+  padding: 3px 7px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.vision-state.idle {
+  color: #475569;
+  background: #e7edf4;
+}
+
+.vision-state.running {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.vision-state.ready {
+  color: #115e59;
+  background: #d1fae5;
+}
+
+.vision-state.failed,
+.vision-error {
+  color: #991b1b;
+}
+
+.vision-state.failed {
+  background: #fee2e2;
+}
+
+.vision-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-panel h2 {
   margin: 8px 0 0;
   color: #172033;
@@ -944,6 +1071,15 @@ li + li {
     grid-column: 1 / -1;
     justify-content: flex-start;
     max-width: none;
+  }
+
+  .vision-model-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .vision-model-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 
   .field-grid {

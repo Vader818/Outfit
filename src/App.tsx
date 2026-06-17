@@ -3,6 +3,7 @@ import {
   Check,
   CloudSun,
   Copy,
+  Cpu,
   Database,
   Download,
   ExternalLink,
@@ -13,9 +14,11 @@ import {
   Play,
   RefreshCw,
   Save,
+  Scissors,
   Settings,
   Shirt,
   Sparkles,
+  Tags,
   Upload,
   UserRound,
   Wand2,
@@ -23,7 +26,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  analyzeGarmentVisionTags,
+  createGarmentCutout,
   deleteGarment,
+  downloadVisionModel,
   exportLocalData,
   getAuthStatus,
   getGarments,
@@ -31,6 +37,7 @@ import {
   getPersonalProfile,
   getRecommendations,
   getRecommendationRuns,
+  getVisionModels,
   getWeather,
   getWearLogs,
   getCaptureJobArtifact,
@@ -45,11 +52,12 @@ import {
   savePersonalProfile,
   startCaptureJob,
   updateGarment,
+  verifyVisionModel,
   type CaptureStartResult,
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import type { AuthStatus, AuthUser, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, AuthUser, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
 type AuthInput = { username: string; password: string };
@@ -64,11 +72,15 @@ type BusyAction =
   | "read-capture"
   | "refresh-thumbnails"
   | "bulk-confirm"
+  | "download-vision-model"
+  | "verify-vision-model"
   | "locate"
   | "save-settings"
   | "history"
   | "export"
   | "weather"
+  | "cutout-garment"
+  | "vision-tags"
   | "recommend";
 type WardrobeStatusFilter = "all" | "pending" | "confirmed" | "excluded";
 type WardrobeOwnedFilter = "all" | "owned" | "not-owned";
@@ -285,7 +297,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [wearLogs, setWearLogs] = useState<WearLogEntry[]>([]);
   const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
+  const [visionModels, setVisionModels] = useState<VisionModelsResponse | null>(null);
+  const [visionEnabled, setVisionEnabled] = useState(() => localStorage.getItem("outfit.localVision.enabled") !== "false");
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
+  const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
   const [occasion, setOccasion] = useState("casual");
@@ -302,6 +317,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     void refreshGarments();
     void refreshProfile();
     void refreshHistoryData();
+    void refreshVisionModels();
   }, []);
 
   async function refreshGarments() {
@@ -330,6 +346,14 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setInsights(nextInsights);
     } catch (historyError) {
       setError(historyError instanceof Error ? historyError.message : "历史数据读取失败");
+    }
+  }
+
+  async function refreshVisionModels() {
+    try {
+      setVisionModels(await getVisionModels());
+    } catch {
+      setVisionModels(null);
     }
   }
 
@@ -462,6 +486,69 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } finally {
       setBusyAction(null);
     }
+  }
+
+  async function cutoutGarment(id: number) {
+    setBusyAction("cutout-garment");
+    setVisionBusyId(id);
+    setError("");
+    try {
+      const updated = await createGarmentCutout(id);
+      setGarments((items) => items.map((item) => (item.id === id ? updated : item)));
+    } catch (visionError) {
+      setError(visionError instanceof Error ? visionError.message : "去背景失败");
+    } finally {
+      setVisionBusyId(null);
+      setBusyAction(null);
+    }
+  }
+
+  async function analyzeVisionTags(id: number) {
+    setBusyAction("vision-tags");
+    setVisionBusyId(id);
+    setError("");
+    try {
+      const suggestion = await analyzeGarmentVisionTags(id);
+      setGarments((items) => items.map((item) => (
+        item.id === id ? { ...item, visionTags: suggestion, visionUpdatedAt: new Date().toISOString() } : item
+      )));
+    } catch (visionError) {
+      setError(visionError instanceof Error ? visionError.message : "图片分析失败");
+    } finally {
+      setVisionBusyId(null);
+      setBusyAction(null);
+    }
+  }
+
+  async function downloadLocalVisionModel(id: VisionModelId) {
+    setBusyAction("download-vision-model");
+    setError("");
+    try {
+      await downloadVisionModel(id);
+      await refreshVisionModels();
+    } catch (visionError) {
+      setError(visionError instanceof Error ? visionError.message : "模型下载启动失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function verifyLocalVisionModel(id: VisionModelId) {
+    setBusyAction("verify-vision-model");
+    setError("");
+    try {
+      await verifyVisionModel(id);
+      await refreshVisionModels();
+    } catch (visionError) {
+      setError(visionError instanceof Error ? visionError.message : "模型验证启动失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function updateVisionEnabled(enabled: boolean) {
+    setVisionEnabled(enabled);
+    localStorage.setItem("outfit.localVision.enabled", enabled ? "true" : "false");
   }
 
   async function locate() {
@@ -612,6 +699,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             onDelete={deleteOne}
             onBulkConfirm={bulkConfirm}
             onRefreshThumbnails={refreshThumbnails}
+            onCutoutGarment={cutoutGarment}
+            onAnalyzeGarmentVision={analyzeVisionTags}
+            visionEnabled={visionEnabled}
+            visionBusyId={visionBusyId}
             thumbnailRefreshMessage={thumbnailRefreshMessage}
           />
         )}
@@ -654,11 +745,17 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             busy={Boolean(busyAction)}
             busyAction={busyAction}
             profile={profile}
+            visionModels={visionModels}
+            visionEnabled={visionEnabled}
             onLatitude={setLatitude}
             onLongitude={setLongitude}
             onLocate={locate}
             onSave={saveSettings}
             onProfile={setProfile}
+            onVisionEnabled={updateVisionEnabled}
+            onRefreshVisionModels={refreshVisionModels}
+            onDownloadVisionModel={downloadLocalVisionModel}
+            onVerifyVisionModel={verifyLocalVisionModel}
           />
         )}
       </main>
@@ -906,6 +1003,10 @@ export function WardrobeView(props: {
   onDelete: (id: number) => void;
   onBulkConfirm: () => void;
   onRefreshThumbnails?: () => void;
+  onCutoutGarment?: (id: number) => void;
+  onAnalyzeGarmentVision?: (id: number) => void;
+  visionEnabled?: boolean;
+  visionBusyId?: number | null;
   thumbnailRefreshMessage?: string;
 }) {
   const filters = props.filters ?? {
@@ -1016,12 +1117,25 @@ export function WardrobeView(props: {
                   <input className="input input-bordered input-sm" value={formatList(item.tags)} onChange={(event) => props.onUpdate(item.id, { tags: parseList(event.target.value) })} />
                 </label>
               </div>
+              {VisionSuggestion({ item, onApply: (update) => props.onUpdate(item.id, update) })}
             </div>
             <div className="row-actions">
               {item.detailUrl || item.itemUrl ? (
                 <a className="icon-button btn btn-square btn-soft" title="商品详情" href={item.detailUrl || item.itemUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} />
                 </a>
+              ) : null}
+              {props.onCutoutGarment ? (
+                <button className="status btn btn-sm" disabled={props.visionEnabled === false || props.visionBusyId === item.id} onClick={() => props.onCutoutGarment?.(item.id)}>
+                  <Scissors size={16} />
+                  {props.visionBusyId === item.id && props.busyAction === "cutout-garment" ? "处理中" : "去背景"}
+                </button>
+              ) : null}
+              {props.onAnalyzeGarmentVision ? (
+                <button className="status btn btn-sm" disabled={props.visionEnabled === false || props.visionBusyId === item.id} onClick={() => props.onAnalyzeGarmentVision?.(item.id)}>
+                  <Tags size={16} />
+                  {props.visionBusyId === item.id && props.busyAction === "vision-tags" ? "分析中" : "分析图片"}
+                </button>
               ) : null}
               <button className={item.confirmed ? "status btn btn-sm good" : "status btn btn-sm"} onClick={() => props.onUpdate(item.id, { confirmed: !item.confirmed })}>
                 <Check size={16} />
@@ -1155,11 +1269,17 @@ export function SettingsView(props: {
   busy: boolean;
   busyAction?: BusyAction | null;
   profile: PersonalProfile;
+  visionModels?: VisionModelsResponse | null;
+  visionEnabled?: boolean;
   onLatitude: (value: string) => void;
   onLongitude: (value: string) => void;
   onLocate: () => void;
   onSave: () => void;
   onProfile: (profile: PersonalProfile) => void;
+  onVisionEnabled?: (enabled: boolean) => void;
+  onRefreshVisionModels?: () => void;
+  onDownloadVisionModel?: (id: VisionModelId) => void;
+  onVerifyVisionModel?: (id: VisionModelId) => void;
 }) {
   function updateProfile(update: Partial<PersonalProfile>) {
     props.onProfile({ ...props.profile, ...update });
@@ -1197,7 +1317,58 @@ export function SettingsView(props: {
         <input className="input input-bordered" value={formatColorList(props.profile.avoidedColors)} onChange={(event) => updateProfile({ avoidedColors: parseColorList(event.target.value) })} placeholder="黄色,棕色" />
         <label>偏好风格</label>
         <input className="input input-bordered" value={formatList(props.profile.preferredStyles)} onChange={(event) => updateProfile({ preferredStyles: parseList(event.target.value) })} placeholder="casual,smart-casual" />
+        <h2>本地视觉模型</h2>
+        <p className="settings-note">模型只保存在本机，不会上传图片。下载需要你手动点击。</p>
+        <label className="vision-toggle">
+          <input type="checkbox" checked={props.visionEnabled ?? true} onChange={(event) => props.onVisionEnabled?.(event.target.checked)} />
+          <span>启用本地视觉</span>
+        </label>
+        {props.visionModels ? (
+          <div className="vision-models">
+            <span className="model-root text-wrap-anywhere">{props.visionModels.modelRoot}</span>
+            {props.visionModels.models.map((model) => {
+              const display = visionModelDisplay(model);
+              const running = model.job?.status === "running";
+              const downloading = running && model.job?.action === "download";
+              const verifying = running && model.job?.action === "verify";
+              return (
+                <div className="vision-model-row" key={model.id}>
+                  <Cpu size={18} />
+                  <div>
+                    <strong>{model.label}</strong>
+                    <span className={`vision-state ${display.tone}`}>{display.label}</span>
+                    <span>{display.message}</span>
+                    {model.job?.status === "failed" && model.job.error ? <small className="vision-error text-wrap-anywhere">{model.job.error}</small> : null}
+                    <small className="text-wrap-anywhere">{model.path}</small>
+                  </div>
+                  <div className="vision-model-actions">
+                    {props.onDownloadVisionModel ? (
+                      <button className="secondary btn btn-sm" disabled={model.installed || running || props.busyAction === "download-vision-model"} onClick={() => props.onDownloadVisionModel?.(model.id)}>
+                        <Download size={16} />
+                        {downloading ? "下载中" : "下载"}
+                      </button>
+                    ) : null}
+                    {props.onVerifyVisionModel ? (
+                      <button className="secondary btn btn-sm" disabled={!model.installed || running || props.busyAction === "verify-vision-model"} onClick={() => props.onVerifyVisionModel?.(model.id)}>
+                        <Play size={16} />
+                        {verifying ? "验证中" : "验证"}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="empty-state">本地视觉模型状态暂不可用。</div>
+        )}
         <div className="actions">
+          {props.onRefreshVisionModels ? (
+            <button className="secondary btn btn-soft" onClick={props.onRefreshVisionModels}>
+              <RefreshCw size={18} />
+              刷新模型
+            </button>
+          ) : null}
           <button className="secondary btn btn-soft" disabled={props.busyAction === "locate"} onClick={props.onLocate}>
             <MapPin size={18} />
             {props.busyAction === "locate" ? "定位中" : "定位"}
@@ -1210,6 +1381,35 @@ export function SettingsView(props: {
       </div>
     </section>
   );
+}
+
+function visionModelDisplay(model: VisionModelStatus): { label: string; message: string; tone: "idle" | "running" | "ready" | "failed" } {
+  if (model.job?.status === "running") {
+    return {
+      label: model.job.action === "verify" ? "验证中" : "下载中",
+      message: model.job.message,
+      tone: "running"
+    };
+  }
+  if (model.job?.status === "failed") {
+    return {
+      label: "失败",
+      message: model.job.message,
+      tone: "failed"
+    };
+  }
+  if (model.installed) {
+    return {
+      label: "已可用",
+      message: model.job?.status === "succeeded" ? model.job.message : model.message,
+      tone: "ready"
+    };
+  }
+  return {
+    label: "未下载",
+    message: model.message,
+    tone: "idle"
+  };
 }
 
 export function HistoryInsightsView(props: {
@@ -1292,7 +1492,7 @@ function GarmentThumbnail({ item }: { item: Garment }) {
   const [failed, setFailed] = useState(false);
   const meta = garmentMeta(item);
   const alt = [meta.brand, item.name].filter(Boolean).join(" ");
-  const thumbnailUrl = localThumbnailUrl(item.imageUrl);
+  const thumbnailUrl = localThumbnailUrl(item.cutoutImageUrl || item.imageUrl);
 
   useEffect(() => {
     setFailed(false);
@@ -1310,6 +1510,38 @@ function GarmentThumbnail({ item }: { item: Garment }) {
           onError={() => setFailed(true)}
         />
       ) : <Shirt size={24} />}
+    </div>
+  );
+}
+
+function VisionSuggestion({ item, onApply }: { item: Garment; onApply: (update: Partial<Garment>) => void }) {
+  const suggestion = item.visionTags;
+  if (!suggestion) return null;
+  const chips = [
+    suggestion.category ? CATEGORY_LABELS[suggestion.category] : "",
+    ...suggestion.styles,
+    ...suggestion.patterns,
+    ...suggestion.tags
+  ].filter(Boolean);
+  const update: Partial<Garment> = {
+    ...(suggestion.category ? { category: suggestion.category } : {}),
+    styles: suggestion.styles,
+    patterns: suggestion.patterns,
+    tags: suggestion.tags
+  };
+  return (
+    <div className="vision-suggestion">
+      <span>视觉建议</span>
+      <div className="vision-chip-row">
+        {chips.length ? chips.map((chip) => <b key={chip}>{chip}</b>) : <b>暂无标签</b>}
+      </div>
+      {suggestion.scores.length ? (
+        <small>{suggestion.scores.slice(0, 3).map((score) => `${score.label} ${Math.round(score.score * 100)}%`).join(" / ")}</small>
+      ) : null}
+      <button className="secondary btn btn-sm" onClick={() => onApply(update)}>
+        <Check size={16} />
+        应用建议
+      </button>
     </div>
   );
 }
