@@ -203,71 +203,33 @@ http://127.0.0.1:8788
 
 ## POST /api/capture/taobao-orders
 
-启动 Selenium 淘宝订单页采集。接口只负责启动后台 Python 进程，不等待浏览器采集完成。
+旧版 detached 淘宝订单页采集接口已禁用。请使用 `POST /api/capture/jobs` 创建带 `jobId` 的采集任务，避免多个采集产物互相误读。
 
-请求体：
-
-```json
-{
-  "maxPages": 3,
-  "loginWait": 60
-}
-```
-
-字段：
-
-| 字段 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `maxPages` | number | `3` | 订单页最大翻页数，范围 `1` 到 `20` |
-| `loginWait` | number | `60` | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
-
-响应：`CaptureStartResult`
+响应状态：HTTP 410
 
 ```json
 {
-  "started": true,
-  "mode": "orders",
-  "pid": 12345,
-  "outputDir": "output/taobao-captures",
-  "message": "Selenium 采集已启动。请在打开的 Chrome 中登录或处理验证，采集 JSON 会保存到 output/taobao-captures。"
+  "error": {
+    "code": "LEGACY_CAPTURE_DISABLED",
+    "message": "旧版 detached 采集接口已禁用，请使用 /api/capture/jobs。"
+  }
 }
 ```
-
-该旧接口仍保留兼容。新流程建议使用 `POST /api/capture/jobs`，因为它会为每次采集分配独立 `jobId` 和产物目录。
 
 ## POST /api/capture/taobao-item
 
-启动 Selenium 淘宝/天猫商品详情采集。
+旧版 detached 淘宝/天猫商品详情采集接口已禁用。请使用 `POST /api/capture/jobs` 创建带 `jobId` 的采集任务。
 
-请求体：
-
-```json
-{
-  "url": "https://item.taobao.com/item.htm?id=808",
-  "loginWait": 60
-}
-```
-
-字段：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `url` | string | 是 | 仅接受 `item.taobao.com`、`detail.tmall.com`、`item.tmall.com` 的 HTTP/HTTPS 商品链接 |
-| `loginWait` | number | 否 | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
-
-响应：`CaptureStartResult`
+响应状态：HTTP 410
 
 ```json
 {
-  "started": true,
-  "mode": "item-detail",
-  "pid": 12346,
-  "outputDir": "output/taobao-captures",
-  "message": "Selenium 采集已启动。请在打开的 Chrome 中登录或处理验证，采集 JSON 会保存到 output/taobao-captures。"
+  "error": {
+    "code": "LEGACY_CAPTURE_DISABLED",
+    "message": "旧版 detached 采集接口已禁用，请使用 /api/capture/jobs。"
+  }
 }
 ```
-
-该旧接口仍保留兼容。新流程建议使用 `POST /api/capture/jobs`。
 
 ## POST /api/capture/jobs
 
@@ -507,6 +469,8 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 | `rembg-isnet` | `rembg` 的 `isnet-general-use` 去背景模型 |
 | `clip-vit-base-patch32` | Transformers.js 可用的 `Xenova/clip-vit-base-patch32` |
 
+下载和验证 job 会继承服务端环境变量：`OUTFIT_MODEL_ROOT` 指定模型根目录，`OUTFIT_VISION_DEVICE` 指定 CLIP 后端（如 `auto`、`dml`、`cpu`），`OUTFIT_REMBG_PROVIDER` 指定 rembg 的 ONNX Runtime provider（如 `auto`、`cpu`、`cuda`、`dml`）。未设置时，网页端默认显式使用 `OUTFIT_VISION_DEVICE=dml` 和 `OUTFIT_REMBG_PROVIDER=cuda`；rembg 使用 `cuda` 前需要安装 GPU 版 Python 依赖。
+
 响应：`VisionModelJob`
 
 ```json
@@ -543,13 +507,13 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/garments/:id/cutout
 
-对衣物本地缩略图执行本地去背景，并把透明背景 PNG 路径写入 `garments.cutout_image_url`。只接受 `/api/garment-thumbnails/...` 本地缩略图作为输入；没有缩略图时返回 `VISION_INPUT_NOT_FOUND`；未下载去背景模型时返回 HTTP 409，错误码 `VISION_MODEL_MISSING`。
+对衣物本地缩略图执行本地去背景，并把透明背景 PNG 路径写入 `garments.cutout_image_url`。只接受 `/api/garment-thumbnails/...` 本地缩略图作为输入；没有缩略图时返回 `VISION_INPUT_NOT_FOUND`；未下载去背景模型时返回 HTTP 409，错误码 `VISION_MODEL_MISSING`。实际执行会把 `OUTFIT_REMBG_PROVIDER` 传给 `scripts/vision_rembg.py --provider`，默认 `cuda`。
 
 响应：更新后的 `Garment`。
 
 ## POST /api/garments/:id/vision-tags
 
-使用本地 CLIP 模型生成分类、风格、图案和标签建议，并写入 `garments.vision_tags`。该接口不会覆盖 `category`、`styles`、`patterns`、`tags`；前端需要用户点击“应用建议”后才会走 `PUT /api/garments/:id` 更新正式字段。
+使用本地 CLIP 模型生成分类、风格、图案和标签建议，并写入 `garments.vision_tags`。该接口不会覆盖 `category`、`styles`、`patterns`、`tags`；前端需要用户点击“应用建议”后才会走 `PUT /api/garments/:id` 更新正式字段。实际执行会把 `OUTFIT_VISION_DEVICE` 传给 `scripts/vision_tags.mjs --device`，默认 `dml`。
 
 响应：`VisionTagSuggestion`
 

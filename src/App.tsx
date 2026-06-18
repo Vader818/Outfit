@@ -24,7 +24,7 @@ import {
   Wand2,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeGarmentVisionTags,
   createGarmentCutout,
@@ -275,6 +275,7 @@ export function App() {
 export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void } = {}) {
   const [tab, setTab] = useState<Tab>("recommend");
   const [garments, setGarments] = useState<Garment[]>([]);
+  const garmentUpdateVersions = useRef(new Map<number, number>());
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [wardrobeFilters, setWardrobeFilters] = useState<WardrobeFilters>({
     status: "all",
@@ -312,6 +313,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const bookmarklet = useMemo(() => getTaobaoBookmarklet(), []);
   const pendingCount = garments.filter((item) => !item.confirmed && !item.excluded).length;
   const activeGarments = garments.filter((item) => item.owned && !item.excluded);
+  const canLogout = Boolean(props.user && props.onLogout);
 
   useEffect(() => {
     void refreshGarments();
@@ -321,8 +323,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }, []);
 
   async function refreshGarments() {
-    setError("");
-    setGarments(await getGarments());
+    await refreshGarmentsForView(getGarments, setGarments, setError);
   }
 
   async function refreshProfile() {
@@ -449,8 +450,27 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
-    const updated = await updateGarment(id, update);
-    setGarments((items) => items.map((item) => (item.id === id ? updated : item)));
+    const version = (garmentUpdateVersions.current.get(id) ?? 0) + 1;
+    let previous: Garment | undefined;
+    garmentUpdateVersions.current.set(id, version);
+    setError("");
+    setGarments((items) => {
+      previous = items.find((item) => item.id === id);
+      return applyGarmentPatch(items, id, update);
+    });
+    try {
+      const updated = await updateGarment(id, update);
+      if (garmentUpdateVersions.current.get(id) === version) {
+        setGarments((items) => applyGarmentPatch(items, id, updated));
+      }
+    } catch (updateError) {
+      if (garmentUpdateVersions.current.get(id) !== version) return;
+      if (previous) {
+        const rollback = previous;
+        setGarments((items) => applyGarmentPatch(items, id, rollback));
+      }
+      setError(updateError instanceof Error ? updateError.message : "衣物保存失败");
+    }
   }
 
   async function deleteOne(id: number) {
@@ -648,7 +668,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   return (
     <div className="app-shell" data-theme="corporate">
-      <aside className="sidebar">
+      <aside className={canLogout ? "sidebar has-mobile-logout" : "sidebar"}>
         <div className="brand">
           <Shirt size={28} />
           <div>
@@ -663,6 +683,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           <NavButton active={tab === "import"} icon={<Upload size={18} />} label="导入" onClick={() => setTab("import")} />
           <NavButton active={tab === "settings"} icon={<Settings size={18} />} label="设置" onClick={() => setTab("settings")} />
         </nav>
+        {props.user && props.onLogout ? (
+          <button className="nav-button mobile-logout" type="button" aria-label="退出" title="退出" onClick={props.onLogout}>
+            <LogOut size={18} />
+            <span>退出</span>
+          </button>
+        ) : null}
         {props.user && props.onLogout ? <SessionSummary user={props.user} onLogout={props.onLogout} /> : null}
       </aside>
 
@@ -1677,7 +1703,25 @@ function parseColorList(value: string): string[] {
   return parseList(value).map((color) => reverse[color] || color);
 }
 
+export async function refreshGarmentsForView(
+  loadGarments: () => Promise<Garment[]>,
+  onGarments: (garments: Garment[]) => void,
+  onError: (message: string) => void
+): Promise<void> {
+  onError("");
+  try {
+    onGarments(await loadGarments());
+  } catch (garmentError) {
+    onError(garmentError instanceof Error ? garmentError.message : "衣橱读取失败");
+  }
+}
+
+export function applyGarmentPatch(garments: Garment[], id: number, update: Partial<Garment>): Garment[] {
+  return garments.map((item) => (item.id === id ? { ...item, ...update } : item));
+}
+
 function numberOrUndefined(value: string): number | undefined {
+  if (!value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }

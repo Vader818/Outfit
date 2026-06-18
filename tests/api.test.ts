@@ -300,6 +300,46 @@ describe("API routes", () => {
     });
   });
 
+  it("returns client errors for malformed imports and missing garments", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const importResponse = await fetch(`${baseUrl}/api/import/taobao-preview`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ source: "taobao-bookmarklet" })
+    });
+    expect(importResponse.status).toBe(400);
+    expect(await importResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("items") }
+    });
+
+    const updateResponse = await fetch(`${baseUrl}/api/garments/999`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ confirmed: true })
+    });
+    expect(updateResponse.status).toBe(404);
+    expect(await updateResponse.json()).toMatchObject({
+      error: { code: "NOT_FOUND", message: "衣服不存在" }
+    });
+
+    const deleteResponse = await fetch(`${baseUrl}/api/garments/999`, {
+      method: "DELETE",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(deleteResponse.status).toBe(404);
+    expect(await deleteResponse.json()).toMatchObject({
+      error: { code: "NOT_FOUND", message: "衣服不存在" }
+    });
+  });
+
   it("hides unexpected internal error details from API responses", async () => {
     const brokenDb = {
       prepare: () => {
@@ -1018,13 +1058,13 @@ describe("API routes", () => {
         pageType: "order-list",
         items: [
           {
-            itemId: "1041553367966",
-            orderId: "900000000000000001",
+            itemId: "sample-item-1",
+            orderId: "order-example-1",
             title: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
             sku: "颜色分类: 曜石黑/银白色; 鞋码: 42",
             status: "交易成功",
-            itemUrl: "https://item.taobao.com/item.htm?id=1041553367966",
-            imageUrl: "https://gw.alicdn.com/imgextra/i2/O1CN01IBkgQN26Fy77Dv9zk_!!6000000007633-2-tps-80-36.png"
+            itemUrl: "https://item.taobao.com/item.htm?id=sample-item-1",
+            imageUrl: "https://gw.alicdn.com/imgextra/i2/12345/O1CN01platform-2-tps-80-36.png"
           }
         ]
       })
@@ -1035,14 +1075,14 @@ describe("API routes", () => {
     writeFileSync(path.join(captureDir, "capture.json"), JSON.stringify({
       source: "taobao-selenium",
       pageType: "item-detail",
-      pageUrl: "https://item.taobao.com/item.htm?id=1041553367966",
+      pageUrl: "https://item.taobao.com/item.htm?id=sample-item-1",
       items: [
         {
-          itemId: "1041553367966",
-          detailTitle: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
+          itemId: "sample-item-1",
+          detailTitle: "Example running shoes",
           detailImages: [
-            "https://img.alicdn.com/imgextra/i4/363607599/O1CN01tiny_!!4611686018427385391-0-item_pic.jpg",
-            "https://gw.alicdn.com/bao/uploaded/i4/363607599/O1CN01shoe.jpg"
+            "https://img.alicdn.com/imgextra/i4/34567/O1CN01tiny_!!sample-item_pic.jpg",
+            "https://gw.alicdn.com/bao/uploaded/i4/34567/O1CN01shoe.jpg"
           ]
         }
       ]
@@ -1061,7 +1101,7 @@ describe("API routes", () => {
     expect(refreshResponse.status).toBe(200);
     expect(refreshBody).toMatchObject({ scanned: 1, attemptedDownloads: 2, updated: 1 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-1041553367966.png");
+    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-sample-item-1.png");
     expect(thumbnailResponse.status).toBe(200);
     expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
   });
@@ -1069,7 +1109,11 @@ describe("API routes", () => {
   it("reports local vision model status and starts explicit download jobs", async () => {
     const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
     const db = createDatabase(":memory:");
-    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const app = createApiApp(db, {
+      visionModelRoot: modelRoot,
+      visionDevice: "dml",
+      rembgProvider: "cuda"
+    });
     const server = app.listen(0);
     servers.push(server);
     const address = server.address();
@@ -1106,11 +1150,51 @@ describe("API routes", () => {
       expect.arrayContaining(["scripts/models.mjs", "download", "rembg"]),
       expect.objectContaining({
         cwd: process.cwd(),
-        env: expect.objectContaining({ OUTFIT_MODEL_ROOT: modelRoot })
+        env: expect.objectContaining({
+          OUTFIT_MODEL_ROOT: modelRoot,
+          OUTFIT_VISION_DEVICE: "dml",
+          OUTFIT_REMBG_PROVIDER: "cuda"
+        })
       })
     );
     expect(spawnedChild.stdout.on).toHaveBeenCalledWith("data", expect.any(Function));
     expect(spawnedChild.stderr.on).toHaveBeenCalledWith("data", expect.any(Function));
+  });
+
+  it("defaults web-triggered vision verification jobs to explicit local GPU backends", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const listeners = new Map<string, (code?: number) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/verify`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+
+    expect(response.status).toBe(200);
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      expect.arrayContaining(["scripts/models.mjs", "verify", "clip"]),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          OUTFIT_MODEL_ROOT: modelRoot,
+          OUTFIT_VISION_DEVICE: "dml",
+          OUTFIT_REMBG_PROVIDER: "cuda"
+        })
+      })
+    );
+    listeners.get("close")?.(0);
   });
 
   it("reuses running vision jobs and reports succeeded or failed jobs in model status", async () => {
@@ -1239,7 +1323,14 @@ describe("API routes", () => {
     writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
     writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
-      if (event === "close") callback(0);
+      if (event === "close") {
+        const args = spawnMock.mock.calls.at(-1)?.[1] as string[] | undefined;
+        const outputIndex = args?.indexOf("--output") ?? -1;
+        if (args && outputIndex >= 0) {
+          writeFileSync(args[outputIndex + 1], Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        }
+        callback(0);
+      }
       return spawnedChild;
     });
     const db = createDatabase(":memory:");
@@ -1249,7 +1340,11 @@ describe("API routes", () => {
         image_url, owned, confirmed, excluded, confidence, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
-    const app = createApiApp(db, { thumbnailOutputDir, visionModelRoot: modelRoot });
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      rembgProvider: "cuda"
+    });
     const server = app.listen(0);
     servers.push(server);
     const address = server.address();
@@ -1265,9 +1360,106 @@ describe("API routes", () => {
     expect(response.status).toBe(200);
     expect(spawnMock).toHaveBeenLastCalledWith(
       process.env.PYTHON || "python",
-      expect.arrayContaining(["scripts/vision_rembg.py", "--input", path.join(thumbnailOutputDir, "garment-1-shirt.png")]),
+      expect.arrayContaining(["scripts/vision_rembg.py", "--input", path.join(thumbnailOutputDir, "garment-1-shirt.png"), "--provider", "cuda"]),
       expect.objectContaining({ cwd: process.cwd() })
     );
+  });
+
+  it("runs the default CLIP wrapper with the requested local GPU device", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const clipDir = path.join(modelRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    writeFileSync(path.join(clipDir, "config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "preprocessor_config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "special_tokens_map.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "tokenizer.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "tokenizer_config.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "vocab.json"), "{}", "utf8");
+    writeFileSync(path.join(clipDir, "merges.txt"), "", "utf8");
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    spawnedChild.stdout.on.mockImplementation((event: string, callback: (chunk: string) => void) => {
+      if (event === "data") {
+        callback(JSON.stringify({
+          category: "top",
+          styles: ["smart-casual"],
+          patterns: ["solid"],
+          tags: ["cotton"],
+          scores: [{ label: "top", score: 0.9 }]
+        }));
+      }
+      return spawnedChild.stdout;
+    });
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      if (event === "close") callback(0);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["casual"]), "casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, { thumbnailOutputDir, visionModelRoot: modelRoot, visionDevice: "dml" });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/vision-tags`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+
+    expect(response.status).toBe(200);
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      expect.arrayContaining(["scripts/vision_tags.mjs", "--image", path.join(thumbnailOutputDir, "garment-1-shirt.png"), "--device", "dml"]),
+      expect.objectContaining({ cwd: process.cwd() })
+    );
+  });
+
+  it("does not save a cutout URL when rembg exits without writing output", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      runRembg: async () => undefined
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const garments = await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "VISION_OUTPUT_MISSING", message: expect.stringContaining("去背景输出文件") }
+    });
+    expect(garments[0].cutoutImageUrl).toBeUndefined();
   });
 
   it("returns tag suggestions without overwriting garment fields", async () => {

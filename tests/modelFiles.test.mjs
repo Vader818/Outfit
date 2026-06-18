@@ -9,7 +9,7 @@ describe("model file helpers", () => {
     expect(isClipRuntimeFile("special_tokens_map.json")).toBe(true);
     expect(isClipRuntimeFile("tokenizer.json")).toBe(true);
     expect(isClipRuntimeFile("onnx/model_quantized.onnx")).toBe(true);
-    expect(isClipRuntimeFile("onnx/model.onnx")).toBe(false);
+    expect(isClipRuntimeFile("onnx/model.onnx")).toBe(true);
     expect(isClipRuntimeFile("README.md")).toBe(false);
     expect(isClipRuntimeFile("pytorch_model.bin")).toBe(false);
   });

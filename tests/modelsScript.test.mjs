@@ -61,12 +61,38 @@ describe("models script", () => {
     expect(calls.some((value) => value.includes("scripts/vision_tags.mjs") && value.includes("--image"))).toBe(true);
   });
 
+  it("passes requested GPU backends to rembg and CLIP verification commands", async () => {
+    const modelRoot = makeModelRoot();
+    installRembgModel(modelRoot);
+    installClipModel(modelRoot);
+    const calls = [];
+    const runCommand = vi.fn(async (_command, args) => {
+      calls.push(args.join(" "));
+      const outputIndex = args.indexOf("--output");
+      if (outputIndex >= 0) {
+        writeFileSync(args[outputIndex + 1], Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      }
+      return "{}";
+    });
+
+    await verify("all", {
+      modelRoot,
+      runCommand,
+      logger: { log: vi.fn() },
+      rembgProvider: "cuda",
+      visionDevice: "dml"
+    });
+
+    expect(calls.some((value) => value.includes("scripts/vision_rembg.py") && value.includes("--provider cuda"))).toBe(true);
+    expect(calls.some((value) => value.includes("scripts/vision_tags.mjs") && value.includes("--device dml"))).toBe(true);
+  });
+
   it("downloads the requested rembg fallback model during warmup", async () => {
     const modelRoot = makeModelRoot();
     const runCommand = vi.fn(async () => "");
     const fetchImpl = vi.fn(async () => new Response("fake-onnx", { status: 200 }));
 
-    await download("rembg", { modelRoot, rembgModel: "silueta", runCommand, fetchImpl });
+    await download("rembg", { modelRoot, rembgModel: "silueta", rembgProvider: "cuda", runCommand, fetchImpl });
 
     expect(readFileSync(path.join(modelRoot, "rembg", "silueta.onnx"), "utf8")).toBe("fake-onnx");
     expect(runCommand).toHaveBeenCalledWith(
@@ -75,6 +101,7 @@ describe("models script", () => {
       expect.objectContaining({ U2NET_HOME: path.join(modelRoot, "rembg") }),
       expect.objectContaining({ stdio: "inherit" })
     );
+    expect(runCommand.mock.calls[0][1]).toEqual(expect.arrayContaining(["--provider", "cuda"]));
   });
 
   it("downloads only CLIP runtime files and fails clearly on Hugging Face errors", async () => {

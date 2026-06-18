@@ -9,6 +9,7 @@ export function isClipRuntimeFile(file) {
     file === "tokenizer_config.json" ||
     file === "vocab.json" ||
     file === "merges.txt" ||
+    file === "onnx/model.onnx" ||
     file === "onnx/model_quantized.onnx"
   );
 }

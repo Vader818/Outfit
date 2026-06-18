@@ -15,17 +15,17 @@ describe("thumbnail candidate ranking", () => {
       category: "shoes",
       title: "TANZ 001 天方361男鞋运动鞋2026夏季篮球文化鞋潮流跑步休闲鞋",
       sku: "颜色分类: 曜石黑/银白色; 鞋码: 42",
-      imageUrl: "https://gw.alicdn.com/imgextra/i2/O1CN01IBkgQN26Fy77Dv9zk_!!6000000007633-2-tps-80-36.png",
+      imageUrl: "https://gw.alicdn.com/imgextra/i2/12345/O1CN01platform-2-tps-80-36.png",
       detailImages: [
-        "https://img.alicdn.com/imgextra/i4/O1CN018GrFIW1Zx7vwjt3Jg_!!6000000003260-2-tps-91-14.png",
-        "https://gw.alicdn.com/imgextra/i1/O1CN01VD9Iap25oweneR31D_!!6000000007574-2-tps-120-60.png",
-        "https://img.alicdn.com/imgextra/i4/363607599/O1CN01noILpD260OqjdMQz6_!!4611686018427385391-0-item_pic.jpg",
-        "https://gw.alicdn.com/bao/uploaded/i4/363607599/O1CN01lA6h4g260Oq99PxN3-363607599.jpg"
+        "https://img.alicdn.com/imgextra/i4/12345/O1CN01logo-2-tps-91-14.png",
+        "https://gw.alicdn.com/imgextra/i1/23456/O1CN01store-2-tps-120-60.png",
+        "https://img.alicdn.com/imgextra/i4/34567/O1CN01product_!!sample-item_pic.jpg",
+        "https://gw.alicdn.com/bao/uploaded/i4/34567/O1CN01fallback-34567.jpg"
       ]
     });
 
-    expect(ranked[0].url).toBe("https://img.alicdn.com/imgextra/i4/363607599/O1CN01noILpD260OqjdMQz6_!!4611686018427385391-0-item_pic.jpg");
-    expect(ranked.map((candidate) => candidate.url)).not.toContain("https://gw.alicdn.com/imgextra/i2/O1CN01IBkgQN26Fy77Dv9zk_!!6000000007633-2-tps-80-36.png");
+    expect(ranked[0].url).toBe("https://img.alicdn.com/imgextra/i4/34567/O1CN01product_!!sample-item_pic.jpg");
+    expect(ranked.map((candidate) => candidate.url)).not.toContain("https://gw.alicdn.com/imgextra/i2/12345/O1CN01platform-2-tps-80-36.png");
   });
 });
 
@@ -56,14 +56,14 @@ describe("thumbnail image probing and download", () => {
 
     const result = await downloadGarmentThumbnail({
       garmentId: 42,
-      itemId: "1041553367966",
+      itemId: "sample-item-1",
       category: "shoes",
       title: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
       sku: "颜色分类: 曜石黑/银白色",
       candidates: [
-        "https://img.alicdn.com/imgextra/i3/363607599/O1CN01tiny-banner_!!4611686018427385391-0-item_pic.jpg",
-        "https://gw.alicdn.com/bao/uploaded/i3/363607599/O1CN01shoe.jpg",
-        "https://img.alicdn.com/imgextra/i3/363607599/O1CN01backup.jpg"
+        "https://img.alicdn.com/imgextra/i3/34567/O1CN01tiny-banner_!!sample-item_pic.jpg",
+        "https://gw.alicdn.com/bao/uploaded/i3/34567/O1CN01shoe.jpg",
+        "https://img.alicdn.com/imgextra/i3/34567/O1CN01backup.jpg"
       ],
       outputDir,
       publicBasePath: "/api/garment-thumbnails",
@@ -74,10 +74,10 @@ describe("thumbnail image probing and download", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
-      sourceUrl: "https://gw.alicdn.com/bao/uploaded/i3/363607599/O1CN01shoe.jpg",
-      localUrl: "/api/garment-thumbnails/garment-42-1041553367966.png"
+      sourceUrl: "https://gw.alicdn.com/bao/uploaded/i3/34567/O1CN01shoe.jpg",
+      localUrl: "/api/garment-thumbnails/garment-42-sample-item-1.png"
     });
-    expect(existsSync(join(outputDir, "garment-42-1041553367966.png"))).toBe(true);
+    expect(existsSync(join(outputDir, "garment-42-sample-item-1.png"))).toBe(true);
   });
 
   it("rejects non-Taobao and private thumbnail URLs before fetching", async () => {
@@ -108,6 +108,38 @@ describe("thumbnail image probing and download", () => {
 
     expect(result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not follow thumbnail redirects to private addresses", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const failures: Array<{ reason: string; detail?: string }> = [];
+    const fetchMock = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "http://127.0.0.1/private.png" }
+    }));
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 17,
+      category: "top",
+      title: "白色衬衫",
+      candidates: ["https://img.alicdn.com/imgextra/i1/123/O1CN01shirt.jpg"],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      delayMs: 0,
+      fetcher: fetchMock,
+      onFailure: (event) => failures.push(event)
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://img.alicdn.com/imgextra/i1/123/O1CN01shirt.jpg",
+      expect.objectContaining({ redirect: "manual" })
+    );
+    expect(failures).toContainEqual(expect.objectContaining({
+      reason: "blocked_address",
+      detail: "http://127.0.0.1/private.png"
+    }));
+    expect(existsSync(join(outputDir, "garment-17-unknown.png"))).toBe(false);
   });
 
   it("rejects thumbnail downloads with an oversized content length", async () => {

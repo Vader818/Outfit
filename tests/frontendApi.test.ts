@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
+import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("uses local auth endpoints with same-origin credentials", async () => {
@@ -192,6 +193,19 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/import/taobao-preview", expect.objectContaining({
       method: "POST",
       body: JSON.stringify(payload)
+    }));
+  });
+
+  it("surfaces API error messages from failed garment requests", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: "衣橱 API 失败"
+    }), { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getGarments()).rejects.toThrow("衣橱 API 失败");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/garments", expect.objectContaining({
+      credentials: "same-origin"
     }));
   });
 

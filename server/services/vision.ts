@@ -13,17 +13,21 @@ export interface RembgRunInput {
   outputPath: string;
   model: string;
   modelDir: string;
+  provider: string;
 }
 
 export interface VisionTagInput {
   garment: Garment;
   imagePath?: string;
   modelDir: string;
+  device: string;
 }
 
 export interface VisionServiceOptions {
   modelRoot?: string;
   thumbnailOutputDir?: string;
+  visionDevice?: string;
+  rembgProvider?: string;
   runRembg?: (input: RembgRunInput) => Promise<void>;
   inferVisionTags?: (input: VisionTagInput) => Promise<VisionTagSuggestion>;
 }
@@ -53,6 +57,8 @@ const MODEL_DEFINITIONS: VisionModelDefinition[] = [
   }
 ];
 const REMBG_MODEL_FALLBACKS = ["isnet-general-use", "u2netp", "silueta"];
+const DEFAULT_VISION_DEVICE = "dml";
+const DEFAULT_REMBG_PROVIDER = "cuda";
 const CLIP_REQUIRED_FILES = [
   "config.json",
   "preprocessor_config.json",
@@ -67,6 +73,14 @@ const visionJobs = new Map<string, VisionModelJob>();
 
 export function defaultVisionModelRoot(): string {
   return join(process.cwd(), "output", "models");
+}
+
+function defaultVisionDevice(options: VisionServiceOptions = {}): string {
+  return normalizeVisionDevice(options.visionDevice || process.env.OUTFIT_VISION_DEVICE || DEFAULT_VISION_DEVICE);
+}
+
+function defaultRembgProvider(options: VisionServiceOptions = {}): string {
+  return normalizeRembgProvider(options.rembgProvider || process.env.OUTFIT_REMBG_PROVIDER || DEFAULT_REMBG_PROVIDER);
 }
 
 export async function getVisionModelResponse(options: VisionServiceOptions = {}): Promise<VisionModelsResponse> {
@@ -113,7 +127,9 @@ function startVisionModelJob(modelId: string, action: VisionModelJob["action"], 
     cwd: process.cwd(),
     env: {
       ...process.env,
-      OUTFIT_MODEL_ROOT: modelRoot
+      OUTFIT_MODEL_ROOT: modelRoot,
+      OUTFIT_VISION_DEVICE: defaultVisionDevice(options),
+      OUTFIT_REMBG_PROVIDER: defaultRembgProvider(options)
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -156,8 +172,12 @@ export async function createGarmentCutout(db: AppDatabase, id: number, options: 
     inputPath,
     outputPath,
     model: rembgModel,
-    modelDir: modelPath(modelRoot, getModelDefinition("rembg-isnet"))
+    modelDir: modelPath(modelRoot, getModelDefinition("rembg-isnet")),
+    provider: defaultRembgProvider(options)
   });
+  if (!existsSync(outputPath)) {
+    throw new ApiError("VISION_OUTPUT_MISSING", "去背景输出文件未生成，请检查本地视觉模型运行结果。", 500);
+  }
   return updateGarmentCutoutImage(db, id, `/api/garment-thumbnails/${basename(outputPath)}`);
 }
 
@@ -174,7 +194,8 @@ export async function createGarmentVisionTags(db: AppDatabase, id: number, optio
   const suggestion = normalizeVisionTagSuggestion(await tagger({
     garment,
     imagePath: imagePath && existsSync(imagePath) ? imagePath : undefined,
-    modelDir: modelPath(modelRoot, getModelDefinition("clip-vit-base-patch32"))
+    modelDir: modelPath(modelRoot, getModelDefinition("clip-vit-base-patch32")),
+    device: defaultVisionDevice(options)
   }));
   return saveGarmentVisionTags(db, id, suggestion);
 }
@@ -275,7 +296,9 @@ async function runRembgCli(input: RembgRunInput): Promise<void> {
     "--model",
     input.model,
     "--model-dir",
-    input.modelDir
+    input.modelDir,
+    "--provider",
+    input.provider
   ]);
 }
 
@@ -288,9 +311,24 @@ async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagSugge
     "--image",
     input.imagePath,
     "--model-dir",
-    input.modelDir
+    input.modelDir,
+    "--device",
+    input.device
   ]);
   return JSON.parse(stdout) as VisionTagSuggestion;
+}
+
+function normalizeVisionDevice(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return ["auto", "gpu", "cpu", "wasm", "webgpu", "cuda", "dml"].includes(normalized) ? normalized : "auto";
+}
+
+function normalizeRembgProvider(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "gpu" || normalized === "webgpu" || normalized === "wasm") {
+    return "auto";
+  }
+  return ["auto", "cpu", "cuda", "dml"].includes(normalized) ? normalized : "auto";
 }
 
 async function runProcess(command: string, args: string[]): Promise<string> {

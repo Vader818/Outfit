@@ -167,6 +167,42 @@ class TaobaoOrderSeleniumCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "risk/captcha"):
             capture.validate_order_list_payload(risk_payload)
 
+    def test_validate_order_payload_uses_snapshot_text_for_login_detection(self):
+        capture = load_capture()
+
+        login_shell_payload = capture.build_order_payload(
+            [
+                {
+                    "url": BOUGHT_ITEMS_URL,
+                    "title": "Login required",
+                    "bodyText": "Scan QR code login Open Taobao APP",
+                    "containers": [],
+                }
+            ],
+            captured_at="2026-06-11T05:30:00.000Z",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "login page"):
+            capture.validate_order_list_payload(login_shell_payload)
+
+    def test_validate_order_payload_rejects_empty_order_list_snapshots(self):
+        capture = load_capture()
+
+        empty_payload = capture.build_order_payload(
+            [
+                {
+                    "url": BOUGHT_ITEMS_URL,
+                    "title": "Bought items",
+                    "bodyText": "已买到的宝贝 暂无订单 请稍后重试",
+                    "containers": [],
+                }
+            ],
+            captured_at="2026-06-11T05:30:00.000Z",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "No Taobao order items"):
+            capture.validate_order_list_payload(empty_payload)
+
     def test_capture_paginates_retries_and_writes_payload(self):
         capture = load_capture()
 

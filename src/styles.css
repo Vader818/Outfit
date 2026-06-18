@@ -160,6 +160,10 @@ nav {
   width: 100%;
 }
 
+.mobile-logout {
+  display: none;
+}
+
 .nav-button {
   position: relative;
   display: flex;
@@ -1007,6 +1011,13 @@ li + li {
     border-right: 0;
   }
 
+  .sidebar.has-mobile-logout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 54px;
+    align-items: stretch;
+    gap: 8px;
+  }
+
   .brand {
     display: none;
   }
@@ -1014,6 +1025,13 @@ li + li {
   nav {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
+  }
+
+  .mobile-logout {
+    display: flex;
+    justify-content: center;
+    min-height: 54px;
+    padding: 8px 6px;
   }
 
   .session-card {

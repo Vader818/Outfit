@@ -270,6 +270,13 @@ def item_dedupe_key(item: dict[str, Any]) -> str:
 def build_order_payload(snapshots: list[dict[str, Any]], captured_at: str | None = None) -> dict[str, Any]:
     first_snapshot = snapshots[0] if snapshots else {}
     page_url = clean_text(first_snapshot.get("url", "")) or DEFAULT_BOUGHT_ITEMS_URL
+    page_text = clean_text(
+        " ".join(
+            clean_text(f"{snapshot.get('title', '')} {snapshot.get('bodyText', '')}")
+            for snapshot in snapshots
+            if isinstance(snapshot, dict)
+        )
+    )
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -296,6 +303,7 @@ def build_order_payload(snapshots: list[dict[str, Any]], captured_at: str | None
         "capturedAt": captured_at or iso_now(),
         "pageUrl": page_url,
         "items": items,
+        "_pageText": page_text[:4000],
     }
 
 
@@ -305,6 +313,7 @@ def validate_order_list_payload(payload: dict[str, Any]) -> None:
         " ".join(
             [
                 page_url,
+                clean_text(payload.get("_pageText", "")),
                 *[clean_text(item.get("rawText", "")) for item in payload.get("items", []) if isinstance(item, dict)],
             ]
         )
@@ -316,6 +325,8 @@ def validate_order_list_payload(payload: dict[str, Any]) -> None:
         raise RuntimeError("Capture is on a Taobao risk/captcha page; handle the verification manually before running again. This script does not bypass verification.")
     if payload.get("pageType") != "order-list":
         raise RuntimeError(f"Capture is not an order-list payload: {page_url}")
+    if not payload.get("items"):
+        raise RuntimeError("No Taobao order items were captured; the page may not have finished loading or the DOM selectors may need updating.")
 
 
 def build_order_collector_snapshot_script() -> str:
@@ -401,7 +412,8 @@ def default_output_path(output_dir: Path) -> Path:
 def write_payload(payload: dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = default_output_path(output_dir)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    public_payload = {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    path.write_text(json.dumps(public_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 

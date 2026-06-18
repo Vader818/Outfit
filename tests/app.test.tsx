@@ -85,6 +85,21 @@ describe("App", () => {
     expect(onLogout).toHaveBeenCalled();
   });
 
+  it("renders a compact mobile logout control outside the hidden session card", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: vi.fn()
+    });
+
+    const markup = renderToStaticMarkup(
+      <MainApp user={{ id: 1, username: "local_user" }} onLogout={vi.fn()} />
+    );
+
+    expect(markup).toContain("has-mobile-logout");
+    expect(markup).toContain("mobile-logout");
+    expect(markup).toContain('aria-label="退出"');
+  });
+
   it("renders a control for reading Selenium capture artifacts into the import JSON box", () => {
     const markup = renderToStaticMarkup(
       <ImportView
@@ -606,6 +621,38 @@ describe("App", () => {
     expect(markup).toContain("黄色,棕色");
   });
 
+  it("keeps blank profile numbers undefined instead of saving them as zero", () => {
+    const onProfile = vi.fn();
+    const tree = SettingsView({
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: false,
+      profile: {
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        colorDisposition: "cool-clean",
+        temperatureSensitivity: "neutral",
+        preferredColors: ["white"],
+        avoidedColors: [],
+        preferredStyles: []
+      },
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile
+    });
+
+    const [heightInput, weightInput] = findInputsByType(tree, "number");
+    heightInput.props.onChange({ target: { value: "" } });
+    weightInput.props.onChange({ target: { value: "   " } });
+
+    expect(onProfile).toHaveBeenNthCalledWith(1, expect.objectContaining({ heightCm: undefined }));
+    expect(onProfile).toHaveBeenNthCalledWith(2, expect.objectContaining({ weightKg: undefined }));
+  });
+
   it("renders local vision model status and download controls in settings", () => {
     const visionModels: VisionModelsResponse = {
       modelRoot: "output\\models",
@@ -798,6 +845,47 @@ describe("App", () => {
     expect(markup).toContain('value="cotton"');
     expect(markup).toContain('value="solid"');
     expect(markup).toContain('value="挺括,层次"');
+  });
+
+  it("builds an immediate optimistic garment patch for inline editing", async () => {
+    const appModule = await import("../src/App");
+    const applyGarmentPatch = (appModule as {
+      applyGarmentPatch?: (garments: Garment[], id: number, update: Partial<Garment>) => Garment[];
+    }).applyGarmentPatch;
+    const original = makeGarment(303, "白色衬衫", "top");
+
+    expect(applyGarmentPatch).toEqual(expect.any(Function));
+
+    const next = applyGarmentPatch?.([original], 303, { name: "白色牛津纺衬衫" });
+
+    expect(next?.[0]).toMatchObject({ id: 303, name: "白色牛津纺衬衫" });
+    expect(next?.[0]).not.toBe(original);
+    expect(original.name).toBe("白色衬衫");
+  });
+
+  it("converts garment refresh API failures into visible error state", async () => {
+    const appModule = await import("../src/App");
+    const refreshGarmentsForView = (appModule as {
+      refreshGarmentsForView?: (
+        loadGarments: () => Promise<Garment[]>,
+        onGarments: (garments: Garment[]) => void,
+        onError: (message: string) => void
+      ) => Promise<void>;
+    }).refreshGarmentsForView;
+    const onGarments = vi.fn();
+    const onError = vi.fn();
+
+    expect(refreshGarmentsForView).toEqual(expect.any(Function));
+
+    await expect(refreshGarmentsForView?.(
+      () => Promise.reject(new Error("衣橱 API 失败")),
+      onGarments,
+      onError
+    )).resolves.toBeUndefined();
+
+    expect(onGarments).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenNthCalledWith(1, "");
+    expect(onError).toHaveBeenLastCalledWith("衣橱 API 失败");
   });
 
   it("renders history insights metrics and export control", () => {

@@ -18,6 +18,8 @@ export interface ApiAppOptions {
   thumbnailMaxDownloads?: number;
   thumbnailDelayMs?: number;
   visionModelRoot?: string;
+  visionDevice?: VisionServiceOptions["visionDevice"];
+  rembgProvider?: VisionServiceOptions["rembgProvider"];
   runRembg?: VisionServiceOptions["runRembg"];
   inferVisionTags?: VisionServiceOptions["inferVisionTags"];
 }
@@ -293,6 +295,8 @@ function visionOptions(options: ApiAppOptions): VisionServiceOptions {
   return {
     modelRoot: options.visionModelRoot,
     thumbnailOutputDir: options.thumbnailOutputDir,
+    visionDevice: options.visionDevice,
+    rembgProvider: options.rembgProvider,
     runRembg: options.runRembg,
     inferVisionTags: options.inferVisionTags
   };

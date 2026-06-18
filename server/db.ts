@@ -7,6 +7,7 @@ import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, Ta
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, type ThumbnailRefreshResult } from "./services/thumbnails";
+import { ApiError } from "./validation";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -538,7 +539,7 @@ export function getGarmentById(db: AppDatabase, id: number): Garment {
     WHERE garments.id = ?
   `).get(id) as unknown as GarmentRow | undefined;
   if (!row) {
-    throw new Error("衣服不存在");
+    throw garmentNotFoundError();
   }
   return rowToGarment(row);
 }
@@ -546,7 +547,7 @@ export function getGarmentById(db: AppDatabase, id: number): Garment {
 export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate): Garment {
   const current = db.prepare("SELECT * FROM garments WHERE id = ?").get(id) as GarmentRow | undefined;
   if (!current) {
-    throw new Error("衣服不存在");
+    throw garmentNotFoundError();
   }
   const next = {
     brand: update.brand ?? current.brand ?? "",
@@ -614,7 +615,7 @@ export function updateGarmentCutoutImage(db: AppDatabase, id: number, cutoutImag
     WHERE id = ?
   `).run(cutoutImageUrl, updatedAt, id);
   if (Number(result.changes) === 0) {
-    throw new Error("衣服不存在");
+    throw garmentNotFoundError();
   }
   return getGarmentById(db, id);
 }
@@ -627,7 +628,7 @@ export function saveGarmentVisionTags(db: AppDatabase, id: number, suggestion: V
     WHERE id = ?
   `).run(JSON.stringify(suggestion), updatedAt, id);
   if (Number(result.changes) === 0) {
-    throw new Error("衣服不存在");
+    throw garmentNotFoundError();
   }
   return suggestion;
 }
@@ -711,8 +712,12 @@ export async function refreshGarmentThumbnails(db: AppDatabase, options: Thumbna
 export function deleteGarment(db: AppDatabase, id: number): void {
   const result = db.prepare("DELETE FROM garments WHERE id = ?").run(id);
   if (Number(result.changes) === 0) {
-    throw new Error("衣服不存在");
+    throw garmentNotFoundError();
   }
+}
+
+function garmentNotFoundError(): ApiError {
+  return new ApiError("NOT_FOUND", "衣服不存在", 404);
 }
 
 export function saveWearLog(db: AppDatabase, garmentIds: number[], context: unknown = null): void {

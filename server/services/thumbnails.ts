@@ -215,13 +215,13 @@ async function tryDownloadCandidate(options: {
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), timeoutMs);
   try {
-    const response = await options.fetcher(options.candidate.url, {
-      headers: {
-        "user-agent": "Mozilla/5.0 Outfit local thumbnail fetcher",
-        "accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8"
-      },
+    const response = await fetchWithValidatedRedirects({
+      url: options.candidate.url,
+      input: options.input,
+      fetcher: options.fetcher,
       signal: abortController.signal
     });
+    if (!response) return null;
     if (!response.ok) {
       recordDownloadFailure(options.input, options.candidate.url, "http_error", String(response.status));
       return null;
@@ -285,6 +285,54 @@ function validateDownloadUrl(value: string, allowedHostSuffixes = DEFAULT_ALLOWE
     return { ok: false, reason: "blocked_host" };
   }
   return { ok: true };
+}
+
+async function fetchWithValidatedRedirects(options: {
+  url: string;
+  input: DownloadGarmentThumbnailInput;
+  fetcher: typeof fetch;
+  signal: AbortSignal;
+}): Promise<Response | null> {
+  let currentUrl = options.url;
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    const response = await options.fetcher(currentUrl, {
+      headers: {
+        "user-agent": "Mozilla/5.0 Outfit local thumbnail fetcher",
+        "accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8"
+      },
+      redirect: "manual",
+      signal: options.signal
+    });
+    const location = response.headers.get("location");
+    if (!isRedirectStatus(response.status) || !location) {
+      return response;
+    }
+    const redirectUrl = resolveRedirectUrl(location, currentUrl);
+    if (!redirectUrl) {
+      recordDownloadFailure(options.input, options.url, "invalid_url", location);
+      return null;
+    }
+    const urlCheck = validateDownloadUrl(redirectUrl, options.input.allowedHostSuffixes);
+    if (!urlCheck.ok) {
+      recordDownloadFailure(options.input, options.url, urlCheck.reason, redirectUrl);
+      return null;
+    }
+    currentUrl = redirectUrl;
+  }
+  recordDownloadFailure(options.input, options.url, "http_error", "too_many_redirects");
+  return null;
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400;
+}
+
+function resolveRedirectUrl(location: string, baseUrl: string): string | null {
+  try {
+    return new URL(location, baseUrl).toString();
+  } catch {
+    return null;
+  }
 }
 
 function isAllowedImageHost(hostname: string, allowedHostSuffixes: string[]): boolean {

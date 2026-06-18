@@ -184,6 +184,12 @@ npm run privacy:clean -- --confirm --include-login-state
 python -m pip install -r requirements.lock.txt
 ```
 
+如果要让 `rembg` 尝试 NVIDIA CUDA 加速，可在确认本机 CUDA/驱动环境可用后改装可选 GPU 依赖：
+
+```powershell
+python -m pip install -r requirements.gpu.txt
+```
+
 查看模型状态：
 
 ```powershell
@@ -202,6 +208,8 @@ npm run models:verify
 
 - `rembg` 去背景模型默认使用 `isnet-general-use`，模型目录为 `output/models/rembg`；低配置或网络较慢时可以运行 `npm run models:download:rembg -- --model u2netp` 或 `npm run models:download:rembg -- --model silueta`，运行时会按 `isnet-general-use`、`u2netp`、`silueta` 顺序选择本地已存在模型。
 - CLIP 标签建议模型使用 `Xenova/clip-vit-base-patch32`，缓存目录在 `output/models/huggingface` 下。
+- 网页端的本地视觉下载、验证、去背景和标签建议默认显式走 GPU：`rembg` 使用 `OUTFIT_REMBG_PROVIDER=cuda`，CLIP 使用 `OUTFIT_VISION_DEVICE=dml`。如需临时回退，可在启动服务前把它们改成 `cpu` 或 `auto`。
+- 命令行脚本仍可用 `scripts/models.mjs ... --provider cuda`、`scripts/vision_tags.mjs ... --device dml` 显式指定后端；`rembg` 使用 CUDA 需要安装 `requirements.gpu.txt`。
 - `npm run models:verify` 会用临时小图实际加载 rembg 和 CLIP，而不只是检查文件是否存在。
 - 设置页提供本地视觉启用开关、模型下载按钮和验证按钮；开关只控制本地视觉增强入口，不会触发自动下载。
 - 如果当前环境设置了 `HTTP_PROXY` 或 `HTTPS_PROXY`，模型脚本会在下载时自动为 Node 启用环境代理。

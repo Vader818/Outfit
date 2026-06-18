@@ -1,0 +1,6 @@
+selenium==4.44.0
+rembg[gpu]==2.0.76
+nvidia-cublas==13.5.1.27
+nvidia-cuda-runtime==13.3.29
+nvidia-cudnn-cu13==9.23.2.1
+nvidia-cufft==12.3.0.29

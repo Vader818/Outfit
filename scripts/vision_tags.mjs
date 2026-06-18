@@ -3,9 +3,10 @@ import path from "node:path";
 const args = parseArgs(process.argv.slice(2));
 const imagePath = args.image;
 const modelDir = args["model-dir"];
+const device = normalizeDevice(args.device || process.env.OUTFIT_VISION_DEVICE || "auto");
 
 if (!imagePath || !modelDir) {
-  console.error("Usage: node scripts/vision_tags.mjs --image <path> --model-dir <path>");
+  console.error("Usage: node scripts/vision_tags.mjs --image <path> --model-dir <path> [--device auto|gpu|cpu|wasm|webgpu|cuda|dml]");
   process.exit(2);
 }
 
@@ -20,7 +21,7 @@ try {
   env.cacheDir = path.resolve(modelDir, "..", "..");
   env.allowRemoteModels = false;
   env.allowLocalModels = true;
-  const classifier = await pipeline("zero-shot-image-classification", path.resolve(modelDir));
+  const classifier = await pipeline("zero-shot-image-classification", path.resolve(modelDir), { device });
   const image = await RawImage.read(path.resolve(imagePath));
   const output = await classifier(image, labels);
   await classifier.dispose();
@@ -64,4 +65,10 @@ function parseArgs(values) {
     index += 1;
   }
   return result;
+}
+
+function normalizeDevice(value) {
+  const normalized = String(value || "auto").trim().toLowerCase();
+  const allowed = new Set(["auto", "gpu", "cpu", "wasm", "webgpu", "cuda", "dml"]);
+  return allowed.has(normalized) ? normalized : "auto";
 }

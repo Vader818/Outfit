@@ -36,7 +36,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const target = parsed.positionals[1] || "all";
   const commandOptions = {
     ...options,
-    rembgModel: parsed.flags.model || options.rembgModel
+    rembgModel: parsed.flags.model || options.rembgModel,
+    rembgProvider: parsed.flags.provider || process.env.OUTFIT_REMBG_PROVIDER || options.rembgProvider || "auto",
+    visionDevice: parsed.flags.device || process.env.OUTFIT_VISION_DEVICE || options.visionDevice || "auto"
   };
 
   if (command === "status") {
@@ -94,7 +96,9 @@ export async function download(name = "all", options = {}) {
       "--model",
       rembgModel,
       "--model-dir",
-      models.rembg.path
+      models.rembg.path,
+      "--provider",
+      options.rembgProvider || "auto"
     ], { U2NET_HOME: models.rembg.path }, { stdio: "inherit" });
   }
   if (name === "clip" || name === "all") {
@@ -257,7 +261,9 @@ async function verifyRembg(modelDir, options) {
       "--model",
       model,
       "--model-dir",
-      modelDir
+      modelDir,
+      "--provider",
+      options.rembgProvider || "auto"
     ], { U2NET_HOME: modelDir }, { stdio: "pipe" });
     if (!existsSync(outputPath)) {
       throw new Error("rembg verify did not create an output PNG");
@@ -282,7 +288,9 @@ async function verifyClip(modelDir, options) {
       "--image",
       inputPath,
       "--model-dir",
-      modelDir
+      modelDir,
+      "--device",
+      options.visionDevice || "auto"
     ], {}, { stdio: "pipe" });
   } finally {
     await rm(tempDir, { recursive: true, force: true });

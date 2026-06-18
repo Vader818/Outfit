@@ -231,11 +231,11 @@ export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
 
 function assertBatch(payload: unknown): TaobaoCapturedBatch {
   if (!payload || typeof payload !== "object") {
-    throw new Error("导入内容必须是 JSON 对象");
+    throw new ValidationError("导入内容必须是 JSON 对象");
   }
   const batch = payload as TaobaoCapturedBatch;
   if (!Array.isArray(batch.items)) {
-    throw new Error("导入内容缺少 items 数组");
+    throw new ValidationError("导入内容缺少 items 数组");
   }
   if (batch.items.length > MAX_IMPORT_ITEMS) {
     throw new ValidationError(`items 最多包含 ${MAX_IMPORT_ITEMS} 条`);
