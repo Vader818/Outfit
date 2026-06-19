@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthView, HistoryInsightsView, ImportView, MainApp, SessionSummary, SettingsView } from "../src/App";
+import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, WardrobeView } from "../src/App";
 import type { Garment, OutfitRecommendation, RecommendationResult, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
@@ -1063,6 +1063,108 @@ describe("App", () => {
     expect(cssRule(styles, ".filter-bar")).toMatch(/repeat\(auto-fit,\s*minmax\(min\(100%,\s*12rem\),\s*1fr\)\)/);
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/overflow-wrap:\s*anywhere;/);
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
+  });
+
+  it("renders recommendation controls as a dense command bar with visual outfit previews", () => {
+    const weather = makeWeather();
+    const recommendations: RecommendationResult = {
+      weather,
+      occasion: "casual",
+      outfits: [makeOutfit()]
+    };
+
+    const markup = renderToStaticMarkup(
+      <RecommendationView
+        weather={weather}
+        recommendations={recommendations}
+        occasion="casual"
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="command-bar recommendation-command"');
+    expect(markup).toContain('class="outfit-preview"');
+    expect(markup).toContain('class="outfit-reasons"');
+  });
+
+  it("renders wardrobe bulk state and row editing inside stable workbench regions", () => {
+    const markup = renderToStaticMarkup(
+      <WardrobeView
+        garments={[makeGarment(1, "white shirt", "top")]}
+        selectedIds={[1]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onBulkConfirm={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="batch-strip"');
+    expect(markup).toContain('class="garment-row-main"');
+    expect(markup).toContain('class="garment-editor"');
+    expect(markup).toContain('class="garment-actions-row"');
+  });
+
+  it("renders import and settings pages with workbench grouping hooks", () => {
+    const importMarkup = renderToStaticMarkup(
+      <ImportView
+        bookmarklet="https://example.com/bookmarklet"
+        importText="{}"
+        importResult={null}
+        filterSummary={null}
+        captureUrl=""
+        captureResult={null}
+        busy={false}
+        onCopyBookmarklet={vi.fn()}
+        onImportText={vi.fn()}
+        onImport={vi.fn()}
+        onPreviewImport={vi.fn()}
+        onCaptureUrl={vi.fn()}
+        onStartOrdersCapture={vi.fn()}
+        onStartItemCapture={vi.fn()}
+        onReadLatestCapture={vi.fn()}
+      />
+    );
+    const settingsMarkup = renderToStaticMarkup(
+      <SettingsView
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        profile={{}}
+        visionModels={null}
+        visionEnabled={true}
+        onLatitude={vi.fn()}
+        onLongitude={vi.fn()}
+        onLocate={vi.fn()}
+        onSave={vi.fn()}
+        onProfile={vi.fn()}
+      />
+    );
+
+    expect(importMarkup).toContain('class="import-flow"');
+    expect(importMarkup).toContain('class="advanced-import"');
+    expect(settingsMarkup).toContain('class="settings-grid"');
+    expect(settingsMarkup).toContain('class="settings-section"');
+  });
+
+  it("defines expanded workbench tokens and dense layout utilities", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ":root")).toMatch(/--app-surface-solid:\s*#ffffff;/);
+    expect(cssRule(styles, ":root")).toMatch(/--space-3:\s*12px;/);
+    expect(cssRule(styles, ".command-bar")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
+    expect(cssRule(styles, ".batch-strip")).toMatch(/position:\s*sticky;/);
+    expect(cssRule(styles, ".vision-model-table")).toMatch(/display:\s*grid;/);
   });
 });
 

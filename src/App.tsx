@@ -57,6 +57,7 @@ import {
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
+import { CommandBar, SettingsSection, WorkbenchPanel } from "./components/workbench";
 import type { AuthStatus, AuthUser, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
@@ -913,12 +914,12 @@ export function ImportView(props: {
           </button>
         </div>
       </header>
-      <div className="import-guide">
-        <span>1 安装采集书签</span>
-        <span>2 打开已买到或商品详情</span>
-        <span>3 粘贴 JSON 导入</span>
+      <div className="import-flow">
+        <span className="import-step">1 安装采集书签</span>
+        <span className="import-step">2 打开已买到或商品详情</span>
+        <span className="import-step">3 预览并导入</span>
       </div>
-      <div className="panel selenium-panel card">
+      <WorkbenchPanel className="selenium-panel capture-step">
         <label>Selenium 采集</label>
         <div className="selenium-controls">
           <button className="secondary btn btn-soft" disabled={props.busyAction === "capture-orders"} onClick={props.onStartOrdersCapture}>
@@ -942,9 +943,9 @@ export function ImportView(props: {
             {"status" in props.captureResult ? `，状态 ${captureStatusLabel(props.captureResult.status)}` : ""}
           </div>
         ) : null}
-      </div>
+      </WorkbenchPanel>
       <div className="grid two">
-        <div className="panel card">
+        <WorkbenchPanel className="bookmarklet-step">
           <label>书签脚本</label>
           <textarea className="code-box textarea textarea-bordered" readOnly value={props.bookmarklet} />
           <div className="bookmarklet-actions">
@@ -956,9 +957,9 @@ export function ImportView(props: {
               复制脚本
             </button>
           </div>
-        </div>
-        <div className="panel card">
-          <label>采集 JSON</label>
+        </WorkbenchPanel>
+        <details className="advanced-import" open>
+          <summary>采集 JSON</summary>
           <textarea
             className="import-box textarea textarea-bordered"
             value={props.importText}
@@ -984,7 +985,7 @@ export function ImportView(props: {
               已从 {props.filterSummary.originalItems} 条订单中保留 {props.filterSummary.keptItems} 条衣服/鞋候选，退款过滤 {props.filterSummary.skippedRefunded} 条，非服饰过滤 {props.filterSummary.skippedNonApparel} 条。
             </div>
           ) : null}
-        </div>
+        </details>
       </div>
       {props.importResult ? (
         <div className="metric-strip">
@@ -1069,18 +1070,6 @@ export function WardrobeView(props: {
               {props.busyAction === "refresh-thumbnails" ? "处理中" : "补缩略图"}
             </button>
           ) : null}
-          <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
-            <Check size={18} />
-            选择当前结果
-          </button>
-          <button className="secondary btn btn-soft" disabled={!props.selectedIds.length} onClick={() => props.onSelect([])}>
-            <X size={18} />
-            清空选择
-          </button>
-          <button className="primary btn btn-primary" disabled={!props.selectedIds.length || props.busyAction === "bulk-confirm"} onClick={props.onBulkConfirm}>
-            <Check size={18} />
-            {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
-          </button>
         </div>
       </header>
       {props.thumbnailRefreshMessage ? <p className="inline-feedback">{props.thumbnailRefreshMessage}</p> : null}
@@ -1097,21 +1086,38 @@ export function WardrobeView(props: {
         <Select value={filters.season} options={SEASON_FILTER_OPTIONS} onChange={(value) => updateFilter("season", value as WardrobeFilters["season"])} />
         <Select value={filters.owned} options={OWNED_FILTER_OPTIONS} onChange={(value) => updateFilter("owned", value as WardrobeOwnedFilter)} />
       </div>
+      <div className="batch-strip">
+        <span>{filteredGarments.length} 件当前结果，已选 {props.selectedIds.length} 件</span>
+        <div className="actions">
+          <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
+            <Check size={18} />
+            选择当前结果
+          </button>
+          <button className="secondary btn btn-soft" disabled={!props.selectedIds.length} onClick={() => props.onSelect([])}>
+            <X size={18} />
+            清空选择
+          </button>
+          <button className="primary btn btn-primary" disabled={!props.selectedIds.length || props.busyAction === "bulk-confirm"} onClick={props.onBulkConfirm}>
+            <Check size={18} />
+            {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
+          </button>
+        </div>
+      </div>
       {props.garments.length ? (
         filteredGarments.length ? (
           <div className="wardrobe-list">
             {filteredGarments.map((item) => (
           <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
-            <input
-              className="checkbox checkbox-sm"
-              type="checkbox"
-              checked={props.selectedIds.includes(item.id)}
-              onChange={(event) =>
-                props.onSelect(event.target.checked ? [...props.selectedIds, item.id] : props.selectedIds.filter((id) => id !== item.id))
-              }
-            />
-            <GarmentThumbnail item={item} />
-            <div className="garment-main">
+            <div className="garment-row-main">
+              <input
+                className="checkbox checkbox-sm"
+                type="checkbox"
+                checked={props.selectedIds.includes(item.id)}
+                onChange={(event) =>
+                  props.onSelect(event.target.checked ? [...props.selectedIds, item.id] : props.selectedIds.filter((id) => id !== item.id))
+                }
+              />
+              <GarmentThumbnail item={item} />
               <div className="garment-title-line">
                 {garmentMeta(item).brand ? <span className="brand-tag">{garmentMeta(item).brand}</span> : null}
                 <input
@@ -1121,6 +1127,8 @@ export function WardrobeView(props: {
                   onChange={(event) => props.onUpdate(item.id, { name: event.target.value })}
                 />
               </div>
+            </div>
+            <div className="garment-editor">
               <div className="field-grid">
                 <Select value={item.category} options={CATEGORY_OPTIONS} onChange={(value) => props.onUpdate(item.id, { category: value as Garment["category"] })} />
                 <Select value={item.color} options={withCurrentOption(COLOR_OPTIONS, item.color)} onChange={(value) => props.onUpdate(item.id, { color: value })} />
@@ -1145,7 +1153,7 @@ export function WardrobeView(props: {
               </div>
               {VisionSuggestion({ item, onApply: (update) => props.onUpdate(item.id, update) })}
             </div>
-            <div className="row-actions">
+            <div className="garment-actions-row">
               {item.detailUrl || item.itemUrl ? (
                 <a className="icon-button btn btn-square btn-soft" title="商品详情" href={item.detailUrl || item.itemUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} />
@@ -1209,6 +1217,15 @@ export function RecommendationView(props: {
           <h1>今日推荐</h1>
           <p>{props.latitude}, {props.longitude}</p>
         </div>
+      </header>
+      <CommandBar className="recommendation-command">
+        <div className="toolbar">
+          {OCCASIONS.map((value) => (
+            <button className={props.occasion === value ? "chip btn btn-sm active" : "chip btn btn-sm"} key={value} onClick={() => props.onOccasion(value)}>
+              {OCCASION_LABELS[value]}
+            </button>
+          ))}
+        </div>
         <div className="actions">
           <button className="secondary btn btn-soft" disabled={props.busyAction === "weather"} onClick={props.onFetchWeather}>
             <CloudSun size={18} />
@@ -1219,14 +1236,7 @@ export function RecommendationView(props: {
             {props.busyAction === "recommend" ? "生成中" : "生成"}
           </button>
         </div>
-      </header>
-      <div className="toolbar">
-        {OCCASIONS.map((value) => (
-          <button className={props.occasion === value ? "chip btn btn-sm active" : "chip btn btn-sm"} key={value} onClick={() => props.onOccasion(value)}>
-            {OCCASION_LABELS[value]}
-          </button>
-        ))}
-      </div>
+      </CommandBar>
       {props.weather ? (
         <div className="weather-band">
           <CloudSun size={24} />
@@ -1240,19 +1250,21 @@ export function RecommendationView(props: {
         <div className="outfit-grid">
           {props.recommendations.outfits.map((outfit) => (
           <article className="outfit" key={outfit.id}>
-            <div className="score">匹配度 {outfit.matchPercent ?? Math.round(Math.min(100, outfit.score))}%</div>
-            <div className="item-stack">
-              {outfit.items.map((item) => (
-                <div className="mini-item" key={item.id}>
-                  <GarmentThumbnail item={item} />
-                  <div>
-                    <span>{CATEGORY_LABELS[item.category]}</span>
-                    <strong>{displayGarmentName(item)}</strong>
+            <div className="outfit-preview">
+              <div className="score">匹配度 {outfit.matchPercent ?? Math.round(Math.min(100, outfit.score))}%</div>
+              <div className="item-stack">
+                {outfit.items.map((item) => (
+                  <div className="mini-item" key={item.id}>
+                    <GarmentThumbnail item={item} />
+                    <div>
+                      <span>{CATEGORY_LABELS[item.category]}</span>
+                      <strong>{displayGarmentName(item)}</strong>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-            <ul>
+            <ul className="outfit-reasons">
               {outfit.reasons.slice(0, 2).map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
@@ -1319,11 +1331,16 @@ export function SettingsView(props: {
           <p>SQLite: data/outfit.sqlite</p>
         </div>
       </header>
-      <div className="panel settings-panel">
+      <WorkbenchPanel className="settings-panel">
+        <div className="settings-grid">
+          <SettingsSection>
+        <h2>位置</h2>
         <label>纬度</label>
         <input className="input input-bordered" value={props.latitude} onChange={(event) => props.onLatitude(event.target.value)} />
         <label>经度</label>
         <input className="input input-bordered" value={props.longitude} onChange={(event) => props.onLongitude(event.target.value)} />
+          </SettingsSection>
+          <SettingsSection>
         <h2>个人画像</h2>
         <label>身高 cm</label>
         <input className="input input-bordered" type="number" value={props.profile.heightCm ?? ""} onChange={(event) => updateProfile({ heightCm: numberOrUndefined(event.target.value) })} />
@@ -1343,6 +1360,8 @@ export function SettingsView(props: {
         <input className="input input-bordered" value={formatColorList(props.profile.avoidedColors)} onChange={(event) => updateProfile({ avoidedColors: parseColorList(event.target.value) })} placeholder="黄色,棕色" />
         <label>偏好风格</label>
         <input className="input input-bordered" value={formatList(props.profile.preferredStyles)} onChange={(event) => updateProfile({ preferredStyles: parseList(event.target.value) })} placeholder="casual,smart-casual" />
+          </SettingsSection>
+          <SettingsSection>
         <h2>本地视觉模型</h2>
         <p className="settings-note">模型只保存在本机，不会上传图片。下载需要你手动点击。</p>
         <label className="vision-toggle">
@@ -1350,7 +1369,7 @@ export function SettingsView(props: {
           <span>启用本地视觉</span>
         </label>
         {props.visionModels ? (
-          <div className="vision-models">
+          <div className="vision-models vision-model-table">
             <span className="model-root text-wrap-anywhere">{props.visionModels.modelRoot}</span>
             {props.visionModels.models.map((model) => {
               const display = visionModelDisplay(model);
@@ -1388,6 +1407,8 @@ export function SettingsView(props: {
         ) : (
           <div className="empty-state">本地视觉模型状态暂不可用。</div>
         )}
+          </SettingsSection>
+        </div>
         <div className="actions">
           {props.onRefreshVisionModels ? (
             <button className="secondary btn btn-soft" onClick={props.onRefreshVisionModels}>
@@ -1404,7 +1425,7 @@ export function SettingsView(props: {
             {props.busyAction === "save-settings" ? "保存中" : "保存"}
           </button>
         </div>
-      </div>
+      </WorkbenchPanel>
     </section>
   );
 }
