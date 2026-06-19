@@ -8,8 +8,6 @@ from pathlib import Path
 import sys
 import tempfile
 
-import onnxruntime as ort
-
 
 TINY_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -74,22 +72,46 @@ def status(model: str, model_dir: Path, provider: str) -> dict:
     models = {name: (model_dir / f"{name}.onnx").exists() for name in SUPPORTED_MODELS}
     provider_error = None
     try:
-        selected_providers = resolve_providers(provider)
+        ort = load_onnxruntime()
+        onnxruntime_installed = True
+        onnxruntime_device = ort.get_device()
+        available_providers = ort.get_available_providers()
     except SystemExit as error:
+        onnxruntime_installed = False
+        onnxruntime_device = None
+        available_providers = []
         selected_providers = []
         provider_error = str(error)
+    else:
+        try:
+            selected_providers = resolve_providers(provider)
+        except SystemExit as error:
+            selected_providers = []
+            provider_error = str(error)
     return {
         "model": model,
         "modelDir": str(model_dir),
         "rembgInstalled": importlib.util.find_spec("rembg") is not None,
         "modelExists": (model_dir / f"{model}.onnx").exists(),
         "models": models,
-        "onnxruntimeDevice": ort.get_device(),
-        "availableProviders": ort.get_available_providers(),
+        "onnxruntimeInstalled": onnxruntime_installed,
+        "onnxruntimeDevice": onnxruntime_device,
+        "availableProviders": available_providers,
         "provider": provider,
         "selectedProviders": selected_providers,
         "providerError": provider_error,
     }
+
+
+def load_onnxruntime():
+    try:
+        import onnxruntime as ort
+    except (ImportError, OSError) as error:
+        raise SystemExit(
+            "onnxruntime is not available. Install CPU support with: "
+            'python -m pip install "rembg[cpu]==2.0.76"'
+        ) from error
+    return ort
 
 
 def load_rembg():
@@ -135,6 +157,7 @@ def default_provider() -> str:
 
 
 def resolve_providers(provider: str) -> list[str]:
+    ort = load_onnxruntime()
     available = ort.get_available_providers()
     if provider == "auto":
         for candidate in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"):
@@ -185,6 +208,7 @@ def preload_cuda_runtime_dlls() -> None:
     if _CUDA_DLLS_PRELOADED:
         return
     add_nvidia_dll_directories()
+    ort = load_onnxruntime()
     preload = getattr(ort, "preload_dlls", None)
     if callable(preload):
         preload(cuda=True, cudnn=True, msvc=True)
