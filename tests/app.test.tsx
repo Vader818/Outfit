@@ -1095,6 +1095,37 @@ describe("App", () => {
     expect(markup).toContain('class="outfit-reasons"');
   });
 
+  it("renders recommendation workbench header stats and weather context", () => {
+    const weather = makeWeather();
+    const recommendations: RecommendationResult = {
+      weather,
+      occasion: "casual",
+      outfits: [makeOutfit()]
+    };
+
+    const markup = renderToStaticMarkup(
+      <RecommendationView
+        weather={weather}
+        recommendations={recommendations}
+        occasion="casual"
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="page-header"');
+    expect(markup).toContain('class="stat-tile"');
+    expect(markup).toContain('class="status-pill');
+    expect(markup).toContain('class="weather-band context-band"');
+  });
+
   it("renders wardrobe bulk state and row editing inside stable workbench regions", () => {
     const markup = renderToStaticMarkup(
       <WardrobeView
@@ -1165,6 +1196,15 @@ describe("App", () => {
     expect(cssRule(styles, ".command-bar")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
     expect(cssRule(styles, ".batch-strip")).toMatch(/position:\s*sticky;/);
     expect(cssRule(styles, ".vision-model-table")).toMatch(/display:\s*grid;/);
+  });
+
+  it("keeps wardrobe title editing from collapsing beside long brand tags", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ".garment-title-line")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+    expect(cssRule(styles, ".brand-tag")).toMatch(/justify-self:\s*start;/);
+    expect(cssRule(styles, ".garment-row")).toMatch(/grid-template-columns:\s*minmax\(320px,\s*0\.85fr\)\s+minmax\(0,\s*1\.35fr\)\s+minmax\(0,\s*auto\);/);
+    expect(cssRule(styles, ".garment-actions-row")).toMatch(/min-width:\s*0;/);
   });
 });
 
