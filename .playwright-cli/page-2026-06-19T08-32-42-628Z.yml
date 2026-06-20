@@ -1,0 +1,130 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - navigation [ref=e4]:
+      - button "今日推荐" [ref=e5] [cursor=pointer]:
+        - generic [ref=e6]: 今日推荐
+      - button "衣服库" [ref=e7] [cursor=pointer]:
+        - generic [ref=e8]: 衣服库 (3)
+      - button "历史洞察" [ref=e9] [cursor=pointer]:
+        - generic [ref=e10]: 历史洞察
+      - button "导入" [ref=e11] [cursor=pointer]:
+        - generic [ref=e12]: 导入
+      - button "设置" [ref=e13] [cursor=pointer]:
+        - generic [ref=e14]: 设置
+    - button "退出" [ref=e15] [cursor=pointer]:
+      - generic [ref=e16]: 退出
+  - main [ref=e17]:
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - heading "今日推荐" [level=1] [ref=e21]
+          - paragraph [ref=e22]: 默认工作台首页，按天气、场合和本地衣橱生成今日搭配。
+        - generic [ref=e24]:
+          - generic [ref=e25]:
+            - generic [ref=e26]: 坐标
+            - strong [ref=e27]: 39.9042, 116.4074
+          - generic [ref=e28]:
+            - generic [ref=e29]: 可用衣物
+            - strong [ref=e30]: 24 件
+          - generic [ref=e31]:
+            - generic [ref=e32]: 当前场合
+            - strong [ref=e33]:
+              - generic [ref=e34]: 商务休闲
+      - generic [ref=e35]:
+        - generic "场合" [ref=e36]:
+          - button "休闲" [ref=e37] [cursor=pointer]
+          - button "商务休闲" [ref=e38] [cursor=pointer]
+          - button "正装" [ref=e39] [cursor=pointer]
+          - button "运动" [ref=e40] [cursor=pointer]
+        - generic [ref=e41]:
+          - button "天气" [ref=e42] [cursor=pointer]
+          - button "生成" [ref=e43] [cursor=pointer]
+      - generic [ref=e44]:
+        - strong [ref=e45]: 晴
+        - generic [ref=e46]: 25°C 体感
+        - generic [ref=e47]: 15% 降雨
+        - generic [ref=e48]: 9 km/h 风
+      - article [ref=e50]:
+        - generic [ref=e51]:
+          - generic [ref=e52]: 搭配 3 件
+          - generic [ref=e53]: 匹配度 91%
+        - generic [ref=e58]:
+          - generic [ref=e59]: 上装
+          - strong [ref=e60]: 无印良品 白色牛津纺长标题衬衫
+        - list [ref=e61]:
+          - listitem [ref=e62]: 体感温度适合
+          - listitem [ref=e63]: 颜色协调
+        - group [ref=e64]:
+          - generic "更多理由和替代单品" [ref=e65] [cursor=pointer]
+          - list [ref=e66]:
+            - listitem [ref=e67]: 第三条理由用于展开高度检查
+          - paragraph [ref=e68]: 可替换：COS 灰色夹克
+        - generic [ref=e69]:
+          - button "标记已穿" [ref=e70] [cursor=pointer]
+          - generic [ref=e71]: 已标记已穿
+      - generic [ref=e72]:
+        - textbox [ref=e73]: 长标题
+        - combobox [ref=e74]:
+          - option "全部状态" [selected]
+        - combobox [ref=e75]:
+          - option "全部类别" [selected]
+        - combobox [ref=e76]:
+          - option "全部颜色" [selected]
+        - combobox [ref=e77]:
+          - option "全部季节" [selected]
+        - combobox [ref=e78]:
+          - option "全部拥有" [selected]
+      - generic [ref=e79]:
+        - generic [ref=e80]: 8 件当前结果，已选 2 件
+        - generic [ref=e81]:
+          - button "选择当前结果" [ref=e82] [cursor=pointer]
+          - button "清空选择" [ref=e83] [cursor=pointer]
+          - button "批量确认" [ref=e84] [cursor=pointer]
+      - article [ref=e86]:
+        - generic [ref=e87]:
+          - checkbox [ref=e88] [cursor=pointer]
+          - generic [ref=e90]:
+            - generic [ref=e91]: 优衣库
+            - textbox [ref=e92]: 短款针织衫超长商品名称用于检查文本稳定性
+        - generic [ref=e94]:
+          - combobox [ref=e95]:
+            - option "上装" [selected]
+          - combobox [ref=e96]:
+            - option "蓝色" [selected]
+          - combobox [ref=e97]:
+            - option "轻薄" [selected]
+          - generic [ref=e98]:
+            - button "春" [ref=e99] [cursor=pointer]
+            - button "夏" [ref=e100] [cursor=pointer]
+            - button "秋" [ref=e101] [cursor=pointer]
+            - button "冬" [ref=e102] [cursor=pointer]
+          - generic [ref=e103]:
+            - generic [ref=e104]: 材质
+            - textbox "材质" [ref=e105]: cotton,wool,very-long-material-name
+          - generic [ref=e106]:
+            - generic [ref=e107]: 标签
+            - textbox "标签" [ref=e108]: 挺括,层次,通勤
+        - generic [ref=e109]:
+          - button "去背景" [ref=e110] [cursor=pointer]
+          - button "分析图片" [ref=e111] [cursor=pointer]
+          - button "已确认" [ref=e112] [cursor=pointer]
+          - button "拥有" [ref=e113] [cursor=pointer]
+      - generic [ref=e114]:
+        - generic [ref=e115]:
+          - generic [ref=e116]: 采集
+          - generic [ref=e117]: 书签脚本或 Selenium
+        - generic [ref=e118]:
+          - generic [ref=e119]: 检查
+          - generic [ref=e120]: 读取 JSON 并预览候选
+        - generic [ref=e121]:
+          - generic [ref=e122]: 导入
+          - generic [ref=e123]: 确认后写入本地衣橱
+      - group [ref=e124]:
+        - generic "检查 采集 JSON" [ref=e125] [cursor=pointer]:
+          - generic [ref=e126]: 检查
+          - text: 采集 JSON
+        - textbox [ref=e127]: "{\"source\":\"taobao-bookmarklet\",\"items\":[{\"title\":\"很长很长的订单 JSON 文本用于检查换行和容器宽度稳定性\"}]}"
+        - generic [ref=e128]:
+          - button "读取产物" [ref=e129] [cursor=pointer]
+          - button "预览" [ref=e130] [cursor=pointer]
+          - button "导入" [ref=e131] [cursor=pointer]
