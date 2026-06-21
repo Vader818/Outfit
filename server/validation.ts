@@ -186,6 +186,21 @@ export function validateWearLogRequest(value: unknown): { garmentIds: number[]; 
   };
 }
 
+export function validateThumbnailSelectionRequest(value: unknown): { imageUrl: string } {
+  const record = assertRecord(value, "缩略图选择请求必须是 JSON 对象");
+  if (typeof record.imageUrl !== "string") {
+    throw new ValidationError("imageUrl 必须是字符串");
+  }
+  const imageUrl = record.imageUrl.trim();
+  if (!imageUrl) {
+    throw new ValidationError("imageUrl 不能为空");
+  }
+  if (imageUrl.length > 2048) {
+    throw new ValidationError("imageUrl 不能超过 2048 个字符");
+  }
+  return { imageUrl };
+}
+
 export function normalizeGarmentIds(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.filter((id): id is number => Number.isInteger(id) && id > 0)));

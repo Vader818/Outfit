@@ -106,6 +106,8 @@ describe("API routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    const contentSecurityPolicy = response.headers.get("content-security-policy") || "";
+    expect(contentSecurityPolicy).toContain("img-src 'self' data: https://*.alicdn.com https://*.taobaocdn.com");
   });
 
   it("supports first-run registration, login, status, and logout", async () => {
@@ -1432,6 +1434,195 @@ describe("API routes", () => {
     expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
   });
 
+  it("returns selectable thumbnail candidates from the garment source and matching captures only", async () => {
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-candidates-test-"));
+    const db = createDatabase(":memory:");
+    const fixture = seedThumbnailSelectionFixture(db);
+    const captureDir = path.join(captureRoot, "manual-shirt");
+    mkdirSync(captureDir, { recursive: true });
+    writeFileSync(path.join(captureDir, "capture.json"), JSON.stringify({
+      source: "taobao-selenium",
+      pageType: "item-detail",
+      items: [
+        {
+          itemId: fixture.itemId,
+          imageUrl: fixture.captureUrl,
+          detailImages: [
+            fixture.captureDetailUrl,
+            "https://example.com/capture-outside.jpg",
+            "data:image/png;base64,AAAA",
+            "http://127.0.0.1/private.jpg"
+          ]
+        },
+        {
+          itemId: "other-item",
+          imageUrl: "https://img.alicdn.com/imgextra/i6/100/O1CN01other_item_pic.jpg",
+          detailImages: ["https://img.alicdn.com/imgextra/i6/100/O1CN01other-detail.jpg"]
+        }
+      ]
+    }), "utf8");
+    const app = createApiApp(db, { thumbnailCaptureRoot: captureRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/${fixture.garmentId}/thumbnail-candidates`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json() as {
+      garmentId: number;
+      currentImageUrl: string;
+      candidates: Array<{ url: string; source: string; score: number; selected: boolean }>;
+    };
+    const urls = body.candidates.map((candidate) => candidate.url);
+    const scores = body.candidates.map((candidate) => candidate.score);
+
+    expect(response.status).toBe(200);
+    expect(body.garmentId).toBe(fixture.garmentId);
+    expect(body.currentImageUrl).toBe(fixture.currentUrl);
+    expect(urls).toEqual(expect.arrayContaining([
+      fixture.currentUrl,
+      fixture.orderUrl,
+      fixture.detailUrl,
+      fixture.captureUrl,
+      fixture.captureDetailUrl
+    ]));
+    expect(urls).not.toEqual(expect.arrayContaining([
+      "https://example.com/not-allowed.jpg",
+      "https://example.com/capture-outside.jpg",
+      "data:image/png;base64,AAAA",
+      "file:///tmp/local.jpg",
+      "http://127.0.0.1/private.jpg",
+      "https://img.alicdn.com/imgextra/i6/100/O1CN01other_item_pic.jpg"
+    ]));
+    expect(body.candidates.find((candidate) => candidate.url === fixture.currentUrl)).toMatchObject({ source: "current", selected: true });
+    expect(body.candidates.find((candidate) => candidate.url === fixture.orderUrl)).toMatchObject({ source: "order" });
+    expect(body.candidates.find((candidate) => candidate.url === fixture.detailUrl)).toMatchObject({ source: "detail" });
+    expect(body.candidates.find((candidate) => candidate.url === fixture.captureUrl)).toMatchObject({ source: "capture" });
+    for (let index = 1; index < scores.length; index += 1) {
+      expect(scores[index - 1]).toBeGreaterThanOrEqual(scores[index]);
+    }
+  });
+
+  it("rejects selecting a garment thumbnail URL outside that garment candidate set", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-candidates-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const db = createDatabase(":memory:");
+    const fixture = seedThumbnailSelectionFixture(db);
+    const app = createApiApp(db, {
+      thumbnailCaptureRoot: captureRoot,
+      thumbnailOutputDir,
+      thumbnailDelayMs: 0
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await realFetch(`${baseUrl}/api/garments/${fixture.garmentId}/thumbnail`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ imageUrl: "https://img.alicdn.com/imgextra/i9/999/O1CN01not-owned.jpg" })
+    });
+    const body = await response.json();
+    const garments = await (await realFetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ imageUrl?: string; cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(garments[0]).toMatchObject({
+      imageUrl: fixture.currentUrl,
+      cutoutImageUrl: "/api/garment-thumbnails/old-cutout.png"
+    });
+  });
+
+  it("selects a garment thumbnail by downloading the chosen candidate and clearing stale cutout", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-candidates-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const db = createDatabase(":memory:");
+    const fixture = seedThumbnailSelectionFixture(db);
+    const app = createApiApp(db, {
+      thumbnailCaptureRoot: captureRoot,
+      thumbnailOutputDir,
+      thumbnailDelayMs: 0
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await realFetch(`${baseUrl}/api/garments/${fixture.garmentId}/thumbnail`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ imageUrl: fixture.detailUrl })
+    });
+    const body = await response.json() as { imageUrl?: string; cutoutImageUrl?: string };
+    const garments = await (await realFetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ imageUrl?: string; cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(fixture.detailUrl, expect.any(Object));
+    expect(body.imageUrl).toBe("/api/garment-thumbnails/garment-1-manual-shirt.png");
+    expect(body.cutoutImageUrl).toBeUndefined();
+    expect(garments[0]).toMatchObject({
+      imageUrl: "/api/garment-thumbnails/garment-1-manual-shirt.png"
+    });
+    expect(garments[0].cutoutImageUrl).toBeUndefined();
+  });
+
+  it("reports thumbnail download failures without changing the garment image", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-candidates-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const db = createDatabase(":memory:");
+    const fixture = seedThumbnailSelectionFixture(db);
+    const app = createApiApp(db, {
+      thumbnailCaptureRoot: captureRoot,
+      thumbnailOutputDir,
+      thumbnailDelayMs: 0
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not an image", {
+      status: 200,
+      headers: { "content-type": "text/plain" }
+    })));
+
+    const response = await realFetch(`${baseUrl}/api/garments/${fixture.garmentId}/thumbnail`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ imageUrl: fixture.detailUrl })
+    });
+    const body = await response.json();
+    const garments = await (await realFetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ imageUrl?: string; cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ error: { code: "THUMBNAIL_DOWNLOAD_FAILED" } });
+    expect(garments[0]).toMatchObject({
+      imageUrl: fixture.currentUrl,
+      cutoutImageUrl: "/api/garment-thumbnails/old-cutout.png"
+    });
+  });
+
   it("reports local vision model status and starts explicit download jobs", async () => {
     const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
     const db = createDatabase(":memory:");
@@ -1639,6 +1830,90 @@ describe("API routes", () => {
       cutoutImageUrl: "/api/garment-thumbnails/garment-1-shirt-cutout.png",
       visionUpdatedAt: expect.any(String)
     });
+  });
+
+  it("downloads a local thumbnail before generating a cutout for remote garment images", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    const db = createDatabase(":memory:");
+    const sourceResult = db.prepare(`
+      INSERT INTO source_order_items (
+        external_key, source, page_type, item_id, title, sku, image_url,
+        detail_images, is_apparel
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "remote-shirt-source",
+      "taobao-selenium-order-list",
+      "order-list",
+      "remote-shirt",
+      "白色衬衫",
+      "颜色分类: 白色",
+      "https://gw.alicdn.com/bao/uploaded/i1/12345/O1CN01shirt.jpg",
+      JSON.stringify([]),
+      1
+    );
+    db.prepare(`
+      INSERT INTO garments (
+        source_order_item_id, name, category, color, warmth, seasons, styles,
+        formality, image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      Number(sourceResult.lastInsertRowid),
+      "白色衬衫",
+      "top",
+      "white",
+      "light",
+      JSON.stringify(["spring"]),
+      JSON.stringify(["smart-casual"]),
+      "smart-casual",
+      "https://gw.alicdn.com/bao/uploaded/i1/12345/O1CN01shirt.jpg",
+      1,
+      1,
+      0,
+      0.9,
+      ""
+    );
+    const runRembg = vi.fn(async ({ outputPath }) => {
+      writeFileSync(outputPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    });
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      thumbnailDelayMs: 0,
+      visionModelRoot: modelRoot,
+      runRembg
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await realFetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const body = await response.json() as { cutoutImageUrl?: string };
+    const garments = await (await realFetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ imageUrl?: string; cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("https://gw.alicdn.com/bao/uploaded/i1/12345/O1CN01shirt.jpg", expect.any(Object));
+    expect(runRembg).toHaveBeenCalledWith(expect.objectContaining({
+      inputPath: path.join(thumbnailOutputDir, "garment-1-remote-shirt.png")
+    }));
+    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt.png");
+    expect(body.cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt-cutout.png");
+    expect(garments[0].cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt-cutout.png");
   });
 
   it("runs the default rembg wrapper with Python for garment cutouts", async () => {
@@ -2005,6 +2280,75 @@ function jsonHeaders(cookie?: string): Record<string, string> {
   return {
     "content-type": "application/json",
     ...(cookie ? { cookie } : {})
+  };
+}
+
+function seedThumbnailSelectionFixture(db: AppDatabase): {
+  garmentId: number;
+  itemId: string;
+  currentUrl: string;
+  orderUrl: string;
+  detailUrl: string;
+  captureUrl: string;
+  captureDetailUrl: string;
+} {
+  const itemId = "manual-shirt";
+  const currentUrl = "https://img.alicdn.com/imgextra/i1/100/O1CN01current_item_pic.jpg";
+  const orderUrl = "https://gw.alicdn.com/bao/uploaded/i2/100/O1CN01order.jpg";
+  const detailUrl = "https://img.alicdn.com/imgextra/i3/100/O1CN01detail.jpg";
+  const captureUrl = "https://img.alicdn.com/imgextra/i4/100/O1CN01capture_item_pic.jpg";
+  const captureDetailUrl = "https://img.alicdn.com/imgextra/i5/100/O1CN01capture-detail.jpg";
+  const sourceResult = db.prepare(`
+    INSERT INTO source_order_items (
+      external_key, source, page_type, item_id, title, sku, image_url,
+      detail_images, is_apparel
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `thumbnail-source-${Math.random()}`,
+    "taobao-selenium-order-list",
+    "order-list",
+    itemId,
+    "白色衬衫",
+    "颜色分类: 白色",
+    orderUrl,
+    JSON.stringify([
+      detailUrl,
+      "https://example.com/not-allowed.jpg",
+      "file:///tmp/local.jpg"
+    ]),
+    1
+  );
+  const garmentResult = db.prepare(`
+    INSERT INTO garments (
+      source_order_item_id, name, raw_name, category, color, warmth, seasons, styles,
+      formality, image_url, cutout_image_url, owned, confirmed, excluded, confidence, notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Number(sourceResult.lastInsertRowid),
+    "白色衬衫",
+    "白色衬衫",
+    "top",
+    "white",
+    "light",
+    JSON.stringify(["spring"]),
+    JSON.stringify(["smart-casual"]),
+    "smart-casual",
+    currentUrl,
+    "/api/garment-thumbnails/old-cutout.png",
+    1,
+    1,
+    0,
+    0.9,
+    ""
+  );
+  return {
+    garmentId: Number(garmentResult.lastInsertRowid),
+    itemId,
+    currentUrl,
+    orderUrl,
+    detailUrl,
+    captureUrl,
+    captureDetailUrl
   };
 }
 

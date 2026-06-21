@@ -7,6 +7,7 @@ import {
   Database,
   Download,
   ExternalLink,
+  Image as ImageIcon,
   LockKeyhole,
   LogIn,
   LogOut,
@@ -32,6 +33,7 @@ import {
   downloadVisionModel,
   exportLocalData,
   getAuthStatus,
+  getGarmentThumbnailCandidates,
   getGarments,
   getInsights,
   getPersonalProfile,
@@ -50,6 +52,7 @@ import {
   logout,
   register as registerAccount,
   savePersonalProfile,
+  selectGarmentThumbnail,
   startCaptureJob,
   updateGarment,
   verifyVisionModel,
@@ -58,12 +61,20 @@ import {
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
 import { ActionCluster, CommandBar, PageHeader, SettingsSection, StatTile, StatusPill, WorkbenchPanel } from "./components/workbench";
-import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailCandidate, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
 type AuthInput = { username: string; password: string };
 type WearLogFeedback = { outfitId: string; message: string };
 type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
+type ThumbnailPickerState = {
+  garment: Garment;
+  candidates: ThumbnailCandidate[];
+  selectedUrl: string;
+  loading: boolean;
+  saving: boolean;
+  error: string;
+} | null;
 type SelectOption = { value: string; label: string };
 type BusyAction =
   | "import"
@@ -308,6 +319,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
+  const [thumbnailPicker, setThumbnailPicker] = useState<ThumbnailPickerState>(null);
+  const thumbnailPickerRequestId = useRef(0);
   const [occasion, setOccasion] = useState("casual");
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
   const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
@@ -512,6 +525,67 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(thumbnailError instanceof Error ? thumbnailError.message : "缩略图刷新失败");
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function openThumbnailPicker(garment: Garment) {
+    const requestId = thumbnailPickerRequestId.current + 1;
+    thumbnailPickerRequestId.current = requestId;
+    setError("");
+    setThumbnailPicker({
+      garment,
+      candidates: [],
+      selectedUrl: "",
+      loading: true,
+      saving: false,
+      error: ""
+    });
+    try {
+      const response = await getGarmentThumbnailCandidates(garment.id);
+      if (thumbnailPickerRequestId.current !== requestId) return;
+      const selectedUrl = response.candidates.find((candidate) => candidate.selected)?.url || response.candidates[0]?.url || "";
+      setThumbnailPicker({
+        garment,
+        candidates: response.candidates,
+        selectedUrl,
+        loading: false,
+        saving: false,
+        error: response.candidates.length ? "" : "没有可选择的商品图"
+      });
+    } catch (pickerError) {
+      if (thumbnailPickerRequestId.current !== requestId) return;
+      setThumbnailPicker((current) => current && current.garment.id === garment.id ? {
+        ...current,
+        loading: false,
+        saving: false,
+        error: pickerError instanceof Error ? pickerError.message : "候选图加载失败"
+      } : current);
+    }
+  }
+
+  function closeThumbnailPicker() {
+    thumbnailPickerRequestId.current += 1;
+    setThumbnailPicker(null);
+  }
+
+  function chooseThumbnailCandidate(imageUrl: string) {
+    setThumbnailPicker((current) => current ? { ...current, selectedUrl: imageUrl, error: "" } : current);
+  }
+
+  async function saveThumbnailSelection() {
+    if (!thumbnailPicker || !thumbnailPicker.selectedUrl) return;
+    const { garment, selectedUrl } = thumbnailPicker;
+    setThumbnailPicker((current) => current ? { ...current, saving: true, error: "" } : current);
+    try {
+      const updated = await selectGarmentThumbnail(garment.id, selectedUrl);
+      setGarments((items) => items.map((item) => (item.id === garment.id ? updated : item)));
+      setThumbnailPicker(null);
+    } catch (pickerError) {
+      setThumbnailPicker((current) => current && current.garment.id === garment.id ? {
+        ...current,
+        saving: false,
+        error: pickerError instanceof Error ? pickerError.message : "缩略图保存失败"
+      } : current);
     }
   }
 
@@ -743,6 +817,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             onDelete={deleteOne}
             onBulkConfirm={bulkConfirm}
             onRefreshThumbnails={refreshThumbnails}
+            onOpenThumbnailPicker={openThumbnailPicker}
             onCutoutGarment={cutoutGarment}
             onAnalyzeGarmentVision={analyzeVisionTags}
             visionEnabled={visionEnabled}
@@ -805,6 +880,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           />
         )}
       </main>
+      {thumbnailPicker ? (
+        <ThumbnailPicker
+          garment={thumbnailPicker.garment}
+          candidates={thumbnailPicker.candidates}
+          selectedUrl={thumbnailPicker.selectedUrl}
+          loading={thumbnailPicker.loading}
+          saving={thumbnailPicker.saving}
+          error={thumbnailPicker.error}
+          onSelect={chooseThumbnailCandidate}
+          onSave={saveThumbnailSelection}
+          onClose={closeThumbnailPicker}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1078,6 +1166,7 @@ export function WardrobeView(props: {
   onDelete: (id: number) => void;
   onBulkConfirm: () => void;
   onRefreshThumbnails?: () => void;
+  onOpenThumbnailPicker?: (garment: Garment) => void;
   onCutoutGarment?: (id: number) => void;
   onAnalyzeGarmentVision?: (id: number) => void;
   visionEnabled?: boolean;
@@ -1205,6 +1294,12 @@ export function WardrobeView(props: {
               {VisionSuggestion({ item, onApply: (update) => props.onUpdate(item.id, update) })}
             </div>
             <div className="garment-actions-row">
+              {props.onOpenThumbnailPicker ? (
+                <button className="status btn btn-sm" onClick={() => props.onOpenThumbnailPicker?.(item)}>
+                  <ImageIcon size={16} />
+                  选择缩略图
+                </button>
+              ) : null}
               {item.detailUrl || item.itemUrl ? (
                 <a className="icon-button btn btn-square btn-soft" title="商品详情" href={item.detailUrl || item.itemUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} />
@@ -1600,7 +1695,7 @@ function GarmentThumbnail({ item }: { item: Garment }) {
   const [failed, setFailed] = useState(false);
   const meta = garmentMeta(item);
   const alt = [meta.brand, item.name].filter(Boolean).join(" ");
-  const thumbnailUrl = localThumbnailUrl(item.cutoutImageUrl || item.imageUrl);
+  const thumbnailUrl = displayThumbnailUrl(item.cutoutImageUrl || item.imageUrl);
 
   useEffect(() => {
     setFailed(false);
@@ -1622,6 +1717,99 @@ function GarmentThumbnail({ item }: { item: Garment }) {
   );
 }
 
+export function ThumbnailPicker(props: {
+  garment: Garment;
+  candidates: ThumbnailCandidate[];
+  selectedUrl: string;
+  loading: boolean;
+  saving: boolean;
+  error: string;
+  onSelect: (imageUrl: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="thumbnail-picker-backdrop" role="presentation">
+      <section className="thumbnail-picker" role="dialog" aria-modal="true" aria-labelledby="thumbnail-picker-title">
+        <header className="thumbnail-picker-header">
+          <div>
+            <h2 id="thumbnail-picker-title">选择缩略图</h2>
+            <p>{props.garment.name}</p>
+          </div>
+          <button className="icon-button btn btn-square btn-soft" type="button" title="关闭" onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </header>
+        {props.loading ? (
+          <div className="thumbnail-picker-state">候选图加载中</div>
+        ) : props.candidates.length ? (
+          <div className="thumbnail-candidate-grid">
+            {props.candidates.map((candidate) => {
+              const selected = candidate.url === props.selectedUrl;
+              return (
+                <button
+                  className={selected ? "thumbnail-candidate selected" : "thumbnail-candidate"}
+                  key={`${candidate.source}-${candidate.url}`}
+                  type="button"
+                  title={`选择候选图：${thumbnailSourceLabel(candidate.source)}`}
+                  aria-pressed={selected}
+                  onClick={() => props.onSelect(candidate.url)}
+                >
+                  <ThumbnailCandidatePreview candidate={candidate} />
+                  <span className="thumbnail-candidate-meta">
+                    <b>{thumbnailSourceLabel(candidate.source)}</b>
+                    <small>评分 {candidate.score}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="thumbnail-picker-state">没有可选择的商品图</div>
+        )}
+        {props.error ? <p className="inline-feedback error">{props.error}</p> : null}
+        <footer className="thumbnail-picker-actions">
+          <button className="secondary btn btn-soft" type="button" onClick={props.onClose}>
+            <X size={16} />
+            关闭
+          </button>
+          <button className="primary btn btn-primary" type="button" disabled={props.loading || props.saving || !props.selectedUrl} onClick={props.onSave}>
+            <Save size={16} />
+            {props.saving ? "保存中" : "保存为主图"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function ThumbnailCandidatePreview({ candidate }: { candidate: ThumbnailCandidate }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <span className="thumbnail-candidate-frame">
+      {failed ? (
+        <Shirt size={24} />
+      ) : (
+        <img
+          src={candidate.url}
+          alt={thumbnailSourceLabel(candidate.source)}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
+  );
+}
+
+function thumbnailSourceLabel(source: ThumbnailCandidate["source"]): string {
+  if (source === "current") return "当前图";
+  if (source === "order") return "订单图";
+  if (source === "detail") return "详情图";
+  return "采集图";
+}
+
 function VisionSuggestion({ item, onApply }: { item: Garment; onApply: (update: Partial<Garment>) => void }) {
   const suggestion = item.visionTags;
   if (!suggestion) return null;
@@ -1637,6 +1825,7 @@ function VisionSuggestion({ item, onApply }: { item: Garment; onApply: (update: 
     patterns: suggestion.patterns,
     tags: suggestion.tags
   };
+  const applied = isVisionSuggestionApplied(item, suggestion);
   return (
     <div className="vision-suggestion">
       <span>视觉建议</span>
@@ -1646,16 +1835,61 @@ function VisionSuggestion({ item, onApply }: { item: Garment; onApply: (update: 
       {suggestion.scores.length ? (
         <small>{suggestion.scores.slice(0, 3).map((score) => `${score.label} ${Math.round(score.score * 100)}%`).join(" / ")}</small>
       ) : null}
-      <button className="secondary btn btn-sm" onClick={() => onApply(update)}>
+      <button
+        className={applied ? "secondary btn btn-sm good" : "secondary btn btn-sm"}
+        disabled={applied}
+        onClick={() => onApply(update)}
+        type="button"
+      >
         <Check size={16} />
-        应用建议
+        {applied ? "已应用" : "应用建议"}
       </button>
     </div>
   );
 }
 
-function localThumbnailUrl(value: string): string {
-  return value.startsWith("/api/garment-thumbnails/") ? value : "";
+function isVisionSuggestionApplied(item: Garment, suggestion: VisionTagSuggestion): boolean {
+  return (
+    (!suggestion.category || item.category === suggestion.category) &&
+    stringSetEquals(item.styles, suggestion.styles) &&
+    stringSetEquals(item.patterns ?? [], suggestion.patterns) &&
+    stringSetEquals(item.tags ?? [], suggestion.tags)
+  );
+}
+
+function stringSetEquals(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const normalized = new Set(left);
+  if (normalized.size !== right.length) return false;
+  return right.every((value) => normalized.has(value));
+}
+
+function displayThumbnailUrl(value: string): string {
+  const cleaned = value.trim();
+  if (cleaned.startsWith("/api/garment-thumbnails/")) return cleaned;
+  if (isTrustedTaobaoImageUrl(cleaned)) return cleaned;
+  return "";
+}
+
+function isTrustedTaobaoImageUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  const hostname = parsed.hostname.toLowerCase();
+  if (!hostname.endsWith(".alicdn.com") && !hostname.endsWith(".taobaocdn.com")) return false;
+  let pathname = parsed.pathname.toLowerCase();
+  try {
+    pathname = decodeURIComponent(parsed.pathname).toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!/\.(?:jpe?g|png|webp)(?:$|[._-])/.test(pathname)) return false;
+  if (/logo|sprite|icon|avatar|placeholder|transparent|loading|wangwang|shop[_-]?card|store[_-]?card/.test(pathname)) return false;
+  return true;
 }
 
 function SeasonPicker({ seasons, onChange }: { seasons: Garment["seasons"]; onChange: (seasons: Garment["seasons"]) => void }) {

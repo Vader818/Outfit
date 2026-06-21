@@ -4,7 +4,7 @@ import { readdir } from "node:fs/promises";
 import { basename, dirname, extname, join, normalize } from "node:path";
 import type { Garment, VisionModelId, VisionModelJob, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion } from "../../src/shared/types";
 import type { AppDatabase } from "../db";
-import { getGarmentById, saveGarmentVisionTags, updateGarmentCutoutImage } from "../db";
+import { ensureGarmentLocalThumbnail, getGarmentById, saveGarmentVisionTags, updateGarmentCutoutImage } from "../db";
 import { ApiError } from "../validation";
 import { defaultThumbnailOutputDir } from "./thumbnails";
 
@@ -25,7 +25,11 @@ export interface VisionTagInput {
 
 export interface VisionServiceOptions {
   modelRoot?: string;
+  thumbnailCaptureRoot?: string;
   thumbnailOutputDir?: string;
+  thumbnailDelayMs?: number;
+  thumbnailMaxDownloadsPerGarment?: number;
+  thumbnailFetcher?: typeof fetch;
   visionDevice?: string;
   rembgProvider?: string;
   runRembg?: (input: RembgRunInput) => Promise<void>;
@@ -162,9 +166,9 @@ export async function createGarmentCutout(db: AppDatabase, id: number, options: 
   const rembgModel = installedRembgModel(status.path) || "isnet-general-use";
   const garment = getGarmentById(db, id);
   const thumbnailDir = options.thumbnailOutputDir || defaultThumbnailOutputDir();
-  const inputPath = localThumbnailPath(garment.imageUrl, thumbnailDir);
-  if (!inputPath || !existsSync(inputPath)) {
-    throw new ApiError("VISION_INPUT_NOT_FOUND", "请先为这件衣物生成本地缩略图，再执行去背景。", 400);
+  const inputPath = await resolveOriginalThumbnailPath(db, garment, thumbnailDir, options);
+  if (!inputPath) {
+    throw new ApiError("VISION_INPUT_NOT_FOUND", "未能自动生成这件衣物的本地缩略图，无法执行去背景。", 400);
   }
   const outputPath = cutoutPath(inputPath);
   const runner = options.runRembg || runRembgCli;
@@ -189,7 +193,7 @@ export async function createGarmentVisionTags(db: AppDatabase, id: number, optio
   }
   const garment = getGarmentById(db, id);
   const thumbnailDir = options.thumbnailOutputDir || defaultThumbnailOutputDir();
-  const imagePath = localThumbnailPath(garment.cutoutImageUrl || garment.imageUrl, thumbnailDir);
+  const imagePath = await resolveVisionImagePath(db, garment, thumbnailDir, options);
   const tagger = options.inferVisionTags || inferVisionTagsCli;
   const suggestion = normalizeVisionTagSuggestion(await tagger({
     garment,
@@ -262,6 +266,39 @@ function updateJob(id: string, status: VisionModelJob["status"], message: string
 
 function missingModelError(status: VisionModelStatus): ApiError {
   return new ApiError("VISION_MODEL_MISSING", `请先下载本地视觉模型：${status.id}`, 409, { modelId: status.id, path: status.path });
+}
+
+async function resolveOriginalThumbnailPath(db: AppDatabase, garment: Garment, thumbnailDir: string, options: VisionServiceOptions): Promise<string | undefined> {
+  const currentPath = existingLocalThumbnailPath(garment.imageUrl, thumbnailDir);
+  if (currentPath) return currentPath;
+  const refreshed = await ensureGarmentLocalThumbnail(db, garment.id, {
+    captureRoot: options.thumbnailCaptureRoot,
+    outputDir: thumbnailDir,
+    maxDownloadsPerGarment: options.thumbnailMaxDownloadsPerGarment,
+    delayMs: options.thumbnailDelayMs,
+    fetcher: options.thumbnailFetcher,
+    force: true
+  });
+  return existingLocalThumbnailPath(refreshed.imageUrl, thumbnailDir);
+}
+
+async function resolveVisionImagePath(db: AppDatabase, garment: Garment, thumbnailDir: string, options: VisionServiceOptions): Promise<string | undefined> {
+  const currentPath = existingLocalThumbnailPath(garment.cutoutImageUrl, thumbnailDir) || existingLocalThumbnailPath(garment.imageUrl, thumbnailDir);
+  if (currentPath) return currentPath;
+  const refreshed = await ensureGarmentLocalThumbnail(db, garment.id, {
+    captureRoot: options.thumbnailCaptureRoot,
+    outputDir: thumbnailDir,
+    maxDownloadsPerGarment: options.thumbnailMaxDownloadsPerGarment,
+    delayMs: options.thumbnailDelayMs,
+    fetcher: options.thumbnailFetcher,
+    force: true
+  });
+  return existingLocalThumbnailPath(refreshed.cutoutImageUrl, thumbnailDir) || existingLocalThumbnailPath(refreshed.imageUrl, thumbnailDir);
+}
+
+function existingLocalThumbnailPath(value: string | undefined, thumbnailDir: string): string | undefined {
+  const path = localThumbnailPath(value, thumbnailDir);
+  return path && existsSync(path) ? path : undefined;
 }
 
 function localThumbnailPath(value: string | undefined, thumbnailDir: string): string | undefined {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
+import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -200,6 +200,42 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/vision/models/clip-vit-base-patch32/verify", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/garments/1/cutout", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/garments/1/vision-tags", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("uses garment thumbnail candidate and selection endpoints", async () => {
+    const selectedUrl = "https://img.alicdn.com/imgextra/i1/100/O1CN01detail.jpg";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        garmentId: 7,
+        currentImageUrl: "https://img.alicdn.com/imgextra/i1/100/O1CN01current.jpg",
+        candidates: [
+          { url: selectedUrl, source: "detail", score: 120, selected: false }
+        ]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 7,
+        name: "白衬衫",
+        imageUrl: "/api/garment-thumbnails/garment-7-manual-shirt.png"
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getGarmentThumbnailCandidates(7)).resolves.toMatchObject({
+      garmentId: 7,
+      candidates: [expect.objectContaining({ source: "detail" })]
+    });
+    await expect(selectGarmentThumbnail(7, selectedUrl)).resolves.toMatchObject({
+      imageUrl: "/api/garment-thumbnails/garment-7-manual-shirt.png"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/garments/7/thumbnail-candidates", expect.objectContaining({
+      method: "GET",
+      credentials: "same-origin"
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/garments/7/thumbnail", expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ imageUrl: selectedUrl })
+    }));
   });
 
   it("previews Taobao imports before writing them", async () => {

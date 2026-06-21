@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
@@ -156,6 +156,19 @@ export async function refreshGarmentThumbnails(options: { maxDownloads?: number 
   return request<ThumbnailRefreshResult>("/api/garments/thumbnails/refresh", {
     method: "POST",
     body: JSON.stringify(options)
+  });
+}
+
+export async function getGarmentThumbnailCandidates(id: number): Promise<GarmentThumbnailCandidatesResponse> {
+  return request<GarmentThumbnailCandidatesResponse>(`/api/garments/${id}/thumbnail-candidates`, {
+    method: "GET"
+  });
+}
+
+export async function selectGarmentThumbnail(id: number, imageUrl: string): Promise<Garment> {
+  return request<Garment>(`/api/garments/${id}/thumbnail`, {
+    method: "POST",
+    body: JSON.stringify({ imageUrl })
   });
 }
 

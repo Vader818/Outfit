@@ -3,14 +3,15 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Garment, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
-import { defaultThumbnailOutputDir, downloadGarmentThumbnail, type ThumbnailRefreshResult } from "./services/thumbnails";
+import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
 import { ApiError } from "./validation";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+const MAX_SELECTABLE_THUMBNAIL_CANDIDATES = 24;
 
 export type AppDatabase = DatabaseSyncType;
 
@@ -55,6 +56,12 @@ export interface ThumbnailRefreshOptions {
   fetcher?: typeof fetch;
 }
 
+export interface EnsureGarmentThumbnailOptions extends ThumbnailRefreshOptions {
+  force?: boolean;
+}
+
+export interface ThumbnailSelectionOptions extends ThumbnailRefreshOptions {}
+
 interface PurchasedSourceRow {
   id: number;
   title: string;
@@ -85,6 +92,16 @@ interface ThumbnailRefreshRow {
   source_image_url: string | null;
   detail_title: string | null;
   detail_images: string | null;
+}
+
+interface RawThumbnailCandidate {
+  url: string;
+  source: ThumbnailCandidateSource;
+}
+
+interface GarmentThumbnailCandidateContext {
+  row: ThumbnailRefreshRow;
+  candidates: ThumbnailCandidate[];
 }
 
 interface CaptureImageRecord {
@@ -709,6 +726,97 @@ export async function refreshGarmentThumbnails(db: AppDatabase, options: Thumbna
   };
 }
 
+export async function ensureGarmentLocalThumbnail(db: AppDatabase, id: number, options: EnsureGarmentThumbnailOptions = {}): Promise<Garment> {
+  const outputDir = options.outputDir || defaultThumbnailOutputDir();
+  const maxDownloads = Math.max(1, Math.min(options.maxDownloadsPerGarment ?? 4, 6));
+  const row = db.prepare(`
+    SELECT
+      garments.id,
+      garments.name,
+      garments.raw_name,
+      garments.category,
+      garments.image_url,
+      source_order_items.item_id,
+      source_order_items.title AS source_title,
+      source_order_items.sku,
+      source_order_items.image_url AS source_image_url,
+      source_order_items.detail_title,
+      source_order_items.detail_images
+    FROM garments
+    LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    WHERE garments.id = ?
+  `).get(id) as unknown as ThumbnailRefreshRow | undefined;
+  if (!row) {
+    throw garmentNotFoundError();
+  }
+  if (!options.force && isLocalThumbnailImage(row.image_url || "")) {
+    return getGarmentById(db, id);
+  }
+
+  const captureRoot = options.captureRoot || join(process.cwd(), "output", "taobao-captures");
+  const captureIndex = await readCaptureImageIndex(captureRoot);
+  const currentImageUrl = cleanDbText(row.image_url);
+  const sourceImageUrl = cleanDbText(row.source_image_url);
+  const downloaded = await downloadGarmentThumbnail({
+    garmentId: row.id,
+    itemId: row.item_id || undefined,
+    category: row.category,
+    title: row.detail_title || row.raw_name || row.source_title || row.name,
+    sku: row.sku || "",
+    imageUrl: currentImageUrl && !isLocalThumbnailImage(currentImageUrl) ? currentImageUrl : sourceImageUrl,
+    detailImages: thumbnailCandidatesForRow(row, captureIndex),
+    outputDir,
+    maxDownloads,
+    delayMs: options.delayMs,
+    fetcher: options.fetcher
+  });
+
+  if (downloaded) {
+    db.prepare("UPDATE garments SET image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(downloaded.localUrl, row.id);
+  }
+  return getGarmentById(db, id);
+}
+
+export async function listGarmentThumbnailCandidates(db: AppDatabase, id: number, options: ThumbnailSelectionOptions = {}): Promise<GarmentThumbnailCandidatesResponse> {
+  const context = await buildGarmentThumbnailCandidateContext(db, id, options);
+  return {
+    garmentId: context.row.id,
+    currentImageUrl: cleanDbText(context.row.image_url),
+    candidates: context.candidates
+  };
+}
+
+export async function selectGarmentThumbnail(db: AppDatabase, id: number, imageUrl: string, options: ThumbnailSelectionOptions = {}): Promise<Garment> {
+  const outputDir = options.outputDir || defaultThumbnailOutputDir();
+  const context = await buildGarmentThumbnailCandidateContext(db, id, options);
+  const normalized = normalizeThumbnailCandidateUrl(imageUrl);
+  const selected = context.candidates.find((candidate) => candidate.url === normalized);
+  if (!selected) {
+    throw new ApiError("VALIDATION_ERROR", "请选择这件衣物候选集合中的商品图片", 400);
+  }
+  const downloaded = await downloadGarmentThumbnail({
+    garmentId: context.row.id,
+    itemId: context.row.item_id || undefined,
+    category: context.row.category,
+    title: thumbnailTitleForRow(context.row),
+    sku: context.row.sku || "",
+    imageUrl: selected.url,
+    outputDir,
+    maxDownloads: 1,
+    delayMs: options.delayMs,
+    fetcher: options.fetcher
+  });
+  if (!downloaded) {
+    throw new ApiError("THUMBNAIL_DOWNLOAD_FAILED", "这张候选图暂时无法保存，请换一张或稍后重试。", 502);
+  }
+  db.prepare(`
+    UPDATE garments
+    SET image_url = ?, cutout_image_url = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(downloaded.localUrl, context.row.id);
+  return getGarmentById(db, id);
+}
+
 export function deleteGarment(db: AppDatabase, id: number): void {
   const result = db.prepare("DELETE FROM garments WHERE id = ?").run(id);
   if (Number(result.changes) === 0) {
@@ -1078,6 +1186,108 @@ function chooseImageForUpdate(currentImage: string, candidateImage: string, isCo
 
 function isLocalThumbnailImage(value: string): boolean {
   return value.startsWith("/api/garment-thumbnails/");
+}
+
+async function buildGarmentThumbnailCandidateContext(db: AppDatabase, id: number, options: ThumbnailSelectionOptions): Promise<GarmentThumbnailCandidateContext> {
+  const row = db.prepare(`
+    SELECT
+      garments.id,
+      garments.name,
+      garments.raw_name,
+      garments.category,
+      garments.image_url,
+      source_order_items.item_id,
+      source_order_items.title AS source_title,
+      source_order_items.sku,
+      source_order_items.image_url AS source_image_url,
+      source_order_items.detail_title,
+      source_order_items.detail_images
+    FROM garments
+    LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    WHERE garments.id = ?
+  `).get(id) as unknown as ThumbnailRefreshRow | undefined;
+  if (!row) {
+    throw garmentNotFoundError();
+  }
+
+  const captureRoot = options.captureRoot || join(process.cwd(), "output", "taobao-captures");
+  const captureIndex = await readCaptureImageIndex(captureRoot);
+  return {
+    row,
+    candidates: buildSelectableThumbnailCandidates(row, captureIndex)
+  };
+}
+
+function buildSelectableThumbnailCandidates(row: ThumbnailRefreshRow, captureIndex: Map<string, CaptureImageRecord>): ThumbnailCandidate[] {
+  const currentImageUrl = cleanDbText(row.image_url);
+  const orderImageUrl = cleanDbText(row.source_image_url);
+  const detailImages = toStringList(row.detail_images ? safeJson<string[]>(row.detail_images, []) : []);
+  const captureImages = row.item_id ? captureIndex.get(row.item_id)?.images || [] : [];
+  const rawCandidates: RawThumbnailCandidate[] = [];
+
+  addRawThumbnailCandidate(rawCandidates, currentImageUrl, "current");
+  addRawThumbnailCandidate(rawCandidates, orderImageUrl, "order");
+  for (const image of detailImages) addRawThumbnailCandidate(rawCandidates, image, "detail");
+  for (const image of captureImages) addRawThumbnailCandidate(rawCandidates, image, "capture");
+
+  const ranked = rankThumbnailCandidates({
+    category: row.category,
+    title: thumbnailTitleForRow(row),
+    sku: row.sku || "",
+    imageUrl: orderImageUrl,
+    detailImages,
+    candidates: [
+      currentImageUrl && !isLocalThumbnailImage(currentImageUrl) ? currentImageUrl : "",
+      ...captureImages
+    ].filter(Boolean)
+  });
+  const scoreByUrl = new Map(ranked.map((candidate) => [candidate.url, candidate.score]));
+  const unique = new Map<string, RawThumbnailCandidate>();
+  for (const candidate of rawCandidates) {
+    const normalized = normalizeThumbnailCandidateUrl(candidate.url);
+    if (!normalized || unique.has(normalized) || !isSelectableThumbnailUrl(normalized)) continue;
+    unique.set(normalized, { url: normalized, source: candidate.source });
+  }
+
+  return Array.from(unique.values())
+    .map((candidate) => ({
+      url: candidate.url,
+      source: candidate.source,
+      score: scoreByUrl.get(candidate.url) || 0,
+      selected: Boolean(currentImageUrl && normalizeThumbnailCandidateUrl(currentImageUrl) === candidate.url)
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, MAX_SELECTABLE_THUMBNAIL_CANDIDATES);
+}
+
+function addRawThumbnailCandidate(candidates: RawThumbnailCandidate[], value: string, source: ThumbnailCandidateSource): void {
+  const normalized = normalizeThumbnailCandidateUrl(value);
+  if (!normalized || isLocalThumbnailImage(normalized)) return;
+  candidates.push({ url: normalized, source });
+}
+
+function thumbnailTitleForRow(row: ThumbnailRefreshRow): string {
+  return row.detail_title || row.raw_name || row.source_title || row.name;
+}
+
+function normalizeThumbnailCandidateUrl(value: string): string {
+  const cleaned = cleanDbText(value).replace(/\\\//g, "/");
+  if (!cleaned) return "";
+  if (cleaned.startsWith("//")) return `https:${cleaned}`;
+  return cleaned;
+}
+
+function isSelectableThumbnailUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return false;
+  const hostname = parsed.hostname.toLowerCase();
+  return hostname.endsWith(".alicdn.com") || hostname.endsWith(".taobaocdn.com");
 }
 
 function shouldPreserveConfirmedName(currentName: string, displayInfo: { brand: string; name: string; rawName: string }, isConfirmed: boolean): boolean {

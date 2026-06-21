@@ -247,6 +247,21 @@ export interface ThumbnailRefreshResult {
   skipped: number;
 }
 
+export type ThumbnailCandidateSource = "current" | "order" | "detail" | "capture";
+
+export interface ThumbnailCandidate {
+  url: string;
+  source: ThumbnailCandidateSource;
+  score: number;
+  selected: boolean;
+}
+
+export interface GarmentThumbnailCandidatesResponse {
+  garmentId: number;
+  currentImageUrl: string;
+  candidates: ThumbnailCandidate[];
+}
+
 export type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type CaptureJobMode = "orders" | "item-detail";
 export type CaptureEngine = "selenium" | "playwright";

@@ -84,3 +84,57 @@
 
 ---
 *每个阶段完成后或遇到错误时更新此文件*
+
+## 会话：2026-06-21
+
+### 阶段 1：需求与发现
+- **状态：** complete
+- 执行的操作：
+  - 读取 `docs/superpowers/specs/2026-06-21-thumbnail-selection-design.md`。
+  - 读取当前 `task_plan.md`、`progress.md`、`findings.md` 并确认旧任务已完成。
+  - 检查 Git 状态，发现已有 6 个未提交改动，主要涉及视觉模型自动补本地缩略图和可信淘宝远程图展示。
+  - 开启两个只读子 Agent：一个调查后端候选/选择 API 边界，一个调查前端选择器边界，并等待结果返回。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `docs/superpowers/plans/2026-06-21-thumbnail-selection.md`
+
+### 阶段 2：规划与结构
+- **状态：** complete
+- 执行的操作：
+  - 确认后端复用 `rankThumbnailCandidates()` 和 `downloadGarmentThumbnail()`。
+  - 确认候选安全过滤和选择校验必须在后端完成。
+  - 确认前端需要新增共享类型、API 客户端、衣服行动作入口、弹窗组件和样式。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `docs/superpowers/plans/2026-06-21-thumbnail-selection.md`
+
+### 阶段 3：后端 TDD
+- **状态：** complete
+- 执行的操作：
+  - 编写 `GET /api/garments/:id/thumbnail-candidates` 失败测试，确认路由未实现时失败。
+  - 新增后端候选收集、去重、淘宝域名过滤、评分排序和 route。
+  - 编写 `POST /api/garments/:id/thumbnail` 拒绝非候选、保存成功、下载失败不改数据测试。
+  - 新增选择保存逻辑，成功后写入本地缩略图 URL 并清空 `cutout_image_url`。
+- 验证：
+  - `npm test -- tests/api.test.ts -t "returns selectable thumbnail candidates"`：pass
+  - `npm test -- tests/api.test.ts -t "garment thumbnail"`：pass
+
+### 阶段 4：前端 TDD
+- **状态：** complete
+- 执行的操作：
+  - 编写 API 客户端、衣服行动作入口、候选弹窗和 CSS 失败测试。
+  - 新增 `getGarmentThumbnailCandidates()`、`selectGarmentThumbnail()`。
+  - 新增共享候选类型、衣服行“选择缩略图”按钮、App 弹窗状态和 `ThumbnailPicker`。
+  - 增加候选图加载失败占位和移动端单列样式。
+- 验证：
+  - `npm test -- tests/frontendApi.test.ts tests/app.test.tsx -t "thumbnail|缩略图"`：pass
+
+### 阶段 5：最终验证
+- **状态：** complete
+- 验证：
+  - `npm run typecheck`：pass
+  - `npm test`：15 个测试文件、186 个测试通过
+  - `npm run build`：pass
+- 备注：
+  - 本次未执行任何删除文件命令。
+  - 未删除旧缩略图缓存，符合规格的非目标要求。

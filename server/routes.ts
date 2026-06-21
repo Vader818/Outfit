@@ -3,19 +3,20 @@ import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, updateGarment } from "./db";
+import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveRecommendationRun, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
   thumbnailOutputDir?: string;
   thumbnailMaxDownloads?: number;
+  thumbnailMaxDownloadsPerGarment?: number;
   thumbnailDelayMs?: number;
   visionModelRoot?: string;
   visionDevice?: VisionServiceOptions["visionDevice"];
@@ -31,7 +32,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        imgSrc: ["'self'", "data:"],
+        imgSrc: ["'self'", "data:", "https://*.alicdn.com", "https://*.taobaocdn.com"],
         connectSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"]
@@ -160,6 +161,17 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
 
   app.post("/api/garments/thumbnails/refresh", (request, response) => {
     void handleAsync(response, () => refreshGarmentThumbnails(db, thumbnailRefreshOptions(options, request.body)));
+  });
+
+  app.get("/api/garments/:id/thumbnail-candidates", (request, response) => {
+    void handleAsync(response, () => listGarmentThumbnailCandidates(db, validatePositiveIntegerParam(request.params.id), thumbnailSelectionOptions(options)));
+  });
+
+  app.post("/api/garments/:id/thumbnail", (request, response) => {
+    void handleAsync(response, () => {
+      const input = validateThumbnailSelectionRequest(request.body);
+      return selectGarmentThumbnail(db, validatePositiveIntegerParam(request.params.id), input.imageUrl, thumbnailSelectionOptions(options));
+    });
   });
 
   app.post("/api/garments/:id/cutout", (request, response) => {
@@ -292,10 +304,22 @@ function thumbnailRefreshOptions(options: ApiAppOptions, body: unknown): Thumbna
   };
 }
 
+function thumbnailSelectionOptions(options: ApiAppOptions): ThumbnailRefreshOptions {
+  return {
+    captureRoot: options.thumbnailCaptureRoot,
+    outputDir: options.thumbnailOutputDir,
+    maxDownloadsPerGarment: 1,
+    delayMs: options.thumbnailDelayMs ?? 0
+  };
+}
+
 function visionOptions(options: ApiAppOptions): VisionServiceOptions {
   return {
     modelRoot: options.visionModelRoot,
+    thumbnailCaptureRoot: options.thumbnailCaptureRoot,
     thumbnailOutputDir: options.thumbnailOutputDir,
+    thumbnailDelayMs: options.thumbnailDelayMs,
+    thumbnailMaxDownloadsPerGarment: options.thumbnailMaxDownloadsPerGarment,
     visionDevice: options.visionDevice,
     rembgProvider: options.rembgProvider,
     runRembg: options.runRembg,

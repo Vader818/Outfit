@@ -2,8 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, WardrobeView } from "../src/App";
-import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
+import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -413,7 +413,7 @@ describe("App", () => {
     expect(markup).not.toContain(">winter<");
   });
 
-  it("does not render remote garment image URLs by default", async () => {
+  it("renders trusted Taobao remote garment images and still blocks unrelated remote URLs", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
       WardrobeView?: (props: {
@@ -428,7 +428,7 @@ describe("App", () => {
       }) => ReactNode;
     }).WardrobeView;
 
-    const markup = renderToStaticMarkup(<>{WardrobeView?.({
+    const trustedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
       garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
       selectedIds: [],
       busy: false,
@@ -438,9 +438,21 @@ describe("App", () => {
       onDelete: vi.fn(),
       onBulkConfirm: vi.fn()
     })}</>);
+    const blockedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(405, "外站图片衬衫", "top", { imageUrl: "https://example.com/remote-shirt.jpg" })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn()
+    })}</>);
 
-    expect(markup).not.toContain("https://img.alicdn.com/remote-shirt.jpg");
-    expect(markup).not.toContain("<img");
+    expect(trustedMarkup).toContain('src="https://img.alicdn.com/remote-shirt.jpg"');
+    expect(trustedMarkup).toContain('referrerPolicy="no-referrer"');
+    expect(blockedMarkup).not.toContain("https://example.com/remote-shirt.jpg");
+    expect(blockedMarkup).not.toContain("<img");
   });
 
   it("renders local cached garment thumbnails with privacy-preserving image attributes", async () => {
@@ -571,6 +583,148 @@ describe("App", () => {
       patterns: ["solid"],
       tags: ["cotton"]
     });
+  });
+
+  it("marks a visual suggestion as applied when the garment already matches it", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+        onAnalyzeGarmentVision?: (id: number) => void;
+      }) => ReactNode;
+    }).WardrobeView;
+
+    const tree = WardrobeView?.({
+      garments: [
+        makeGarment(407, "视觉匹配衬衫", "top", {
+          styles: ["smart-casual"],
+          patterns: ["solid"],
+          tags: ["cotton"],
+          visionTags: {
+            category: "top",
+            styles: ["smart-casual"],
+            patterns: ["solid"],
+            tags: ["cotton"],
+            scores: [{ label: "top", score: 0.92 }]
+          }
+        })
+      ],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      onAnalyzeGarmentVision: vi.fn()
+    });
+
+    const appliedButtons = findButtonsByText(tree, "已应用");
+    expect(appliedButtons).toHaveLength(1);
+
+    const markup = renderToStaticMarkup(<>{tree}</>);
+    expect(markup).toContain("已应用");
+    expect(markup).not.toContain("应用建议");
+
+    const appliedButton = appliedButtons[0];
+    expect(appliedButton.props.disabled).toBe(true);
+  });
+
+  it("renders the wardrobe thumbnail picker action and passes the selected garment", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+        onOpenThumbnailPicker?: (garment: Garment) => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const garment = makeGarment(407, "手动缩略图衬衫", "top");
+    const onOpenThumbnailPicker = vi.fn();
+
+    const tree = WardrobeView?.({
+      garments: [garment],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      onOpenThumbnailPicker
+    });
+
+    expect(renderToStaticMarkup(<>{tree}</>)).toContain("选择缩略图");
+    findButtonsByText(tree, "选择缩略图")[0].props.onClick();
+    expect(onOpenThumbnailPicker).toHaveBeenCalledWith(expect.objectContaining({ id: 407 }));
+  });
+
+  it("renders thumbnail candidates with selected state, errors, and save controls", () => {
+    const garment = makeGarment(408, "候选缩略图衬衫", "top");
+    const candidates: ThumbnailCandidate[] = [
+      {
+        url: "https://img.alicdn.com/imgextra/i1/100/O1CN01current.jpg",
+        source: "current",
+        score: 130,
+        selected: true
+      },
+      {
+        url: "https://img.alicdn.com/imgextra/i2/100/O1CN01detail.jpg",
+        source: "detail",
+        score: 120,
+        selected: false
+      }
+    ];
+    const onSelect = vi.fn();
+    const onSave = vi.fn();
+    const onClose = vi.fn();
+
+    const tree = ThumbnailPicker({
+      garment,
+      candidates,
+      selectedUrl: candidates[0].url,
+      loading: false,
+      saving: false,
+      error: "保存失败",
+      onSelect,
+      onSave,
+      onClose
+    });
+    const markup = renderToStaticMarkup(<>{tree}</>);
+
+    expect(markup).toContain("选择缩略图");
+    expect(markup).toContain("候选缩略图衬衫");
+    expect(markup).toContain("当前图");
+    expect(markup).toContain("详情图");
+    expect(markup).toContain("保存失败");
+    expect(markup).toContain("thumbnail-candidate selected");
+    findButtonsByText(tree, "详情图")[0].props.onClick();
+    findButtonsByText(tree, "保存为主图")[0].props.onClick();
+    findButtonsByText(tree, "关闭")[0].props.onClick();
+    expect(onSelect).toHaveBeenCalledWith(candidates[1].url);
+    expect(onSave).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("styles the thumbnail picker modal and responsive candidate grid", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ".thumbnail-picker-backdrop")).toMatch(/position:\s*fixed;/);
+    expect(cssRule(styles, ".thumbnail-candidate-grid")).toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(140px,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*560px\)[\s\S]*\.thumbnail-candidate-grid\s*{[\s\S]*grid-template-columns:\s*1fr;/);
   });
 
   it("renders empty states for wardrobe and recommendation views", async () => {
