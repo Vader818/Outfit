@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="24" fill="#1f2937"/>
-  <path d="M43 25 30 38l15 16 7-7v56h24V47l7 7 15-16-13-13-13 8H56l-13-8Z" fill="#f8fafc"/>
-  <path d="M48 84h32" stroke="#2dd4bf" stroke-width="8" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Outfit">
+  <rect width="128" height="128" rx="24" fill="#111827"/>
+  <path d="M43 25 30 38l15 16 8-7v55h23V47l8 7 15-16-14-13-14 8H57l-14-8Z" fill="#f8fafc"/>
+  <path d="M48 84h31" stroke="#5eead4" stroke-width="9" stroke-linecap="round"/>
+  <path d="M92 24l3 9 9 3-9 3-3 9-3-9-9-3 9-3 3-9Z" fill="#5eead4"/>
+  <path d="M82 53l2 5 5 2-5 2-2 5-2-5-5-2 5-2 2-5Z" fill="#99f6e4"/>
 </svg>
