@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTrustedProductImage, normalizeTaobaoBatch } from "../server/services/importTaobao";
+import { filterTaobaoBatchForWardrobe, isTrustedProductImage, normalizeTaobaoBatch } from "../server/services/importTaobao";
 
 describe("normalizeTaobaoBatch", () => {
   it("rejects import batches with too many items", () => {
@@ -306,6 +306,48 @@ describe("normalizeTaobaoBatch", () => {
       name: "宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
       rawName: "UTIMUS/宗师tee01 液氨纯棉情侣短袖T恤男女同款夏季抗皱透气上衣",
       category: "top"
+    });
+  });
+
+  it("keeps Playwright detail captures when generic titles require inferring a shoe title from raw text", () => {
+    const payload = {
+      source: "taobao-playwright-item-detail",
+      pageType: "item-detail",
+      pageUrl: "https://detail.tmall.com/item.htm?id=829643100435",
+      items: [
+        {
+          pageType: "item-detail",
+          itemId: "829643100435",
+          detailUrl: "https://detail.tmall.com/item.htm?id=829643100435",
+          detailTitle: "宝贝描述",
+          detailDescription: "（顺丰取送）",
+          detailRawText: [
+            "宝贝描述 用户评价 言午小水果 2024-11-12 已购：01/白色/银色/金色 / 42",
+            "参数信息 橡胶 鞋底材质 缓震,耐磨 功能 拼色 流行元素 系带 闭合方式 品牌 Mizuno/美津浓 品名 D1GA3311 鞋帮高度 低帮 鞋码 42 42.5 43 38 39 44 36.5 40 37 44.5 40.5 38.5 41 吊牌价 1298元 销售渠道类型 纯电商(只在线上销售) 是否商场同款 否 性别 男女通用 吊牌价 1298 帮面材质 其他 上市时间 2024年秋季 运动系列 运动生活 是否瑕疵 否 颜色分类 01/白色/银色/金色",
+            "本店推荐 Mizuno美津浓26新款山系户外轻野鞋缓震跑步休闲鞋FIYI TL V2 ¥598.001000+人付款",
+            "Mizuno美津浓24秋男女HYBRID风格跑鞋WAVE RIDER β 已售 0 可开发票",
+            "快递: 免运费 湖北武汉 至 北京市 海淀区 退货宝88VIP退货包运费假一赔四极速退款7天无理由退换 信用卡支付",
+            "颜色分类 01/白色/银色/金色 鞋码 42 42.5 43"
+          ].join(" "),
+          detailImages: ["https://img.alicdn.com/bao/uploaded/i1/451024527/O1CN01wkoMKq1jJPyWOn4oG_!!0-item_pic.jpg"]
+        }
+      ]
+    };
+    const result = filterTaobaoBatchForWardrobe(payload);
+    const normalized = normalizeTaobaoBatch(payload);
+
+    expect(result.filterSummary).toMatchObject({
+      originalItems: 1,
+      keptItems: 1,
+      skippedNonApparel: 0
+    });
+    expect(result.payload.items?.[0]).toMatchObject({
+      itemId: "829643100435",
+      detailTitle: "宝贝描述"
+    });
+    expect(normalized.garmentDrafts[0]).toMatchObject({
+      rawName: "Mizuno美津浓24秋男女HYBRID风格跑鞋WAVE RIDER β",
+      category: "shoes"
     });
   });
 

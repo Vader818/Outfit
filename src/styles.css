@@ -580,9 +580,56 @@ button[disabled] {
 
 .selenium-controls {
   display: grid;
-  grid-template-columns: auto minmax(240px, 1fr) auto;
+  grid-template-columns: auto minmax(240px, 1fr) auto auto;
   gap: 10px;
   align-items: center;
+}
+
+.capture-engine-picker {
+  display: grid;
+  gap: 5px;
+  min-width: 190px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.capture-engine-picker legend {
+  padding: 0;
+  color: #56657a;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.capture-engine-options {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+
+.capture-engine-options label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.capture-engine-options label.active {
+  color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.capture-engine-options input {
+  width: 12px;
+  height: 12px;
 }
 
 .capture-status {

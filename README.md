@@ -103,10 +103,11 @@ python scripts/taobao_order_selenium_capture.py --max-pages 3 --login-wait 60
 ### 方式二：应用内启动商品详情采集（默认 Selenium，可切换 Playwright）
 
 1. 在「导入淘宝订单」中粘贴淘宝或天猫商品详情 URL。
-2. 点击「采集商品详情」。
-3. 在 Chrome 中登录或处理验证。
-4. 应用会创建一个采集任务，任务产物写入 `output/taobao-captures/<jobId>`。
-5. 点击「读取产物」「预览」和「导入」。
+2. 在「采集引擎」中选择 `Selenium` 或 `Playwright`，默认是 `Selenium`。
+3. 点击「采集商品详情」。
+4. 在 Chrome 中登录或处理验证。
+5. 应用会创建一个采集任务，任务产物写入 `output/taobao-captures/<jobId>`。
+6. 点击「读取产物」「预览」和「导入」。
 
 等价 CLI：
 
@@ -114,7 +115,7 @@ python scripts/taobao_order_selenium_capture.py --max-pages 3 --login-wait 60
 python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.htm?id=..." --login-wait 60
 ```
 
-默认不设置环境变量时，商品详情采集继续使用 Selenium。若要改用项目自带 Playwright 脚本，在启动 API 前设置：
+前端选择的采集引擎会随任务请求发送给 API。若请求中没有传 `engine`，商品详情采集默认继续使用 Selenium；也可以在启动 API 前设置默认引擎：
 
 ```powershell
 $env:OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "playwright"

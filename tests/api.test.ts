@@ -606,6 +606,76 @@ describe("API routes", () => {
     });
   });
 
+  it("starts item-detail capture jobs with Playwright when requested by the client", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const itemUrl = "https://item.taobao.com/item.htm?id=1001";
+
+    let job: { id: string; engine: string; outputDir: string; message: string } | null = null;
+    try {
+      const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ mode: "item-detail", url: itemUrl, loginWait: 60, engine: "playwright" })
+      });
+      job = await startResponse.json() as { id: string; engine: string; outputDir: string; message: string };
+
+      expect(startResponse.status).toBe(200);
+      expect(job).toMatchObject({
+        engine: "playwright",
+        message: expect.stringContaining("Playwright")
+      });
+      expect(spawnMock).toHaveBeenLastCalledWith(
+        process.execPath,
+        expect.arrayContaining(["scripts/taobao_playwright_capture.mjs", "--url", itemUrl, "--login-wait", "60", "--output-dir", job.outputDir]),
+        expect.objectContaining({ cwd: process.cwd(), shell: false })
+      );
+    } finally {
+      if (job?.id) {
+        await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+          method: "POST",
+          headers: jsonHeaders(authCookie)
+        });
+      }
+    }
+  });
+
+  it("rejects capture engine on order jobs because orders always use Selenium", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 2, loginWait: 30, engine: "playwright" })
+    });
+    const body = await response.json();
+    if (response.status === 200 && typeof body.id === "string") {
+      await fetch(`${baseUrl}/api/capture/jobs/${body.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("商品详情") }
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("keeps orders on Selenium even when item-detail Playwright is configured", async () => {
     process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "playwright";
     const db = createDatabase(":memory:");

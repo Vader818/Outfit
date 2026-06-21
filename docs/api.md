@@ -235,7 +235,7 @@ http://127.0.0.1:8788
 
 创建一个带 `jobId` 的采集任务。任务产物写入 `output/taobao-captures/<jobId>`，后续通过 job 专属接口读取，避免误读其他采集产物。
 
-默认情况下订单页和商品详情页都使用 Selenium。仅当 `mode` 为 `"item-detail"` 且启动 API 前设置 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 时，商品详情采集改用项目自带 Playwright 脚本；订单采集始终使用 Selenium。无效 engine 值会以 `CAPTURE_ENGINE_INVALID` 拒绝任务创建，并且不会启动子进程。
+默认情况下订单页和商品详情页都使用 Selenium。订单采集始终使用 Selenium。商品详情采集可在请求中传 `engine: "selenium"` 或 `engine: "playwright"`；请求值优先于环境变量。若请求没有传 `engine`，启动 API 前设置 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 可把商品详情默认 runner 改为项目自带 Playwright 脚本。无效环境变量值会以 `CAPTURE_ENGINE_INVALID` 拒绝任务创建，并且不会启动子进程；请求里的无效 `engine` 或订单采集携带 `engine` 会以 `VALIDATION_ERROR` 拒绝。
 
 订单采集请求：
 
@@ -253,7 +253,8 @@ http://127.0.0.1:8788
 {
   "mode": "item-detail",
   "url": "https://item.taobao.com/item.htm?id=808",
-  "loginWait": 60
+  "loginWait": 60,
+  "engine": "playwright"
 }
 ```
 
@@ -282,6 +283,7 @@ http://127.0.0.1:8788
 | `maxPages` | number | 否 | 订单页最大翻页数，范围 `1` 到 `20`，仅订单采集使用 |
 | `loginWait` | number | 否 | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
 | `url` | string | 商品详情必填 | 仅接受淘宝/天猫商品详情链接 |
+| `engine` | `"selenium"` 或 `"playwright"` | 否 | 仅商品详情采集可传；不传时使用 API 默认配置 |
 
 `CaptureJob.engine` 表示实际 runner，取值为 `"selenium"` 或 `"playwright"`。Playwright 商品详情采集使用 `scripts/taobao_playwright_capture.mjs` 和独立 profile `output/playwright-taobao-profile`；该 profile 可能包含淘宝登录态，位于已忽略的 `output/` 目录下。Codex Playwright skill 只作为开发调试辅助，不是应用运行时依赖。
 

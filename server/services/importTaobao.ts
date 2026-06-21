@@ -62,7 +62,7 @@ const GENERIC_DETAIL_TITLE_PATTERN = /^(宝贝描述|商品详情|图文详情|�
 const ORDER_STATUS_TEXT = "(?:Pending receipt|Pending review|Completed|交易成功|交易关闭|买家已付款|卖家已发货|待付款|待发货|待收货|待评价|已完成)";
 const PRODUCT_TITLE_PATTERNS = [
   /([A-Za-z][A-Za-z0-9._ -]{0,40}\/[^¥￥]{8,160}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi,
-  /([\u4e00-\u9fffA-Za-z0-9/·._ -]{12,160}?(?:T恤|t恤|tee|上衣|短袖|长袖|衬衫|外套|裤|鞋|裙|连衣裙|卫衣|毛衣|针织|背心|吊带|靴|包|帽|围巾)[\u4e00-\u9fffA-Za-z0-9/·._ -]{0,60}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi
+  /([\u4e00-\u9fff\u0370-\u03ffA-Za-z0-9/·._ -]{12,160}?(?:T恤|t恤|tee|上衣|短袖|长袖|衬衫|外套|裤|鞋|裙|连衣裙|卫衣|毛衣|针织|背心|吊带|靴|背包|包包|手提包|斜挎包|单肩包|托特包|帽|围巾)[\u4e00-\u9fff\u0370-\u03ffA-Za-z0-9/·._ -]{0,60}?)\s+(?:已售|多人评价|回头客|券后|优惠前|官方立减|预计|快递|颜色|尺码)/gi
 ];
 const MAX_IMPORT_ITEMS = 1000;
 const MAX_RAW_TEXT_LENGTH = 8000;
@@ -398,6 +398,7 @@ function inferProductTitle(item: SourceOrderItemDraft): string {
 function cleanProductTitle(value: string): string {
   return cleanText(value)
     .replace(/^(?:图文详情|商品详情|宝贝描述|参数信息|尺码信息)\s+/, "")
+    .replace(/^(?:\d+\+?)?人付款\s+/, "")
     .slice(0, 180);
 }
 

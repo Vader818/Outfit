@@ -88,6 +88,7 @@ export async function startCaptureJob(options: {
   maxPages?: number;
   loginWait?: number;
   url?: string;
+  engine?: CaptureEngine;
 }): Promise<CaptureJob> {
   return request<CaptureJob>("/api/capture/jobs", {
     method: "POST",

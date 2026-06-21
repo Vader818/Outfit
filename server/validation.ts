@@ -1,4 +1,4 @@
-import type { BodyType, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -27,6 +27,7 @@ export const GARMENT_WARMTHS = ["light", "medium", "warm", "heavy"] as const sat
 export const SEASONS = ["spring", "summer", "autumn", "winter"] as const satisfies readonly Season[];
 export const FORMALITIES = ["casual", "smart-casual", "formal", "sport"] as const satisfies readonly Formality[];
 export const CAPTURE_MODES = ["orders", "item-detail"] as const;
+export const CAPTURE_ENGINES = ["selenium", "playwright"] as const satisfies readonly CaptureEngine[];
 export const TEMPERATURE_SENSITIVITIES = ["runs-cold", "neutral", "runs-hot"] as const;
 export const BODY_TYPES = ["slim-tall", "average", "athletic", "stocky"] as const satisfies readonly BodyType[];
 export const SKIN_TONES = ["dark-yellow", "medium-yellow", "fair", "deep"] as const satisfies readonly SkinTone[];
@@ -119,12 +120,19 @@ export function validateCaptureJobRequest(value: unknown): {
   maxPages?: number;
   loginWait?: number;
   url?: string;
+  engine?: CaptureEngine;
 } {
   const record = assertRecord(value, "采集任务请求必须是 JSON 对象");
   const mode = enumValue(record.mode, CAPTURE_MODES, "mode");
   const result: ReturnType<typeof validateCaptureJobRequest> = { mode };
   if ("maxPages" in record) result.maxPages = boundedInteger(record.maxPages, "maxPages", 1, 20);
   if ("loginWait" in record) result.loginWait = boundedInteger(record.loginWait, "loginWait", 1, 600);
+  if ("engine" in record) {
+    if (mode !== "item-detail") {
+      throw new ValidationError("engine 仅支持商品详情采集，订单采集始终使用 Selenium");
+    }
+    result.engine = enumValue(record.engine, CAPTURE_ENGINES, "engine");
+  }
   if (mode === "item-detail") {
     const url = stringValue(record.url, "url").trim();
     if (!isTaobaoItemUrl(url)) {

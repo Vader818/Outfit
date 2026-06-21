@@ -58,7 +58,7 @@ import {
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
 import { ActionCluster, CommandBar, PageHeader, SettingsSection, StatTile, StatusPill, WorkbenchPanel } from "./components/workbench";
-import type { AuthStatus, AuthUser, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
 type AuthInput = { username: string; password: string };
@@ -293,6 +293,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [importPreview, setImportPreview] = useState<TaobaoImportPreview | null>(null);
   const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
+  const [captureEngine, setCaptureEngine] = useState<CaptureEngine>("selenium");
   const [captureResult, setCaptureResult] = useState<CaptureStartResult | CaptureJob | null>(null);
   const [captureJob, setCaptureJob] = useState<CaptureJob | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
@@ -409,7 +410,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setError("");
     setCaptureResult(null);
     try {
-      const job = await startCaptureJob({ mode: "item-detail", url: captureUrl.trim(), loginWait: 60 });
+      const job = await startCaptureJob({ mode: "item-detail", url: captureUrl.trim(), loginWait: 60, engine: captureEngine });
       setCaptureJob(job);
       setCaptureResult(job);
     } catch (captureError) {
@@ -768,6 +769,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             importPreview={importPreview}
             filterSummary={captureFilterSummary}
             captureUrl={captureUrl}
+            captureEngine={captureEngine}
             captureResult={captureResult}
             busy={Boolean(busyAction)}
             busyAction={busyAction}
@@ -775,6 +777,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             onImportText={updateImportText}
             onImport={runImport}
             onCaptureUrl={setCaptureUrl}
+            onCaptureEngine={setCaptureEngine}
             onStartOrdersCapture={startOrdersCapture}
             onStartItemCapture={startItemCapture}
             onReadLatestCapture={readLatestCapture}
@@ -901,6 +904,7 @@ export function ImportView(props: {
   importPreview?: TaobaoImportPreview | null;
   filterSummary: TaobaoWardrobeFilterSummary | null;
   captureUrl: string;
+  captureEngine: CaptureEngine;
   captureResult: CaptureStartResult | CaptureJob | null;
   busy: boolean;
   busyAction?: BusyAction | null;
@@ -909,6 +913,7 @@ export function ImportView(props: {
   onImport: () => void;
   onPreviewImport?: () => void;
   onCaptureUrl: (value: string) => void;
+  onCaptureEngine: (value: CaptureEngine) => void;
   onStartOrdersCapture: () => void;
   onStartItemCapture: () => void;
   onReadLatestCapture: () => void;
@@ -927,14 +932,14 @@ export function ImportView(props: {
         </ActionCluster>
       </PageHeader>
       <div className="import-flow">
-        <span className="import-step"><b>采集</b><small>书签脚本或 Selenium</small></span>
+        <span className="import-step"><b>采集</b><small>书签脚本或浏览器采集</small></span>
         <span className="import-step"><b>检查</b><small>读取 JSON 并预览候选</small></span>
         <span className="import-step"><b>导入</b><small>确认后写入本地衣橱</small></span>
       </div>
       <WorkbenchPanel className="selenium-panel capture-step">
         <div className="panel-heading">
           <StatusPill tone="info">采集</StatusPill>
-          <label>Selenium 采集</label>
+          <label>浏览器采集</label>
         </div>
         <div className="selenium-controls">
           <button className="secondary btn btn-soft" disabled={props.busyAction === "capture-orders"} onClick={props.onStartOrdersCapture}>
@@ -947,6 +952,31 @@ export function ImportView(props: {
             onChange={(event) => props.onCaptureUrl(event.target.value)}
             placeholder="https://item.taobao.com/item.htm?id=..."
           />
+          <fieldset className="capture-engine-picker">
+            <legend>采集引擎</legend>
+            <div className="segmented-control capture-engine-options">
+              <label className={props.captureEngine === "selenium" ? "active" : ""}>
+                <input
+                  type="radio"
+                  name="item-capture-engine"
+                  value="selenium"
+                  checked={props.captureEngine === "selenium"}
+                  onChange={() => props.onCaptureEngine("selenium")}
+                />
+                Selenium
+              </label>
+              <label className={props.captureEngine === "playwright" ? "active" : ""}>
+                <input
+                  type="radio"
+                  name="item-capture-engine"
+                  value="playwright"
+                  checked={props.captureEngine === "playwright"}
+                  onChange={() => props.onCaptureEngine("playwright")}
+                />
+                Playwright
+              </label>
+            </div>
+          </fieldset>
           <button className="primary btn btn-primary" disabled={props.busyAction === "capture-item" || !props.captureUrl.trim()} onClick={props.onStartItemCapture}>
             <Play size={18} />
             {props.busyAction === "capture-item" ? "采集中" : "采集商品详情"}

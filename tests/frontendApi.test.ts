@@ -120,6 +120,38 @@ describe("frontend API client", () => {
     }));
   });
 
+  it("posts requested Playwright engine for item-detail capture jobs", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "cap_playwright",
+      mode: "item-detail",
+      engine: "playwright",
+      status: "running",
+      pid: 4322,
+      outputDir: "output/taobao-captures/cap_playwright"
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(startCaptureJob({
+      mode: "item-detail",
+      url: "https://item.taobao.com/item.htm?id=808",
+      loginWait: 60,
+      engine: "playwright"
+    })).resolves.toMatchObject({
+      id: "cap_playwright",
+      engine: "playwright"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/capture/jobs", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        mode: "item-detail",
+        url: "https://item.taobao.com/item.htm?id=808",
+        loginWait: 60,
+        engine: "playwright"
+      })
+    }));
+  });
+
   it("uses local vision model and garment vision endpoints", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, WardrobeView } from "../src/App";
-import type { Garment, OutfitRecommendation, RecommendationResult, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -119,12 +119,14 @@ describe("App", () => {
         importResult={null}
         filterSummary={null}
         captureUrl=""
+        captureEngine="selenium"
         captureResult={null}
         busy={false}
         onCopyBookmarklet={vi.fn()}
         onImportText={vi.fn()}
         onImport={vi.fn()}
         onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
         onStartOrdersCapture={vi.fn()}
         onStartItemCapture={vi.fn()}
         onReadLatestCapture={vi.fn()}
@@ -132,6 +134,35 @@ describe("App", () => {
     );
 
     expect(markup).toContain("读取产物");
+  });
+
+  it("renders item-detail capture engine choices for interactive Playwright capture", () => {
+    const markup = renderToStaticMarkup(
+      <ImportView
+        bookmarklet="https://example.com/bookmarklet"
+        importText=""
+        importResult={null}
+        filterSummary={null}
+        captureUrl=""
+        captureEngine="playwright"
+        captureResult={null}
+        busy={false}
+        onCopyBookmarklet={vi.fn()}
+        onImportText={vi.fn()}
+        onImport={vi.fn()}
+        onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
+        onStartOrdersCapture={vi.fn()}
+        onStartItemCapture={vi.fn()}
+        onReadLatestCapture={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain("采集引擎");
+    expect(markup).toContain("Selenium");
+    expect(markup).toContain("Playwright");
+    expect(markup).toContain('value="playwright"');
+    expect(markup).toContain("checked");
   });
 
   it("renders the wardrobe-only capture filter summary in the import view", () => {
@@ -147,12 +178,14 @@ describe("App", () => {
           skippedNonApparel: 4
         }}
         captureUrl=""
+        captureEngine="selenium"
         captureResult={null}
         busy={false}
         onCopyBookmarklet={vi.fn()}
         onImportText={vi.fn()}
         onImport={vi.fn()}
         onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
         onStartOrdersCapture={vi.fn()}
         onStartItemCapture={vi.fn()}
         onReadLatestCapture={vi.fn()}
@@ -171,6 +204,7 @@ describe("App", () => {
       importResult: null,
       filterSummary: null,
       captureUrl: "",
+      captureEngine: "selenium" as CaptureEngine,
       captureResult: null,
       busy: true,
       busyAction: "preview-import",
@@ -179,6 +213,7 @@ describe("App", () => {
       onImport: vi.fn(),
       onPreviewImport: vi.fn(),
       onCaptureUrl: vi.fn(),
+      onCaptureEngine: vi.fn(),
       onStartOrdersCapture: vi.fn(),
       onStartItemCapture: vi.fn(),
       onReadLatestCapture: vi.fn()
@@ -1254,6 +1289,7 @@ describe("App", () => {
         importResult={null}
         filterSummary={null}
         captureUrl=""
+        captureEngine="selenium"
         captureResult={null}
         busy={false}
         onCopyBookmarklet={vi.fn()}
@@ -1261,6 +1297,7 @@ describe("App", () => {
         onImport={vi.fn()}
         onPreviewImport={vi.fn()}
         onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
         onStartOrdersCapture={vi.fn()}
         onStartItemCapture={vi.fn()}
         onReadLatestCapture={vi.fn()}

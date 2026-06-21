@@ -87,6 +87,7 @@ export function startTaobaoCaptureJob(input: {
   maxPages?: number;
   loginWait?: number;
   url?: string;
+  engine?: CaptureEngine;
 }): CaptureJob {
   const activeJob = findActiveCaptureJob();
   if (activeJob) {
@@ -273,6 +274,7 @@ export function buildCaptureRunner(input: {
   maxPages?: number;
   loginWait?: number;
   url?: string;
+  engine?: CaptureEngine;
 }, outputDir: string): { engine: CaptureEngine; command: string; args: string[] } {
   const loginWait = String(input.loginWait ?? DEFAULT_LOGIN_WAIT_SECONDS);
   if (input.mode === "orders") {
@@ -294,7 +296,7 @@ export function buildCaptureRunner(input: {
   if (!input.url) {
     throw new ValidationError("请输入有效的淘宝或天猫商品链接");
   }
-  const engine = resolveItemDetailEngine();
+  const engine = input.engine ?? resolveItemDetailEngine();
   if (engine === "playwright") {
     return {
       engine,

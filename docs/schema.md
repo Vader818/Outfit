@@ -318,7 +318,7 @@ interface TaobaoImportPreview {
 - `source` 缺省为 `taobao-bookmarklet`。
 - `pageType` 可由 `pageUrl` 或单个 `item.pageType` 推断。
 - `detailProps`、`detailImages` 会归一化、去重并保存为 JSON 字符串。
-- `CaptureJob.engine` 表示实际采集 runner。订单页固定为 `selenium`；商品详情默认 `selenium`，设置 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 后为 `playwright`。
+- `CaptureJob.engine` 表示实际采集 runner。订单页固定为 `selenium`；商品详情默认 `selenium`，请求传 `engine=playwright` 时使用 Playwright；未传请求值时可用 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 设置 API 默认值。
 - `CaptureJob` 当前保存在 Node 进程内存中；重启 API 后历史 job 状态不会恢复，但产物文件仍在 `output/taobao-captures/<jobId>`。
 - `TaobaoImportPreview` 不写入 SQLite，只复用导入归一化、去重和分类逻辑。
 
