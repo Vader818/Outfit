@@ -69,6 +69,7 @@ describe("frontend API client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         id: "cap_123",
         mode: "orders",
+        engine: "selenium",
         status: "running",
         pid: 4321,
         outputDir: "output/taobao-captures/cap_123"
@@ -76,6 +77,7 @@ describe("frontend API client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         id: "cap_123",
         mode: "orders",
+        engine: "selenium",
         status: "succeeded",
         pid: 4321,
         outputDir: "output/taobao-captures/cap_123"

@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { CaptureArtifact, CaptureJob, CaptureJobMode, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
+import type { CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, TaobaoWardrobeFilterSummary } from "../../src/shared/types";
 import { filterTaobaoBatchForWardrobe } from "./importTaobao";
 import { ApiError, ValidationError } from "../validation";
 
@@ -11,6 +11,7 @@ export type TaobaoCaptureMode = "orders" | "item-detail";
 export interface TaobaoCaptureStartResult {
   started: true;
   mode: TaobaoCaptureMode;
+  engine: CaptureEngine;
   pid: number;
   outputDir: string;
   message: string;
@@ -62,7 +63,7 @@ export function startTaobaoOrderCapture(input: unknown): TaobaoCaptureStartResul
     String(maxPages),
     "--login-wait",
     String(loginWait)
-  ]);
+  ], "selenium");
 }
 
 export function startTaobaoItemCapture(input: unknown): TaobaoCaptureStartResult {
@@ -78,7 +79,7 @@ export function startTaobaoItemCapture(input: unknown): TaobaoCaptureStartResult
     url,
     "--login-wait",
     String(loginWait)
-  ]);
+  ], "selenium");
 }
 
 export function startTaobaoCaptureJob(input: {
@@ -89,20 +90,19 @@ export function startTaobaoCaptureJob(input: {
 }): CaptureJob {
   const activeJob = findActiveCaptureJob();
   if (activeJob) {
-    throw new ApiError("CAPTURE_JOB_RUNNING", "已有 Selenium 采集任务正在运行，请等待完成或取消后再启动。", 409);
+    throw new ApiError("CAPTURE_JOB_RUNNING", "已有采集任务正在运行，请等待完成或取消后再启动。", 409);
   }
 
   const id = createCaptureJobId();
   const outputDir = `${OUTPUT_DIR}/${id}`;
   const logPath = `${outputDir}/capture.log`;
+  const runner = buildCaptureRunner(input, outputDir);
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const args = buildCaptureArgs(input, outputDir);
   const now = new Date().toISOString();
-  const command = process.env.PYTHON || "python";
   const logFd = fs.openSync(logPath, "a");
-  fs.writeSync(logFd, `[${now}] Starting ${input.mode} capture: ${command} ${args.join(" ")}\n`);
-  const child = spawn(command, args, {
+  fs.writeSync(logFd, `[${now}] Starting ${input.mode} capture: engine=${runner.engine} command=${runner.command} args=${JSON.stringify(runner.args)}\n`);
+  const child = spawn(runner.command, runner.args, {
     cwd: process.cwd(),
     detached: false,
     stdio: ["ignore", logFd, logFd],
@@ -111,11 +111,12 @@ export function startTaobaoCaptureJob(input: {
   const job: InternalCaptureJob = {
     id,
     mode: input.mode,
+    engine: runner.engine,
     status: "running",
     pid: child.pid ?? 0,
     outputDir,
     logPath,
-    message: "Selenium 采集任务已启动。请在打开的 Chrome 中登录或处理验证。",
+    message: captureStartMessage(runner.engine),
     createdAt: now,
     updatedAt: now,
     child,
@@ -247,7 +248,7 @@ export function readLatestTaobaoCapture(outputDir = OUTPUT_DIR, fileSystem: Capt
   };
 }
 
-function spawnCapture(mode: TaobaoCaptureMode, args: string[]): TaobaoCaptureStartResult {
+function spawnCapture(mode: TaobaoCaptureMode, args: string[], engine: CaptureEngine): TaobaoCaptureStartResult {
   const command = process.env.PYTHON || "python";
   const child = spawn(command, args, {
     cwd: process.cwd(),
@@ -260,43 +261,90 @@ function spawnCapture(mode: TaobaoCaptureMode, args: string[]): TaobaoCaptureSta
   return {
     started: true,
     mode,
+    engine,
     pid: child.pid ?? 0,
     outputDir: OUTPUT_DIR,
     message: "Selenium 采集已启动。请在打开的 Chrome 中登录或处理验证，采集 JSON 会保存到 output/taobao-captures。"
   };
 }
 
-function buildCaptureArgs(input: {
+export function buildCaptureRunner(input: {
   mode: CaptureJobMode;
   maxPages?: number;
   loginWait?: number;
   url?: string;
-}, outputDir: string): string[] {
+}, outputDir: string): { engine: CaptureEngine; command: string; args: string[] } {
   const loginWait = String(input.loginWait ?? DEFAULT_LOGIN_WAIT_SECONDS);
   if (input.mode === "orders") {
-    return [
-      "scripts/taobao_order_selenium_capture.py",
-      "--max-pages",
-      String(input.maxPages ?? DEFAULT_ORDER_MAX_PAGES),
-      "--login-wait",
-      loginWait,
-      "--output-dir",
-      outputDir
-    ];
+    return {
+      engine: "selenium",
+      command: process.env.PYTHON || "python",
+      args: [
+        "scripts/taobao_order_selenium_capture.py",
+        "--max-pages",
+        String(input.maxPages ?? DEFAULT_ORDER_MAX_PAGES),
+        "--login-wait",
+        loginWait,
+        "--output-dir",
+        outputDir
+      ]
+    };
   }
 
   if (!input.url) {
     throw new ValidationError("请输入有效的淘宝或天猫商品链接");
   }
-  return [
-    "scripts/taobao_selenium_capture.py",
-    "--url",
-    input.url,
-    "--login-wait",
-    loginWait,
-    "--output-dir",
-    outputDir
-  ];
+  const engine = resolveItemDetailEngine();
+  if (engine === "playwright") {
+    return {
+      engine,
+      command: process.execPath,
+      args: [
+        "scripts/taobao_playwright_capture.mjs",
+        "--url",
+        input.url,
+        "--login-wait",
+        loginWait,
+        "--output-dir",
+        outputDir
+      ]
+    };
+  }
+
+  return {
+    engine,
+    command: process.env.PYTHON || "python",
+    args: [
+      "scripts/taobao_selenium_capture.py",
+      "--url",
+      input.url,
+      "--login-wait",
+      loginWait,
+      "--output-dir",
+      outputDir
+    ]
+  };
+}
+
+function resolveItemDetailEngine(): CaptureEngine {
+  const rawValue = process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE;
+  const normalized = String(rawValue || "selenium").trim().toLowerCase();
+  if (normalized === "selenium" || normalized === "playwright") {
+    return normalized;
+  }
+  throw new ApiError(
+    "CAPTURE_ENGINE_INVALID",
+    "OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE 必须是 selenium 或 playwright",
+    400,
+    { value: rawValue }
+  );
+}
+
+function captureStartMessage(engine: CaptureEngine): string {
+  if (engine === "playwright") {
+    return "Playwright 采集任务已启动。请在打开的 Chrome 中登录或处理验证。";
+  }
+  return "Selenium 采集任务已启动。请在打开的 Chrome 中登录或处理验证。";
 }
 
 function createCaptureJobId(): string {

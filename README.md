@@ -9,7 +9,7 @@ Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单�
 - 前端：React + Vite + TypeScript
 - 后端：Express + Node 内置 `node:sqlite`
 - 数据库：`data/outfit.sqlite`
-- 采集：Python + Selenium，默认按采集任务输出 JSON 到 `output/taobao-captures/<jobId>`
+- 采集：订单页使用 Python + Selenium；商品详情默认 Selenium，可通过 Playwright 切换；采集任务输出 JSON 到 `output/taobao-captures/<jobId>`
 - 天气：Open-Meteo API，失败时回退到本地估算天气
 
 ## 环境要求
@@ -17,7 +17,7 @@ Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单�
 - Node.js 24 或更新版本。后端依赖 `node:sqlite`，旧版 Node 可能无法启动。
 - npm
 - Python 3.13 或兼容版本
-- Chrome 浏览器。只有运行 Selenium 淘宝采集时需要。
+- Chrome 浏览器。运行 Selenium 或 Playwright 淘宝采集时需要。
 
 安装依赖：
 
@@ -100,7 +100,7 @@ GitHub Actions 会执行 Node 测试、类型检查、构建、npm audit、Pytho
 python scripts/taobao_order_selenium_capture.py --max-pages 3 --login-wait 60
 ```
 
-### 方式二：应用内启动 Selenium 商品详情采集
+### 方式二：应用内启动商品详情采集（默认 Selenium，可切换 Playwright）
 
 1. 在「导入淘宝订单」中粘贴淘宝或天猫商品详情 URL。
 2. 点击「采集商品详情」。
@@ -113,6 +113,21 @@ python scripts/taobao_order_selenium_capture.py --max-pages 3 --login-wait 60
 ```powershell
 python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.htm?id=..." --login-wait 60
 ```
+
+默认不设置环境变量时，商品详情采集继续使用 Selenium。若要改用项目自带 Playwright 脚本，在启动 API 前设置：
+
+```powershell
+$env:OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "playwright"
+npm run dev
+```
+
+Playwright 等价 CLI：
+
+```powershell
+node scripts/taobao_playwright_capture.mjs --url "https://item.taobao.com/item.htm?id=..." --login-wait 60
+```
+
+Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录可能包含淘宝登录态，已随 `output/` 被 Git 忽略。Codex 的 Playwright skill 只用于开发调试辅助，不是 Outfit 应用运行时依赖。
 
 ### 方式三：书签脚本采集
 
@@ -139,7 +154,7 @@ python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.ht
 - Express 会发送基础安全响应头，并对 mutating API 做本地 Origin/Sec-Fetch-Site 校验。
 - 淘宝账号、密码、Cookie、浏览器凭据不会被应用 API 保存。
 - 书签脚本只读取当前页面可见 DOM、页面脚本中的商品字段和图片 URL，不读取 `document.cookie`、`localStorage`、`sessionStorage` 或密码字段。
-- Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；该目录在本机保存。
+- Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；Playwright 商品详情采集使用 `output/playwright-taobao-profile`；这些目录在本机保存。
 - 采集 JSON 位于 `output/taobao-captures`，SQLite 位于 `data/outfit.sqlite`，两者可能包含购买商品信息。
 - 本地视觉模型只在用户点击下载或显式运行模型脚本时下载到 `output/models`；去背景和图片标签建议只读取本地缩略图，不调用付费 AI API，也不上传衣物图片。
 - 天气接口会向 Open-Meteo 发送经纬度。前端会把经纬度保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`。
@@ -150,6 +165,7 @@ python scripts/taobao_selenium_capture.py --url "https://item.taobao.com/item.ht
 
 - `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着记录、推荐历史和个人画像。
 - `output/chrome-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Selenium Chrome 退出淘宝登录态。
+- `output/playwright-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Playwright Chrome 退出淘宝登录态。
 - `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
 - `output/garment-thumbnails` 是本地缩略图缓存。
 - `GET /api/export` 导出的是敏感备份，分享或同步前请确认接收方和存放位置可信。
@@ -227,6 +243,7 @@ npm run models:verify
 - 端口占用：修改 API 端口可使用 `$env:PORT = "8789"; npm run start`。开发模式下还需要同步调整 Vite 代理配置。
 - `python` 命令不可用：安装 Python，或在启动 Node API 前设置 `$env:PYTHON = "python3"` 指向可用解释器。
 - Selenium 没有打开 Chrome：确认已安装 Chrome，并重新安装 `selenium` 依赖。
+- Playwright 商品详情采集没有打开 Chrome：确认已安装 Chrome，并检查 `OUTFIT_PLAYWRIGHT_CHANNEL` 是否指向可用 channel；默认使用 `chrome`。
 - 淘宝页面停在登录、滑块或风险验证：在打开的 Chrome 中手动完成验证后等待采集继续；必要时再次运行采集。
 - 「读取产物」提示找不到 JSON：先确认对应采集任务已生成产物；旧版最新产物读取则检查 `output/taobao-captures` 或其子目录中是否有 `.json` 文件。
 - 导入后没有新增衣服：检查 JSON 是否包含 `items`，以及候选是否被退款、非服饰或无有效标题过滤。

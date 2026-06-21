@@ -233,7 +233,9 @@ http://127.0.0.1:8788
 
 ## POST /api/capture/jobs
 
-创建一个带 `jobId` 的 Selenium 采集任务。任务产物写入 `output/taobao-captures/<jobId>`，后续通过 job 专属接口读取，避免误读其他采集产物。
+创建一个带 `jobId` 的采集任务。任务产物写入 `output/taobao-captures/<jobId>`，后续通过 job 专属接口读取，避免误读其他采集产物。
+
+默认情况下订单页和商品详情页都使用 Selenium。仅当 `mode` 为 `"item-detail"` 且启动 API 前设置 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 时，商品详情采集改用项目自带 Playwright 脚本；订单采集始终使用 Selenium。无效 engine 值会以 `CAPTURE_ENGINE_INVALID` 拒绝任务创建，并且不会启动子进程。
 
 订单采集请求：
 
@@ -261,6 +263,7 @@ http://127.0.0.1:8788
 {
   "id": "cap_m3v7u0qk_a1b2c3d4",
   "mode": "orders",
+  "engine": "selenium",
   "status": "running",
   "pid": 12345,
   "outputDir": "output/taobao-captures/cap_m3v7u0qk_a1b2c3d4",
@@ -279,6 +282,8 @@ http://127.0.0.1:8788
 | `maxPages` | number | 否 | 订单页最大翻页数，范围 `1` 到 `20`，仅订单采集使用 |
 | `loginWait` | number | 否 | 等待手动登录或验证的秒数，范围 `1` 到 `600` |
 | `url` | string | 商品详情必填 | 仅接受淘宝/天猫商品详情链接 |
+
+`CaptureJob.engine` 表示实际 runner，取值为 `"selenium"` 或 `"playwright"`。Playwright 商品详情采集使用 `scripts/taobao_playwright_capture.mjs` 和独立 profile `output/playwright-taobao-profile`；该 profile 可能包含淘宝登录态，位于已忽略的 `output/` 目录下。Codex Playwright skill 只作为开发调试辅助，不是应用运行时依赖。
 
 ## GET /api/capture/jobs/:id
 

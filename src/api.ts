@@ -1,8 +1,9 @@
-import type { AuthStatus, CaptureArtifact, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export interface CaptureStartResult {
   started: true;
   mode: "orders" | "item-detail";
+  engine: CaptureEngine;
   pid: number;
   outputDir: string;
   message: string;

@@ -46,6 +46,36 @@ describe("Taobao Selenium capture artifacts", () => {
     });
   });
 
+  it("reads Playwright item-detail artifacts with the same artifact reader", () => {
+    const playwrightPayload = {
+      source: "taobao-playwright-item-detail",
+      pageType: "item-detail",
+      items: [
+        {
+          pageType: "item-detail",
+          itemId: "808",
+          detailUrl: "https://item.taobao.com/item.htm?id=808",
+          detailTitle: "Example shirt",
+          detailProps: [{ name: "品牌", value: "UTIMUS" }],
+          detailDescription: "夏季透气短袖。",
+          detailImages: ["https://img.alicdn.com/example.jpg"],
+          detailRawText: "品牌 UTIMUS 夏季透气短袖。"
+        }
+      ]
+    };
+    const jsonText = JSON.stringify(playwrightPayload, null, 2);
+
+    const result = readLatestTaobaoCapture("captures", fakeFileSystem({
+      "808-20260621-120000.json": { text: jsonText, mtimeMs: 200 }
+    }));
+
+    expect(result).toMatchObject({
+      fileName: "808-20260621-120000.json",
+      jsonText,
+      payload: playwrightPayload
+    });
+  });
+
   it("can return a wardrobe-only copy of the newest capture without rewriting the artifact", () => {
     const newestPayload = {
       source: "taobao-selenium-order-list",

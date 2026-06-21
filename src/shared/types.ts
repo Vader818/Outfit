@@ -249,10 +249,12 @@ export interface ThumbnailRefreshResult {
 
 export type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type CaptureJobMode = "orders" | "item-detail";
+export type CaptureEngine = "selenium" | "playwright";
 
 export interface CaptureJob {
   id: string;
   mode: CaptureJobMode;
+  engine: CaptureEngine;
   status: CaptureJobStatus;
   pid: number;
   outputDir: string;

@@ -18,6 +18,7 @@ type Formality = "casual" | "smart-casual" | "formal" | "sport";
 type TaobaoPageType = "order-list" | "item-detail";
 type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 type CaptureJobMode = "orders" | "item-detail";
+type CaptureEngine = "selenium" | "playwright";
 type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";
 type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
 ```
@@ -241,6 +242,7 @@ interface TaobaoCapturedBatch {
 interface CaptureJob {
   id: string;
   mode: CaptureJobMode;
+  engine: CaptureEngine;
   status: CaptureJobStatus;
   pid: number;
   outputDir: string;
@@ -316,6 +318,7 @@ interface TaobaoImportPreview {
 - `source` 缺省为 `taobao-bookmarklet`。
 - `pageType` 可由 `pageUrl` 或单个 `item.pageType` 推断。
 - `detailProps`、`detailImages` 会归一化、去重并保存为 JSON 字符串。
+- `CaptureJob.engine` 表示实际采集 runner。订单页固定为 `selenium`；商品详情默认 `selenium`，设置 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 后为 `playwright`。
 - `CaptureJob` 当前保存在 Node 进程内存中；重启 API 后历史 job 状态不会恢复，但产物文件仍在 `output/taobao-captures/<jobId>`。
 - `TaobaoImportPreview` 不写入 SQLite，只复用导入归一化、去重和分类逻辑。
 
@@ -482,6 +485,7 @@ ON source_order_items(item_id);
 | `output/taobao-captures` | 淘宝采集 JSON，任务式采集会使用 `<jobId>` 子目录 | 否 |
 | `output/garment-thumbnails` | 从淘宝采集图片候选低频下载的本地衣橱缩略图 | 否 |
 | `output/chrome-taobao-profile` | Selenium Chrome 用户数据目录 | 否 |
+| `output/playwright-taobao-profile` | Playwright Chrome 用户数据目录，可能包含淘宝登录态 | 否 |
 | `output/models` | 本地可选视觉模型缓存 | 否 |
 | `logs` | 本地日志 | 否 |
 

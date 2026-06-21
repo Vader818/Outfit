@@ -78,6 +78,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   spawnMock.mockClear();
+  delete process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await Promise.all(
@@ -532,6 +533,133 @@ describe("API routes", () => {
         keptItems: 1
       }
     });
+  });
+
+  it("starts item-detail capture jobs with Selenium by default", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const itemUrl = "https://item.taobao.com/item.htm?id=808";
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "item-detail", url: itemUrl, loginWait: 60 })
+    });
+    const job = await startResponse.json() as { id: string; engine: string; outputDir: string; message: string };
+
+    expect(startResponse.status).toBe(200);
+    expect(job).toMatchObject({
+      engine: "selenium",
+      message: expect.stringContaining("Selenium")
+    });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      "python",
+      expect.arrayContaining(["scripts/taobao_selenium_capture.py", "--url", itemUrl, "--login-wait", "60", "--output-dir", job.outputDir]),
+      expect.objectContaining({ cwd: process.cwd(), shell: false })
+    );
+
+    await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+  });
+
+  it("starts item-detail capture jobs with Playwright when configured", async () => {
+    process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "playwright";
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const itemUrl = "https://detail.tmall.com/item.htm?id=909";
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "item-detail", url: itemUrl, loginWait: 45 })
+    });
+    const job = await startResponse.json() as { id: string; engine: string; outputDir: string; message: string };
+
+    expect(startResponse.status).toBe(200);
+    expect(job).toMatchObject({
+      engine: "playwright",
+      message: expect.stringContaining("Playwright")
+    });
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      process.execPath,
+      expect.arrayContaining(["scripts/taobao_playwright_capture.mjs", "--url", itemUrl, "--login-wait", "45", "--output-dir", job.outputDir]),
+      expect.objectContaining({ cwd: process.cwd(), shell: false })
+    );
+
+    await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+  });
+
+  it("keeps orders on Selenium even when item-detail Playwright is configured", async () => {
+    process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "playwright";
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 2, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; engine: string; outputDir: string };
+
+    expect(startResponse.status).toBe(200);
+    expect(job.engine).toBe("selenium");
+    expect(spawnMock).toHaveBeenLastCalledWith(
+      "python",
+      expect.arrayContaining(["scripts/taobao_order_selenium_capture.py", "--max-pages", "2", "--login-wait", "30", "--output-dir", job.outputDir]),
+      expect.objectContaining({ cwd: process.cwd(), shell: false })
+    );
+
+    await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+  });
+
+  it("rejects invalid item-detail capture engine values before spawning", async () => {
+    process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE = "chrome";
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "item-detail", url: "https://item.taobao.com/item.htm?id=808", loginWait: 30 })
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "CAPTURE_ENGINE_INVALID" }
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("rejects non-integer capture job numeric options before spawning Selenium", async () => {
