@@ -220,6 +220,33 @@ describe("API routes", () => {
     expect(afterLogoutResponse.status).toBe(401);
   });
 
+  it("treats malformed session cookies as unauthenticated instead of crashing", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    await registerTestUser(baseUrl);
+    const malformedCookie = "outfit_session=%E0%A4%A";
+
+    const statusResponse = await fetch(`${baseUrl}/api/auth/status`, {
+      headers: { cookie: malformedCookie }
+    });
+    expect(statusResponse.status).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({ hasAccount: true, user: null });
+
+    const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: malformedCookie }
+    });
+    expect(garmentsResponse.status).toBe(401);
+    expect(await garmentsResponse.json()).toMatchObject({
+      error: { code: "UNAUTHENTICATED" }
+    });
+  });
+
   it("rate limits repeated failed login attempts", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
@@ -318,6 +345,16 @@ describe("API routes", () => {
     expect(importResponse.status).toBe(400);
     expect(await importResponse.json()).toMatchObject({
       error: { code: "VALIDATION_ERROR", message: expect.stringContaining("items") }
+    });
+
+    const malformedItemResponse = await fetch(`${baseUrl}/api/import/taobao-preview`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ items: [null] })
+    });
+    expect(malformedItemResponse.status).toBe(400);
+    expect(await malformedItemResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("items[0]") }
     });
 
     const updateResponse = await fetch(`${baseUrl}/api/garments/999`, {
@@ -495,6 +532,93 @@ describe("API routes", () => {
         keptItems: 1
       }
     });
+  });
+
+  it("rejects non-integer capture job numeric options before spawning Selenium", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1.5, loginWait: 30 })
+    });
+    const body = await response.json();
+    if (response.status === 200 && typeof body.id === "string") {
+      await fetch(`${baseUrl}/api/capture/jobs/${body.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("maxPages") }
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("marks capture jobs failed when Selenium cannot be spawned", async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (...args: unknown[]) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string };
+    const errorListener = listeners.get("error");
+    if (errorListener) {
+      errorListener(new Error("spawn python ENOENT"));
+    } else {
+      await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+
+    expect(errorListener).toEqual(expect.any(Function));
+
+    const statusResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    expect(statusResponse.status).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("spawn python ENOENT")
+    });
+
+    const nextResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const nextJob = await nextResponse.json() as { id?: string };
+    if (nextResponse.status === 200 && nextJob.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${nextJob.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+    expect(nextResponse.status).toBe(200);
   });
 
   it("cancels a running capture job and allows a new one to start", async () => {
@@ -1096,12 +1220,16 @@ describe("API routes", () => {
     const garments = await (await realFetch(`${baseUrl}/api/garments`, {
       headers: { cookie: authCookie }
     })).json() as Array<{ imageUrl: string }>;
-    const thumbnailResponse = await realFetch(`${baseUrl}${garments[0].imageUrl}`);
+    const unauthenticatedThumbnailResponse = await realFetch(`${baseUrl}${garments[0].imageUrl}`);
+    const thumbnailResponse = await realFetch(`${baseUrl}${garments[0].imageUrl}`, {
+      headers: { cookie: authCookie }
+    });
 
     expect(refreshResponse.status).toBe(200);
     expect(refreshBody).toMatchObject({ scanned: 1, attemptedDownloads: 2, updated: 1 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-sample-item-1.png");
+    expect(unauthenticatedThumbnailResponse.status).toBe(401);
     expect(thumbnailResponse.status).toBe(200);
     expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
   });

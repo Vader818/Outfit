@@ -45,7 +45,7 @@ interface InternalCaptureJob extends CaptureJob {
   child?: {
     pid?: number;
     kill?: () => unknown;
-    on?: (event: string, callback: (code: number | null, signal: NodeJS.Signals | null) => void) => unknown;
+    on?: (event: string, callback: (...args: unknown[]) => void) => unknown;
   };
   logFd?: number;
 }
@@ -121,10 +121,12 @@ export function startTaobaoCaptureJob(input: {
     child,
     logFd
   };
+  let completed = false;
 
   captureJobs.set(id, job);
   child.on?.("exit", (code, signal) => {
-    if (job.status === "cancelled") return;
+    if (completed || job.status === "cancelled") return;
+    completed = true;
     const artifact = findLatestJsonArtifact(job.outputDir);
     if (artifact) {
       job.status = "succeeded";
@@ -135,6 +137,17 @@ export function startTaobaoCaptureJob(input: {
       job.error = code === 0 ? "采集进程结束，但没有生成 JSON 产物。" : `采集进程退出：code=${code ?? "null"} signal=${signal ?? "null"}`;
       job.message = job.error;
     }
+    job.updatedAt = new Date().toISOString();
+    closeJobLog(job);
+    delete job.child;
+  });
+  child.on?.("error", (error) => {
+    if (completed || job.status === "cancelled") return;
+    completed = true;
+    const message = error instanceof Error ? error.message : String(error);
+    job.status = "failed";
+    job.error = message;
+    job.message = message;
     job.updatedAt = new Date().toISOString();
     closeJobLog(job);
     delete job.child;

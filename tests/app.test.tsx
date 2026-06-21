@@ -28,6 +28,17 @@ describe("App", () => {
     expect(markup).not.toContain(">sport<");
   });
 
+  it("falls back to default settings when browser storage is unavailable", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("storage blocked");
+      },
+      setItem: vi.fn()
+    });
+
+    expect(() => renderToStaticMarkup(<MainApp />)).not.toThrow();
+  });
+
   it("gives navigation icon buttons accessible names for compact layouts", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,
@@ -888,6 +899,83 @@ describe("App", () => {
     expect(onError).toHaveBeenLastCalledWith("衣橱 API 失败");
   });
 
+  it("converts failed clipboard copies into visible error state", async () => {
+    const appModule = await import("../src/App");
+    const copyTextToClipboard = (appModule as {
+      copyTextToClipboard?: (
+        writeText: (text: string) => Promise<unknown>,
+        text: string,
+        onError: (message: string) => void
+      ) => Promise<void>;
+    }).copyTextToClipboard;
+    const onError = vi.fn();
+
+    expect(copyTextToClipboard).toEqual(expect.any(Function));
+
+    await expect(copyTextToClipboard?.(
+      () => Promise.reject(new Error("剪贴板被浏览器拦截")),
+      "javascript:void 0",
+      onError
+    )).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenNthCalledWith(1, "");
+    expect(onError).toHaveBeenLastCalledWith("剪贴板被浏览器拦截");
+  });
+
+  it("keeps failed garment deletion visible without mutating local wardrobe state", async () => {
+    const appModule = await import("../src/App");
+    const deleteGarmentForView = (appModule as {
+      deleteGarmentForView?: (
+        removeGarment: (id: number) => Promise<void>,
+        id: number,
+        onGarments: (updater: (items: Garment[]) => Garment[]) => void,
+        onSelectedIds: (updater: (ids: number[]) => number[]) => void,
+        onError: (message: string) => void
+      ) => Promise<void>;
+    }).deleteGarmentForView;
+    const onGarments = vi.fn();
+    const onSelectedIds = vi.fn();
+    const onError = vi.fn();
+
+    expect(deleteGarmentForView).toEqual(expect.any(Function));
+
+    await expect(deleteGarmentForView?.(
+      () => Promise.reject(new Error("删除失败")),
+      303,
+      onGarments,
+      onSelectedIds,
+      onError
+    )).resolves.toBeUndefined();
+
+    expect(onGarments).not.toHaveBeenCalled();
+    expect(onSelectedIds).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenNthCalledWith(1, "");
+    expect(onError).toHaveBeenLastCalledWith("删除失败");
+  });
+
+  it("clears cached weather and recommendations when a location coordinate changes", async () => {
+    const appModule = await import("../src/App");
+    const updateCoordinateForRecommendation = (appModule as {
+      updateCoordinateForRecommendation?: (
+        value: string,
+        onCoordinate: (value: string) => void,
+        onWeather: (weather: WeatherSnapshot | null) => void,
+        onRecommendations: (recommendations: RecommendationResult | null) => void
+      ) => void;
+    }).updateCoordinateForRecommendation;
+    const onCoordinate = vi.fn();
+    const onWeather = vi.fn();
+    const onRecommendations = vi.fn();
+
+    expect(updateCoordinateForRecommendation).toEqual(expect.any(Function));
+
+    updateCoordinateForRecommendation?.("31.2304", onCoordinate, onWeather, onRecommendations);
+
+    expect(onCoordinate).toHaveBeenCalledWith("31.2304");
+    expect(onWeather).toHaveBeenCalledWith(null);
+    expect(onRecommendations).toHaveBeenCalledWith(null);
+  });
+
   it("renders history insights metrics and export control", () => {
     const insights: WardrobeInsights = {
       totalGarments: 4,
@@ -1063,6 +1151,18 @@ describe("App", () => {
     expect(cssRule(styles, ".filter-bar")).toMatch(/repeat\(auto-fit,\s*minmax\(min\(100%,\s*12rem\),\s*1fr\)\)/);
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/overflow-wrap:\s*anywhere;/);
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
+  });
+
+  it("fetches the service worker shell from network before falling back to cache", () => {
+    const serviceWorker = readFileSync(new URL("../public/service-worker.js", import.meta.url), "utf8");
+    const fetchIndex = serviceWorker.indexOf("fetch(event.request)");
+    const cacheIndex = serviceWorker.indexOf("caches.match(event.request)");
+
+    expect(fetchIndex).toBeGreaterThanOrEqual(0);
+    expect(cacheIndex).toBeGreaterThanOrEqual(0);
+    expect(fetchIndex).toBeLessThan(cacheIndex);
+    expect(serviceWorker).toMatch(/cache\.put\(event\.request,\s*response\.clone\(\)\)/);
+    expect(serviceWorker).toMatch(/caches\.match\("\/index\.html"\)/);
   });
 
   it("renders recommendation controls as a dense command bar with visual outfit previews", () => {

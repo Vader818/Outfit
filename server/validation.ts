@@ -270,8 +270,8 @@ function booleanValue(value: unknown, name: string): boolean {
 }
 
 function boundedInteger(value: unknown, name: string, min: number, max: number): number {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
     throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的整数`);
   }
   return parsed;

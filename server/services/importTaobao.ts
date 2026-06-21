@@ -240,6 +240,12 @@ function assertBatch(payload: unknown): TaobaoCapturedBatch {
   if (batch.items.length > MAX_IMPORT_ITEMS) {
     throw new ValidationError(`items 最多包含 ${MAX_IMPORT_ITEMS} 条`);
   }
+  for (let index = 0; index < batch.items.length; index += 1) {
+    const item = batch.items[index];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ValidationError(`items[${index}] 必须是 JSON 对象`);
+    }
+  }
   return batch;
 }
 

@@ -163,6 +163,8 @@ const TEMPERATURE_LABELS: Record<NonNullable<PersonalProfile["temperatureSensiti
   "runs-hot": "怕热"
 };
 const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
+const DEFAULT_LATITUDE = "39.9042";
+const DEFAULT_LONGITUDE = "116.4074";
 const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
 const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
 const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
@@ -300,14 +302,14 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
   const [visionModels, setVisionModels] = useState<VisionModelsResponse | null>(null);
-  const [visionEnabled, setVisionEnabled] = useState(() => localStorage.getItem("outfit.localVision.enabled") !== "false");
+  const [visionEnabled, setVisionEnabled] = useState(() => readLocalStorageValue("outfit.localVision.enabled", "true") !== "false");
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
   const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
   const [occasion, setOccasion] = useState("casual");
-  const [latitude, setLatitude] = useState(() => localStorage.getItem("outfit.latitude") || "39.9042");
-  const [longitude, setLongitude] = useState(() => localStorage.getItem("outfit.longitude") || "116.4074");
+  const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
+  const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
   const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
   const [error, setError] = useState("");
 
@@ -379,7 +381,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function copyBookmarklet() {
-    await navigator.clipboard.writeText(bookmarklet);
+    const writeText = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    if (!writeText) {
+      setError("当前浏览器不支持剪贴板复制");
+      return;
+    }
+    await copyTextToClipboard(writeText, bookmarklet, setError);
   }
 
   async function startOrdersCapture() {
@@ -475,9 +482,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function deleteOne(id: number) {
-    await deleteGarment(id);
-    setGarments((items) => items.filter((item) => item.id !== id));
-    setSelectedIds((ids) => ids.filter((selectedId) => selectedId !== id));
+    await deleteGarmentForView(deleteGarment, id, setGarments, setSelectedIds, setError);
   }
 
   async function bulkConfirm() {
@@ -569,7 +574,15 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   function updateVisionEnabled(enabled: boolean) {
     setVisionEnabled(enabled);
-    localStorage.setItem("outfit.localVision.enabled", enabled ? "true" : "false");
+    writeLocalStorageValue("outfit.localVision.enabled", enabled ? "true" : "false");
+  }
+
+  function updateLatitude(value: string) {
+    updateCoordinateForRecommendation(value, setLatitude, setWeather, setRecommendations);
+  }
+
+  function updateLongitude(value: string) {
+    updateCoordinateForRecommendation(value, setLongitude, setWeather, setRecommendations);
   }
 
   async function locate() {
@@ -581,8 +594,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         const lon = position.coords.longitude.toFixed(4);
         setLatitude(lat);
         setLongitude(lon);
-        localStorage.setItem("outfit.latitude", lat);
-        localStorage.setItem("outfit.longitude", lon);
+        setWeather(null);
+        setRecommendations(null);
+        writeLocalStorageValue("outfit.latitude", lat);
+        writeLocalStorageValue("outfit.longitude", lon);
         setBusyAction(null);
       },
       () => setBusyAction(null)
@@ -635,8 +650,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setBusyAction("save-settings");
     setError("");
     try {
-      localStorage.setItem("outfit.latitude", latitude);
-      localStorage.setItem("outfit.longitude", longitude);
+      writeLocalStorageValue("outfit.latitude", latitude);
+      writeLocalStorageValue("outfit.longitude", longitude);
       setProfile(await savePersonalProfile(profile));
     } catch (settingsError) {
       setError(settingsError instanceof Error ? settingsError.message : "设置保存失败");
@@ -775,8 +790,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             profile={profile}
             visionModels={visionModels}
             visionEnabled={visionEnabled}
-            onLatitude={setLatitude}
-            onLongitude={setLongitude}
+            onLatitude={updateLatitude}
+            onLongitude={updateLongitude}
             onLocate={locate}
             onSave={saveSettings}
             onProfile={setProfile}
@@ -1745,6 +1760,64 @@ export async function refreshGarmentsForView(
     onGarments(await loadGarments());
   } catch (garmentError) {
     onError(garmentError instanceof Error ? garmentError.message : "衣橱读取失败");
+  }
+}
+
+export async function copyTextToClipboard(
+  writeText: (text: string) => Promise<unknown>,
+  text: string,
+  onError: (message: string) => void
+): Promise<void> {
+  onError("");
+  try {
+    await writeText(text);
+  } catch (copyError) {
+    onError(copyError instanceof Error ? copyError.message : "复制失败");
+  }
+}
+
+export async function deleteGarmentForView(
+  removeGarment: (id: number) => Promise<void>,
+  id: number,
+  onGarments: (updater: (items: Garment[]) => Garment[]) => void,
+  onSelectedIds: (updater: (ids: number[]) => number[]) => void,
+  onError: (message: string) => void
+): Promise<void> {
+  onError("");
+  try {
+    await removeGarment(id);
+    onGarments((items) => items.filter((item) => item.id !== id));
+    onSelectedIds((ids) => ids.filter((selectedId) => selectedId !== id));
+  } catch (deleteError) {
+    onError(deleteError instanceof Error ? deleteError.message : "衣物删除失败");
+  }
+}
+
+export function updateCoordinateForRecommendation(
+  value: string,
+  onCoordinate: (value: string) => void,
+  onWeather: (weather: WeatherSnapshot | null) => void,
+  onRecommendations: (recommendations: RecommendationResult | null) => void
+): void {
+  onCoordinate(value);
+  onWeather(null);
+  onRecommendations(null);
+}
+
+export function readLocalStorageValue(key: string, fallback: string): string {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeLocalStorageValue(key: string, value: string): boolean {
+  try {
+    globalThis.localStorage?.setItem(key, value);
+    return true;
+  } catch {
+    return false;
   }
 }
 

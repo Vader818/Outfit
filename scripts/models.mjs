@@ -25,6 +25,7 @@ const REMBG_MODEL_URLS = {
   u2netp: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
   silueta: "https://github.com/danielgatis/rembg/releases/download/v0.0.0/silueta.onnx"
 };
+const MODEL_TARGETS = new Set(["all", "rembg", "clip"]);
 
 export function defaultModelRoot() {
   return process.env.OUTFIT_MODEL_ROOT || path.join(process.cwd(), "output", "models");
@@ -79,6 +80,7 @@ export async function status(options = {}) {
 }
 
 export async function download(name = "all", options = {}) {
+  assertModelTarget(name);
   const modelRoot = resolveModelRoot(options);
   const models = modelDefinitions(modelRoot);
   const runCommand = options.runCommand || run;
@@ -147,6 +149,7 @@ async function readUrlWithRetries(url, attempts = 3) {
 }
 
 export async function verify(name = "all", options = {}) {
+  assertModelTarget(name);
   const modelRoot = resolveModelRoot(options);
   const models = modelDefinitions(modelRoot);
 
@@ -328,6 +331,12 @@ function normalizeRembgModel(model) {
 
 function resolveModelRoot(options) {
   return options.modelRoot || defaultModelRoot();
+}
+
+function assertModelTarget(name) {
+  if (!MODEL_TARGETS.has(name)) {
+    throw new Error(`unknown model target: ${name}`);
+  }
 }
 
 function parseArgs(values) {

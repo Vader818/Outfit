@@ -41,7 +41,6 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   }));
   app.use(express.json({ limit: "5mb" }));
   app.use(rejectUntrustedMutatingRequests);
-  app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true });
@@ -96,6 +95,8 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     }
     next();
   });
+
+  app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
 
   app.post("/api/import/taobao-batch", (request, response) => {
     handle(response, () => importTaobaoBatchIntoDb(db, request.body));
@@ -417,10 +418,18 @@ function readSessionCookie(request: Request): string | undefined {
   for (const pair of header.split(";")) {
     const [rawName, ...rawValue] = pair.trim().split("=");
     if (rawName === AUTH_COOKIE_NAME) {
-      return decodeURIComponent(rawValue.join("="));
+      return safeDecodeCookieValue(rawValue.join("="));
     }
   }
   return undefined;
+}
+
+function safeDecodeCookieValue(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function legacyCaptureDisabled(): ApiError {

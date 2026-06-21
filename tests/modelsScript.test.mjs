@@ -104,6 +104,19 @@ describe("models script", () => {
     expect(runCommand.mock.calls[0][1]).toEqual(expect.arrayContaining(["--provider", "cuda"]));
   });
 
+  it("rejects unknown model targets for download and verify", async () => {
+    const modelRoot = makeModelRoot();
+    const runCommand = vi.fn(async () => "");
+    const fetchImpl = vi.fn(async () => new Response("unused", { status: 200 }));
+
+    await expect(download("not-a-model", { modelRoot, runCommand, fetchImpl }))
+      .rejects.toThrow("unknown model target");
+    await expect(verify("not-a-model", { modelRoot, runCommand, logger: { log: vi.fn() } }))
+      .rejects.toThrow("unknown model target");
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("downloads only CLIP runtime files and fails clearly on Hugging Face errors", async () => {
     const modelRoot = makeModelRoot();
     const clipDir = path.join(modelRoot, "clip");
