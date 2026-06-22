@@ -5,7 +5,7 @@ export function cx(...values: Array<string | false | null | undefined>): string 
 }
 
 export function CommandBar({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("command-bar", className)}>{children}</div>;
+  return <div className={cx("command-bar liquid-control", className)}>{children}</div>;
 }
 
 export function PageHeader({
@@ -20,7 +20,7 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <header className={cx("page-header", className)}>
+    <header className={cx("page-header liquid-surface", className)}>
       <div className="page-header-copy">
         <h1>{title}</h1>
         {description ? <p>{description}</p> : null}
@@ -67,9 +67,9 @@ export function StatusPill({
 }
 
 export function WorkbenchPanel({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("panel workbench-panel", className)}>{children}</div>;
+  return <div className={cx("panel workbench-panel liquid-surface", className)}>{children}</div>;
 }
 
 export function SettingsSection({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={cx("settings-section", className)}>{children}</section>;
+  return <section className={cx("settings-section liquid-surface", className)}>{children}</section>;
 }

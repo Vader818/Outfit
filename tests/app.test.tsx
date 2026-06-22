@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
+import { CommandBar, PageHeader, SettingsSection, WorkbenchPanel } from "../src/components/workbench";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
@@ -710,6 +711,7 @@ describe("App", () => {
     expect(markup).toContain("当前图");
     expect(markup).toContain("详情图");
     expect(markup).toContain("保存失败");
+    expect(markup).toContain('class="thumbnail-picker liquid-modal"');
     expect(markup).toContain("thumbnail-candidate selected");
     findButtonsByText(tree, "详情图")[0].props.onClick();
     findButtonsByText(tree, "保存为主图")[0].props.onClick();
@@ -1342,6 +1344,73 @@ describe("App", () => {
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
   });
 
+  it("replaces the previous glass material system with liquid glass CSS and SVG hooks", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+    const workbench = readFileSync(new URL("../src/components/workbench.tsx", import.meta.url), "utf8");
+
+    expect(styles).not.toMatch(/--glass-/);
+    expect(styles).not.toMatch(/\.(glass-surface|glass-control|glass-sticky|glass-modal)\b/);
+    expect(app).not.toMatch(/glass-(surface|control|sticky|modal)/);
+    expect(workbench).not.toMatch(/glass-(surface|control|sticky|modal)/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-surface:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-control:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-modal:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-edge-highlight:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-fallback-surface:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-nav-dark:/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-motion-duration:/);
+    expect(cssRule(styles, ":root")).toMatch(/--app-shadow-strong:/);
+    expect(cssRule(styles, ".liquid-surface")).toMatch(/background:\s*var\(--liquid-fallback-surface\);/);
+    expect(cssRule(styles, ".liquid-sticky")).toMatch(/position:\s*sticky;/);
+    expect(styles).toMatch(/@supports\s+\(\(-webkit-backdrop-filter:\s*blur\(1px\)\)\s+or\s+\(backdrop-filter:\s*blur\(1px\)\)\)/);
+    expect(styles).toMatch(/filter:\s*url\(#liquid-glass-displacement\)/);
+    expect(styles).toMatch(/@media\s+\(prefers-reduced-motion:\s*reduce\)[\s\S]*transform:\s*none;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*nav\s*{[\s\S]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*\.nav-button\s*{[\s\S]*min-height:\s*54px;/);
+  });
+
+  it("renders a single SVG liquid glass filter definition at the app root", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: vi.fn()
+    });
+
+    const markup = renderToStaticMarkup(<MainApp />);
+
+    expect(markup).toContain('id="liquid-glass-displacement"');
+    expect(markup).toContain("<feTurbulence");
+    expect(markup).toContain("<feDisplacementMap");
+    expect(markup).toContain("<feSpecularLighting");
+  });
+
+  it("makes liquid glass visible on low-contrast login and empty states", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-surface:\s*rgba\(255,\s*255,\s*255,\s*0\.46\);/);
+    expect(cssRule(styles, ":root")).toMatch(/--liquid-refraction-opacity:\s*0\.34;/);
+    expect(cssRule(styles, "body")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.16\)/);
+    expect(cssRule(styles, ".auth-shell")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.18\)/);
+    expect(cssRule(styles, ".auth-card.liquid-surface::after")).toMatch(/opacity:\s*0\.38;/);
+    expect(cssRule(styles, ".page-header.liquid-surface::before")).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(255,\s*255,\s*255,\s*0\.95\)/);
+  });
+
+  it("adds liquid glass hooks to reusable workbench surfaces", () => {
+    const header = renderToStaticMarkup(<PageHeader title="Title" description="Description"><button>Action</button></PageHeader>);
+    const command = renderToStaticMarkup(<CommandBar className="custom-command"><span>Controls</span></CommandBar>);
+    const panel = renderToStaticMarkup(<WorkbenchPanel className="custom-panel">Panel</WorkbenchPanel>);
+    const settings = renderToStaticMarkup(<SettingsSection className="custom-section">Settings</SettingsSection>);
+
+    expect(header).toContain('class="page-header liquid-surface"');
+    expect(command).toContain('class="command-bar liquid-control custom-command"');
+    expect(panel).toContain('class="panel workbench-panel liquid-surface custom-panel"');
+    expect(settings).toContain('class="settings-section liquid-surface custom-section"');
+    expect(header).toContain("Title");
+    expect(command).toContain("Controls");
+    expect(panel).toContain("Panel");
+    expect(settings).toContain("Settings");
+  });
+
   it("fetches the service worker shell from network before falling back to cache", () => {
     const serviceWorker = readFileSync(new URL("../public/service-worker.js", import.meta.url), "utf8");
     const fetchIndex = serviceWorker.indexOf("fetch(event.request)");
@@ -1379,9 +1448,10 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="command-bar recommendation-command"');
+    expect(markup).toContain('class="command-bar liquid-control recommendation-command"');
     expect(markup).toContain('class="outfit-preview"');
     expect(markup).toContain('class="outfit-reasons"');
+    expect(markup).toContain('class="outfit liquid-surface"');
   });
 
   it("renders recommendation workbench header stats and weather context", () => {
@@ -1409,7 +1479,7 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="page-header"');
+    expect(markup).toContain('class="page-header liquid-surface"');
     expect(markup).toContain('class="stat-tile"');
     expect(markup).toContain('class="status-pill');
     expect(markup).toContain('class="weather-band context-band"');
@@ -1429,7 +1499,8 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="batch-strip"');
+    expect(markup).toContain('class="filter-bar liquid-sticky"');
+    expect(markup).toContain('class="batch-strip liquid-sticky"');
     expect(markup).toContain('class="garment-row-main"');
     expect(markup).toContain('class="garment-editor"');
     expect(markup).toContain('class="garment-actions-row"');
@@ -1476,7 +1547,8 @@ describe("App", () => {
     expect(importMarkup).toContain('class="import-flow"');
     expect(importMarkup).toContain('class="advanced-import"');
     expect(settingsMarkup).toContain('class="settings-grid"');
-    expect(settingsMarkup).toContain('class="settings-section"');
+    expect(settingsMarkup).toContain('class="panel workbench-panel liquid-surface settings-panel"');
+    expect(settingsMarkup).toContain('class="settings-section liquid-surface"');
   });
 
   it("defines expanded workbench tokens and dense layout utilities", () => {

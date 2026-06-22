@@ -213,6 +213,22 @@ export function buildTaobaoOrderCaptureOptions() {
   return { maxPages: 15, loginWait: 60 };
 }
 
+export function LiquidGlassDefs() {
+  return (
+    <svg className="liquid-glass-defs" aria-hidden="true" focusable="false" width="0" height="0">
+      <filter id="liquid-glass-displacement" x="-20%" y="-20%" width="140%" height="140%" colorInterpolationFilters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.018 0.032" numOctaves="2" seed="7" result="liquidNoise" />
+        <feDisplacementMap in="SourceGraphic" in2="liquidNoise" scale="8" xChannelSelector="R" yChannelSelector="G" result="liquidDisplaced" />
+        <feSpecularLighting in="liquidNoise" surfaceScale="7" specularConstant="0.72" specularExponent="26" lightingColor="#ffffff" result="liquidSpecular">
+          <fePointLight x="-120" y="-160" z="220" />
+        </feSpecularLighting>
+        <feComposite in="liquidSpecular" in2="liquidDisplaced" operator="in" result="liquidHighlight" />
+        <feBlend in="liquidDisplaced" in2="liquidHighlight" mode="screen" />
+      </filter>
+    </svg>
+  );
+}
+
 export function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -264,6 +280,7 @@ export function App() {
   if (!authStatus) {
     return (
       <div className="auth-shell" data-theme="corporate">
+        <LiquidGlassDefs />
         <div className="auth-card loading">
           <Shirt size={30} />
           <strong>正在进入 Outfit</strong>
@@ -759,7 +776,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   return (
     <div className="app-shell" data-theme="corporate">
-      <aside className={canLogout ? "sidebar has-mobile-logout" : "sidebar"}>
+      <LiquidGlassDefs />
+      <aside className={canLogout ? "sidebar liquid-sticky has-mobile-logout" : "sidebar liquid-sticky"}>
         <div className="brand">
           <Shirt size={28} />
           <div>
@@ -915,7 +933,8 @@ export function AuthView(props: {
 
   return (
     <main className="auth-shell" data-theme="corporate">
-      <form className="auth-card" onSubmit={submit}>
+      <LiquidGlassDefs />
+      <form className="auth-card liquid-surface" onSubmit={submit}>
         <div className="auth-mark">
           {props.hasAccount ? <LogIn size={28} /> : <LockKeyhole size={28} />}
         </div>
@@ -959,7 +978,7 @@ export function AuthView(props: {
 
 export function SessionSummary({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   return (
-    <div className="session-card">
+    <div className="session-card liquid-surface">
       <div className="session-user">
         <UserRound size={18} />
         <div>
@@ -1213,7 +1232,7 @@ export function WardrobeView(props: {
         </ActionCluster>
       </PageHeader>
       {props.thumbnailRefreshMessage ? <p className="inline-feedback">{props.thumbnailRefreshMessage}</p> : null}
-      <div className="filter-bar">
+      <div className="filter-bar liquid-sticky">
         <input
           className="input input-bordered input-sm"
           value={filters.query}
@@ -1226,7 +1245,7 @@ export function WardrobeView(props: {
         <Select value={filters.season} options={SEASON_FILTER_OPTIONS} onChange={(value) => updateFilter("season", value as WardrobeFilters["season"])} />
         <Select value={filters.owned} options={OWNED_FILTER_OPTIONS} onChange={(value) => updateFilter("owned", value as WardrobeOwnedFilter)} />
       </div>
-      <div className="batch-strip">
+      <div className="batch-strip liquid-sticky">
         <span>{filteredGarments.length} 件当前结果，已选 {props.selectedIds.length} 件</span>
         <div className="actions">
           <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
@@ -1399,7 +1418,7 @@ export function RecommendationView(props: {
       {props.recommendations?.outfits.length ? (
         <div className="outfit-grid">
           {props.recommendations.outfits.map((outfit) => (
-          <article className="outfit" key={outfit.id}>
+          <article className="outfit liquid-surface" key={outfit.id}>
             <div className="outfit-card-head">
               <StatusPill tone="good">搭配 {outfit.items.length} 件</StatusPill>
               <div className="score">匹配度 {outfit.matchPercent ?? Math.round(Math.min(100, outfit.score))}%</div>
@@ -1730,7 +1749,7 @@ export function ThumbnailPicker(props: {
 }) {
   return (
     <div className="thumbnail-picker-backdrop" role="presentation">
-      <section className="thumbnail-picker" role="dialog" aria-modal="true" aria-labelledby="thumbnail-picker-title">
+      <section className="thumbnail-picker liquid-modal" role="dialog" aria-modal="true" aria-labelledby="thumbnail-picker-title">
         <header className="thumbnail-picker-header">
           <div>
             <h2 id="thumbnail-picker-title">选择缩略图</h2>
