@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
+import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { CommandBar, PageHeader, SettingsSection, WorkbenchPanel } from "../src/components/workbench";
-import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -38,6 +38,18 @@ describe("App", () => {
     });
 
     expect(() => renderToStaticMarkup(<MainApp />)).not.toThrow();
+  });
+
+  it("renders the loading auth card without liquid glass classes", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: vi.fn()
+    });
+
+    const markup = renderToStaticMarkup(<App />);
+
+    expect(markup).toContain('class="auth-card loading"');
+    expect(markup).not.toContain("liquid-");
   });
 
   it("gives navigation icon buttons accessible names for compact layouts", () => {
@@ -711,7 +723,8 @@ describe("App", () => {
     expect(markup).toContain("当前图");
     expect(markup).toContain("详情图");
     expect(markup).toContain("保存失败");
-    expect(markup).toContain('class="thumbnail-picker liquid-modal"');
+    expect(markup).toContain('class="thumbnail-picker"');
+    expect(markup).not.toContain("liquid-");
     expect(markup).toContain("thumbnail-candidate selected");
     findButtonsByText(tree, "详情图")[0].props.onClick();
     findButtonsByText(tree, "保存为主图")[0].props.onClick();
@@ -1195,6 +1208,8 @@ describe("App", () => {
     expect(markup).toContain("近期未穿");
     expect(markup).toContain("白衬衫");
     expect(markup).toContain("导出备份");
+    expect(markup).toContain('class="panel card"');
+    expect(markup).not.toContain("liquid-");
   });
 
   it("asks for explicit confirmation before deleting a garment", async () => {
@@ -1344,33 +1359,29 @@ describe("App", () => {
     expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
   });
 
-  it("replaces the previous glass material system with liquid glass CSS and SVG hooks", () => {
+  it("removes liquid glass CSS, SVG hooks, and component module", () => {
     const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
     const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
     const workbench = readFileSync(new URL("../src/components/workbench.tsx", import.meta.url), "utf8");
+    const liquidDefsPath = new URL("../src/components/LiquidGlassDefs.tsx", import.meta.url);
 
     expect(styles).not.toMatch(/--glass-/);
     expect(styles).not.toMatch(/\.(glass-surface|glass-control|glass-sticky|glass-modal)\b/);
     expect(app).not.toMatch(/glass-(surface|control|sticky|modal)/);
     expect(workbench).not.toMatch(/glass-(surface|control|sticky|modal)/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-surface:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-control:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-modal:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-edge-highlight:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-fallback-surface:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-nav-dark:/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-motion-duration:/);
-    expect(cssRule(styles, ":root")).toMatch(/--app-shadow-strong:/);
-    expect(cssRule(styles, ".liquid-surface")).toMatch(/background:\s*var\(--liquid-fallback-surface\);/);
-    expect(cssRule(styles, ".liquid-sticky")).toMatch(/position:\s*sticky;/);
-    expect(styles).toMatch(/@supports\s+\(\(-webkit-backdrop-filter:\s*blur\(1px\)\)\s+or\s+\(backdrop-filter:\s*blur\(1px\)\)\)/);
-    expect(styles).toMatch(/filter:\s*url\(#liquid-glass-displacement\)/);
+    expect(styles).not.toMatch(/--liquid-/);
+    expect(styles).not.toMatch(/\.liquid-/);
+    expect(styles).not.toMatch(/liquid-glass-displacement/);
+    expect(styles).not.toMatch(/backdrop-filter/);
+    expect(app).not.toMatch(/LiquidGlassDefs|liquid-/);
+    expect(workbench).not.toMatch(/liquid-/);
+    expect(existsSync(liquidDefsPath)).toBe(false);
     expect(styles).toMatch(/@media\s+\(prefers-reduced-motion:\s*reduce\)[\s\S]*transform:\s*none;/);
     expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*nav\s*{[\s\S]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
     expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*\.nav-button\s*{[\s\S]*min-height:\s*54px;/);
   });
 
-  it("renders a single SVG liquid glass filter definition at the app root", () => {
+  it("renders the app root without SVG liquid glass filter definitions", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,
       setItem: vi.fn()
@@ -1378,33 +1389,33 @@ describe("App", () => {
 
     const markup = renderToStaticMarkup(<MainApp />);
 
-    expect(markup).toContain('id="liquid-glass-displacement"');
-    expect(markup).toContain("<feTurbulence");
-    expect(markup).toContain("<feDisplacementMap");
-    expect(markup).toContain("<feSpecularLighting");
+    expect(markup).not.toContain("liquid-glass-defs");
+    expect(markup).not.toContain("liquid-glass-displacement");
+    expect(markup).not.toContain("<feTurbulence");
+    expect(markup).not.toContain("<feDisplacementMap");
+    expect(markup).not.toContain("<feSpecularLighting");
   });
 
-  it("makes liquid glass visible on low-contrast login and empty states", () => {
+  it("keeps ordinary background styling without liquid material tokens", () => {
     const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-material-surface:\s*rgba\(255,\s*255,\s*255,\s*0\.46\);/);
-    expect(cssRule(styles, ":root")).toMatch(/--liquid-refraction-opacity:\s*0\.34;/);
+    expect(cssRule(styles, ":root")).not.toMatch(/--liquid-/);
     expect(cssRule(styles, "body")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.16\)/);
     expect(cssRule(styles, ".auth-shell")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.18\)/);
-    expect(cssRule(styles, ".auth-card.liquid-surface::after")).toMatch(/opacity:\s*0\.38;/);
-    expect(cssRule(styles, ".page-header.liquid-surface::before")).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(255,\s*255,\s*255,\s*0\.95\)/);
   });
 
-  it("adds liquid glass hooks to reusable workbench surfaces", () => {
+  it("keeps reusable workbench surfaces on ordinary classes", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
     const header = renderToStaticMarkup(<PageHeader title="Title" description="Description"><button>Action</button></PageHeader>);
     const command = renderToStaticMarkup(<CommandBar className="custom-command"><span>Controls</span></CommandBar>);
     const panel = renderToStaticMarkup(<WorkbenchPanel className="custom-panel">Panel</WorkbenchPanel>);
     const settings = renderToStaticMarkup(<SettingsSection className="custom-section">Settings</SettingsSection>);
 
-    expect(header).toContain('class="page-header liquid-surface"');
-    expect(command).toContain('class="command-bar liquid-control custom-command"');
-    expect(panel).toContain('class="panel workbench-panel liquid-surface custom-panel"');
-    expect(settings).toContain('class="settings-section liquid-surface custom-section"');
+    expect(styles).not.toMatch(/\.liquid-/);
+    expect(header).toContain('class="page-header"');
+    expect(command).toContain('class="command-bar custom-command"');
+    expect(panel).toContain('class="panel workbench-panel custom-panel"');
+    expect(settings).toContain('class="settings-section custom-section"');
     expect(header).toContain("Title");
     expect(command).toContain("Controls");
     expect(panel).toContain("Panel");
@@ -1448,10 +1459,11 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="command-bar liquid-control recommendation-command"');
+    expect(markup).toContain('class="command-bar recommendation-command"');
     expect(markup).toContain('class="outfit-preview"');
     expect(markup).toContain('class="outfit-reasons"');
-    expect(markup).toContain('class="outfit liquid-surface"');
+    expect(markup).toContain('class="outfit"');
+    expect(markup).not.toContain("liquid-");
   });
 
   it("renders recommendation workbench header stats and weather context", () => {
@@ -1479,16 +1491,17 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="page-header liquid-surface"');
+    expect(markup).toContain('class="page-header"');
     expect(markup).toContain('class="stat-tile"');
     expect(markup).toContain('class="status-pill');
     expect(markup).toContain('class="weather-band context-band"');
+    expect(markup).not.toContain("liquid-");
   });
 
   it("renders wardrobe bulk state and row editing inside stable workbench regions", () => {
     const markup = renderToStaticMarkup(
       <WardrobeView
-        garments={[makeGarment(1, "white shirt", "top")]}
+        garments={[makeGarment(1, "white shirt", "top"), makeGarment(2, "black pants", "bottom", { excluded: true })]}
         selectedIds={[1]}
         busy={false}
         onRefresh={vi.fn()}
@@ -1499,19 +1512,60 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="filter-bar liquid-sticky"');
-    expect(markup).toContain('class="batch-strip liquid-sticky"');
+    expect(markup).toContain('class="filter-bar"');
+    expect(markup).toContain('class="batch-strip"');
+    expect(markup).toContain('class="garment-row"');
+    expect(markup).toContain('class="garment-row muted"');
+    expect(markup).not.toContain("liquid-");
     expect(markup).toContain('class="garment-row-main"');
     expect(markup).toContain('class="garment-editor"');
     expect(markup).toContain('class="garment-actions-row"');
   });
 
+  it("keeps wardrobe row actions aligned in a uniform button grid", () => {
+    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+    expect(cssRule(styles, ".garment-actions-row")).toMatch(/display:\s*grid;/);
+    expect(cssRule(styles, ".garment-actions-row")).toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(6rem,\s*1fr\)\);/);
+    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/width:\s*100%;/);
+    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/min-width:\s*0;/);
+    expect(cssRule(styles, '.garment-actions-row > .icon-button[title="删除"]')).toMatch(/grid-column:\s*3;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*560px\)[\s\S]*\.garment-actions-row\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+  });
+
   it("renders import and settings pages with workbench grouping hooks", () => {
+    const importPreview: TaobaoImportPreview = {
+      batchId: "preview-1",
+      summary: {
+        totalItems: 1,
+        uniqueItems: 1,
+        skippedRefunded: 0,
+        skippedNonApparel: 0,
+        createdGarments: 1
+      },
+      duplicateCount: 0,
+      candidates: [
+        {
+          sourceItemKey: "item-1",
+          brand: "COS",
+          name: "white shirt",
+          rawName: "white shirt",
+          category: "top",
+          color: "white",
+          warmth: "light",
+          seasons: ["spring"],
+          confidence: 0.88,
+          imageUrl: ""
+        }
+      ],
+      skipped: []
+    };
     const importMarkup = renderToStaticMarkup(
       <ImportView
         bookmarklet="https://example.com/bookmarklet"
         importText="{}"
         importResult={null}
+        importPreview={importPreview}
         filterSummary={null}
         captureUrl=""
         captureEngine="selenium"
@@ -1546,9 +1600,11 @@ describe("App", () => {
 
     expect(importMarkup).toContain('class="import-flow"');
     expect(importMarkup).toContain('class="advanced-import"');
+    expect(importMarkup).toContain('class="panel preview-panel card"');
     expect(settingsMarkup).toContain('class="settings-grid"');
-    expect(settingsMarkup).toContain('class="panel workbench-panel liquid-surface settings-panel"');
-    expect(settingsMarkup).toContain('class="settings-section liquid-surface"');
+    expect(settingsMarkup).toContain('class="panel workbench-panel settings-panel"');
+    expect(settingsMarkup).toContain('class="settings-section"');
+    expect(`${importMarkup}${settingsMarkup}`).not.toContain("liquid-");
   });
 
   it("defines expanded workbench tokens and dense layout utilities", () => {
