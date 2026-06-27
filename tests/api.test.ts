@@ -1182,6 +1182,115 @@ describe("API routes", () => {
     });
   });
 
+  it("returns clot​​hy-style wardrobe analysis insights", async () => {
+    const db = createDatabase(":memory:");
+    const insert = db.prepare(`
+      INSERT INTO garments (
+        name, raw_name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const firstTop = insert.run(
+      "白色挺括衬衫",
+      "白色挺括衬衫",
+      "top",
+      "white",
+      "light",
+      JSON.stringify(["spring", "summer"]),
+      JSON.stringify(["smart-casual", "minimal"]),
+      "smart-casual",
+      "",
+      1,
+      1,
+      0,
+      0.9,
+      ""
+    );
+    insert.run("蓝色休闲T恤", "蓝色休闲T恤", "top", "blue", "light", JSON.stringify(["spring", "summer"]), JSON.stringify(["casual"]), "casual", "", 1, 0, 0, 0.7, "");
+    insert.run("黑色针织衫", "黑色针织衫", "top", "black", "warm", JSON.stringify(["autumn", "winter"]), JSON.stringify(["casual"]), "casual", "", 1, 0, 0, 0.8, "");
+    insert.run("深蓝直筒牛仔裤", "深蓝直筒牛仔裤", "bottom", "blue", "medium", JSON.stringify(["spring", "autumn"]), JSON.stringify(["casual"]), "casual", "", 1, 1, 0, 0.85, "");
+    insert.run("白色运动鞋", "白色运动鞋", "shoes", "white", "light", JSON.stringify(["spring", "summer"]), JSON.stringify(["sport"]), "sport", "", 1, 1, 0, 0.8, "");
+
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    await fetch(`${baseUrl}/api/profile`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        heightCm: 176,
+        weightKg: 57,
+        bodyType: "slim-tall",
+        skinTone: "dark-yellow",
+        colorDisposition: "cool-clean",
+        temperatureSensitivity: "neutral",
+        preferredColors: ["white", "blue"],
+        avoidedColors: ["yellow", "brown"],
+        preferredStyles: ["smart-casual"]
+      })
+    });
+    await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ garmentIds: [Number(firstTop.lastInsertRowid)], context: { occasion: "smart-casual" } })
+    });
+
+    const response = await fetch(`${baseUrl}/api/insights`, { headers: { cookie: authCookie } });
+    expect(response.status).toBe(200);
+    const insights = await response.json();
+
+    expect(insights).toMatchObject({
+      totalGarments: 5,
+      seasonDistribution: {
+        spring: 4,
+        summer: 3,
+        autumn: 2,
+        winter: 1
+      },
+      styleDistribution: expect.objectContaining({
+        casual: 3,
+        "smart-casual": 1
+      }),
+      formalityDistribution: expect.objectContaining({
+        casual: 3,
+        "smart-casual": 1,
+        sport: 1
+      }),
+      styleTendency: {
+        dominantStyles: expect.arrayContaining([expect.objectContaining({ key: "casual", count: 3 })]),
+        dominantFormalities: expect.arrayContaining([expect.objectContaining({ key: "casual", count: 3 })])
+      },
+      health: {
+        level: "needs-attention",
+        components: expect.objectContaining({
+          coreCompleteness: expect.any(Number),
+          seasonCoverage: expect.any(Number),
+          styleCoverage: expect.any(Number),
+          confirmationRate: expect.any(Number),
+          utilizationRate: expect.any(Number)
+        })
+      }
+    });
+    expect(insights.health.score).toBeLessThan(70);
+    expect(insights.insightSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: expect.stringContaining("上装") }),
+      expect.objectContaining({ title: expect.stringContaining("待确认") })
+    ]));
+    expect(insights.shoppingSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: expect.stringContaining("外套") }),
+      expect.objectContaining({ title: expect.stringContaining("鞋履") })
+    ]));
+    expect(insights.bodySuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: expect.stringContaining("瘦高") }),
+      expect.objectContaining({ title: expect.stringContaining("肤色") })
+    ]));
+  });
+
   it("stores only the sanitized recommendation request in history", async () => {
     const db = createDatabase(":memory:");
     const insert = db.prepare(`

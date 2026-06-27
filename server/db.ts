@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationRunEntry, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -12,6 +12,9 @@ import { ApiError } from "./validation";
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
 const MAX_SELECTABLE_THUMBNAIL_CANDIDATES = 24;
+const INSIGHT_SEASONS: Season[] = ["spring", "summer", "autumn", "winter"];
+const INSIGHT_FORMALITIES: Formality[] = ["casual", "smart-casual", "formal", "sport"];
+const INSIGHT_BASIC_COLORS = new Set(["black", "white", "gray", "beige", "brown"]);
 
 export type AppDatabase = DatabaseSyncType;
 
@@ -914,12 +917,20 @@ export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
       wornCounts.set(id, (wornCounts.get(id) ?? 0) + 1);
     }
   }
+  const activeGarments = garments.filter((garment) => garment.owned && !garment.excluded);
   const categoryDistribution: WardrobeInsights["categoryDistribution"] = {};
   const colorDistribution: WardrobeInsights["colorDistribution"] = {};
   for (const garment of garments) {
     categoryDistribution[garment.category] = (categoryDistribution[garment.category] ?? 0) + 1;
     colorDistribution[garment.color || "unknown"] = (colorDistribution[garment.color || "unknown"] ?? 0) + 1;
   }
+  const seasonDistribution = buildSeasonDistribution(activeGarments);
+  const styleDistribution = buildStyleDistribution(activeGarments);
+  const formalityDistribution = buildFormalityDistribution(activeGarments);
+  const health = buildWardrobeHealth(activeGarments, wornCounts, seasonDistribution, styleDistribution);
+  const insightSuggestions = buildInsightSuggestions(activeGarments, wornCounts, seasonDistribution, buildColorDistribution(activeGarments));
+  const shoppingSuggestions = buildShoppingSuggestions(activeGarments, seasonDistribution);
+  const bodySuggestions = buildBodySuggestions(getPersonalProfile(db));
   const worn = garments
     .filter((garment) => (wornCounts.get(garment.id) ?? 0) > 0)
     .map((garment) => ({
@@ -938,12 +949,282 @@ export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
     pendingGarments: garments.filter((garment) => !garment.confirmed && !garment.excluded).length,
     categoryDistribution,
     colorDistribution,
+    seasonDistribution,
+    styleDistribution,
+    formalityDistribution,
+    styleTendency: {
+      dominantStyles: topDistributionEntries(styleDistribution, 3),
+      dominantFormalities: topDistributionEntries(formalityDistribution, 3) as WardrobeInsights["styleTendency"]["dominantFormalities"]
+    },
+    health,
+    insightSuggestions,
+    shoppingSuggestions,
+    bodySuggestions,
     mostWorn: worn,
     neverWorn: garments
       .filter((garment) => !wornCounts.has(garment.id))
       .slice(0, 8)
       .map((garment) => ({ id: garment.id, name: displayInsightName(garment), category: garment.category, color: garment.color }))
   };
+}
+
+function buildSeasonDistribution(garments: Garment[]): WardrobeInsights["seasonDistribution"] {
+  const distribution: WardrobeInsights["seasonDistribution"] = Object.fromEntries(INSIGHT_SEASONS.map((season) => [season, 0])) as WardrobeInsights["seasonDistribution"];
+  for (const garment of garments) {
+    for (const season of garment.seasons) {
+      distribution[season] = (distribution[season] ?? 0) + 1;
+    }
+  }
+  return distribution;
+}
+
+function buildStyleDistribution(garments: Garment[]): WardrobeInsights["styleDistribution"] {
+  const distribution: WardrobeInsights["styleDistribution"] = {};
+  for (const garment of garments) {
+    for (const style of garment.styles) {
+      incrementCount(distribution, style);
+    }
+  }
+  return distribution;
+}
+
+function buildColorDistribution(garments: Garment[]): WardrobeInsights["colorDistribution"] {
+  const distribution: WardrobeInsights["colorDistribution"] = {};
+  for (const garment of garments) {
+    incrementCount(distribution, garment.color || "unknown");
+  }
+  return distribution;
+}
+
+function buildFormalityDistribution(garments: Garment[]): WardrobeInsights["formalityDistribution"] {
+  const distribution: WardrobeInsights["formalityDistribution"] = Object.fromEntries(INSIGHT_FORMALITIES.map((formality) => [formality, 0])) as WardrobeInsights["formalityDistribution"];
+  for (const garment of garments) {
+    distribution[garment.formality] = (distribution[garment.formality] ?? 0) + 1;
+  }
+  return distribution;
+}
+
+function buildWardrobeHealth(
+  garments: Garment[],
+  wornCounts: Map<number, number>,
+  seasonDistribution: WardrobeInsights["seasonDistribution"],
+  styleDistribution: WardrobeInsights["styleDistribution"]
+): WardrobeInsights["health"] {
+  if (!garments.length) {
+    return {
+      score: 0,
+      level: "needs-attention",
+      components: {
+        coreCompleteness: 0,
+        seasonCoverage: 0,
+        styleCoverage: 0,
+        confirmationRate: 0,
+        utilizationRate: 0
+      },
+      issues: ["衣橱还没有可分析的可穿单品。"]
+    };
+  }
+
+  const categoryCounts = countActiveCategories(garments);
+  const coreSlots = [
+    (categoryCounts.top ?? 0) > 0 || (categoryCounts.dress ?? 0) > 0,
+    (categoryCounts.bottom ?? 0) > 0 || (categoryCounts.dress ?? 0) > 0,
+    (categoryCounts.shoes ?? 0) > 0,
+    (categoryCounts.outerwear ?? 0) > 0,
+    (categoryCounts.accessory ?? 0) > 0
+  ];
+  const coreCompleteness = percent(coreSlots.filter(Boolean).length, coreSlots.length);
+  const seasonCoverage = percent(Object.values(seasonDistribution).filter((count) => (count ?? 0) >= 2).length, INSIGHT_SEASONS.length);
+  const styleCoverage = percent(Math.min(Object.values(styleDistribution).filter((count) => count > 0).length, 4), 4);
+  const confirmationRate = percent(garments.filter((garment) => garment.confirmed).length, garments.length);
+  const utilizationRate = percent(garments.filter((garment) => (wornCounts.get(garment.id) ?? 0) > 0).length, garments.length);
+  const score = Math.round(
+    coreCompleteness * 0.35 +
+    seasonCoverage * 0.2 +
+    styleCoverage * 0.15 +
+    confirmationRate * 0.15 +
+    utilizationRate * 0.15
+  );
+  const issues = wardrobeHealthIssues(categoryCounts, garments, seasonDistribution, confirmationRate, utilizationRate);
+
+  return {
+    score,
+    level: score >= 82 ? "good" : score >= 70 ? "fair" : "needs-attention",
+    components: {
+      coreCompleteness,
+      seasonCoverage,
+      styleCoverage,
+      confirmationRate,
+      utilizationRate
+    },
+    issues
+  };
+}
+
+function buildInsightSuggestions(
+  garments: Garment[],
+  wornCounts: Map<number, number>,
+  seasonDistribution: WardrobeInsights["seasonDistribution"],
+  colorDistribution: WardrobeInsights["colorDistribution"]
+): WardrobeSuggestion[] {
+  if (!garments.length) {
+    return [suggestion("empty-wardrobe", "high", "衣橱暂无可穿单品", "先导入或确认几件常用单品，再生成完整分析。")];
+  }
+  const suggestions: WardrobeSuggestion[] = [];
+  const categoryCounts = countActiveCategories(garments);
+  const total = garments.length;
+  const topRatio = (categoryCounts.top ?? 0) / total;
+  if (topRatio > 0.4) {
+    suggestions.push(suggestion("top-heavy", "medium", "上装占比偏高", "上装超过衣橱 40%，后续购买可优先考虑下装、鞋履或外套。", {
+      relatedCategories: ["top"]
+    }));
+  }
+  if (((categoryCounts.accessory ?? 0) / total) < 0.05) {
+    suggestions.push(suggestion("low-accessory", "low", "配饰较少", "适当补充腰带、围巾或包袋，可以提高现有单品的搭配变化。", {
+      relatedCategories: ["accessory"]
+    }));
+  }
+  const pending = garments.filter((garment) => !garment.confirmed).length;
+  if (pending / total >= 0.3) {
+    suggestions.push(suggestion("pending-confirmation", "medium", "待确认单品偏多", `${pending} 件可穿单品还未确认，建议先校正类别、颜色和季节，分析会更准确。`));
+  }
+  const neverWorn = garments.filter((garment) => !wornCounts.has(garment.id)).length;
+  if (neverWorn / total >= 0.5) {
+    suggestions.push(suggestion("low-utilization", "medium", "未穿单品较多", `${neverWorn} 件可穿单品没有穿着记录，优先换穿已有衣物可以减少重复购买。`));
+  }
+  const winterCount = seasonDistribution.winter ?? 0;
+  if (winterCount / Math.max(total, 1) < 0.2) {
+    suggestions.push(suggestion("low-winter", "medium", "冬季覆盖偏弱", "冬季单品占比较低，降温时可选组合会明显减少。", {
+      relatedSeasons: ["winter"]
+    }));
+  }
+  const basicRatio = basicColorRatio(colorDistribution);
+  if (basicRatio < 0.4) {
+    suggestions.push(suggestion("low-basic-color", "medium", "基础色偏少", "黑、白、灰、米、棕等基础色比例偏低，基础款不足会降低搭配复用度。"));
+  } else if (basicRatio > 0.7) {
+    suggestions.push(suggestion("high-basic-color", "low", "中性色占比高", "中性色很稳定，可以用小面积亮色或图案单品增加变化。"));
+  }
+  return suggestions.slice(0, 6);
+}
+
+function buildShoppingSuggestions(garments: Garment[], seasonDistribution: WardrobeInsights["seasonDistribution"]): WardrobeSuggestion[] {
+  const categoryCounts = countActiveCategories(garments);
+  const suggestions: WardrobeSuggestion[] = [];
+  if ((categoryCounts.outerwear ?? 0) < 2) {
+    suggestions.push(suggestion("shop-outerwear", "high", "补充一件经典外套", "外套不足会影响换季和通勤层次，优先考虑风衣、夹克或轻薄大衣。", {
+      relatedCategories: ["outerwear"]
+    }));
+  }
+  if ((categoryCounts.shoes ?? 0) < 3) {
+    suggestions.push(suggestion("shop-shoes", "high", "补充百搭鞋履", "鞋履少于 3 双时，不同天气和场合的完整搭配会受限。", {
+      relatedCategories: ["shoes"]
+    }));
+  }
+  if ((categoryCounts.bottom ?? 0) < 2) {
+    suggestions.push(suggestion("shop-bottom", "medium", "补充下装基础款", "下装不足会让上装难以复用，可优先补直筒裤、半裙或休闲裤。", {
+      relatedCategories: ["bottom"]
+    }));
+  }
+  if ((seasonDistribution.winter ?? 0) < 2) {
+    suggestions.push(suggestion("shop-winter", "medium", "补充秋冬单品", "秋冬覆盖偏弱，可考虑针织衫、厚外套或靴子。", {
+      relatedSeasons: ["winter", "autumn"]
+    }));
+  }
+  if ((categoryCounts.accessory ?? 0) < 2) {
+    suggestions.push(suggestion("shop-accessory", "low", "补充少量配饰", "配饰投入小，但能明显提高同一套衣服的变化度。", {
+      relatedCategories: ["accessory"]
+    }));
+  }
+  return suggestions.slice(0, 5);
+}
+
+function buildBodySuggestions(profile: PersonalProfile): WardrobeSuggestion[] {
+  const suggestions: WardrobeSuggestion[] = [];
+  if (profile.bodyType === "slim-tall") {
+    suggestions.push(suggestion("body-slim-tall", "low", "瘦高体型适合增加层次", "基于当前个人画像，挺括外套、直筒下装和有结构感的层次能减少单薄感。"));
+  } else if (profile.bodyType === "athletic") {
+    suggestions.push(suggestion("body-athletic", "low", "运动型体型适合利落线条", "基于当前个人画像，利落剪裁和低复杂度配色会更清爽。"));
+  } else if (profile.bodyType === "stocky") {
+    suggestions.push(suggestion("body-stocky", "low", "壮实体型注意纵向线条", "基于当前个人画像，竖向开襟、低对比内搭和合身版型会更稳定。"));
+  }
+  if (profile.heightCm && profile.heightCm < 160) {
+    suggestions.push(suggestion("body-petite", "low", "小个子优先高腰线", "短上衣、高腰下装和轻量鞋履能让比例更清晰。"));
+  } else if (profile.heightCm && profile.heightCm > 170) {
+    suggestions.push(suggestion("body-tall", "low", "高挑身高可以驾驭长线条", "长外套、阔腿裤和大面积简洁色块能放大身高优势。"));
+  }
+  if (profile.skinTone === "dark-yellow" || profile.colorDisposition === "cool-clean") {
+    suggestions.push(suggestion("skin-tone-clean", "medium", "肤色色彩适配", "基于当前肤色画像，白色、蓝色、灰色和清爽高对比配色通常比大面积土黄、棕色更显精神。"));
+  }
+  return suggestions.slice(0, 4);
+}
+
+function wardrobeHealthIssues(
+  categoryCounts: WardrobeInsights["categoryDistribution"],
+  garments: Garment[],
+  seasonDistribution: WardrobeInsights["seasonDistribution"],
+  confirmationRate: number,
+  utilizationRate: number
+): string[] {
+  const issues: string[] = [];
+  if ((categoryCounts.top ?? 0) === 0 && (categoryCounts.dress ?? 0) === 0) issues.push("缺少上装或连衣裙，无法组成完整搭配。");
+  if ((categoryCounts.bottom ?? 0) === 0 && (categoryCounts.dress ?? 0) === 0) issues.push("缺少下装或连衣裙，核心搭配受限。");
+  if ((categoryCounts.shoes ?? 0) < 3) issues.push("鞋履少于 3 双，不同场合和天气的选择偏少。");
+  if ((categoryCounts.outerwear ?? 0) < 2) issues.push("外套不足，换季层次会受限。");
+  if ((categoryCounts.accessory ?? 0) < 1) issues.push("配饰缺口明显，搭配变化度偏低。");
+  if ((seasonDistribution.winter ?? 0) < 2 && garments.length >= 3) issues.push("秋冬覆盖偏弱。");
+  if (confirmationRate < 70) issues.push("待确认单品较多，分析准确度会受影响。");
+  if (utilizationRate < 35) issues.push("穿着记录覆盖不足，建议记录近期搭配。");
+  return issues;
+}
+
+function countActiveCategories(garments: Garment[]): WardrobeInsights["categoryDistribution"] {
+  const counts: WardrobeInsights["categoryDistribution"] = {};
+  for (const garment of garments) {
+    counts[garment.category] = (counts[garment.category] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function topDistributionEntries<T extends string>(record: Partial<Record<T, number>> | Record<string, number>, limit: number): Array<{ key: T; count: number; ratio: number }> {
+  const entries = Object.entries(record)
+    .map(([key, count]) => ({ key: key as T, count: Number(count || 0) }))
+    .filter((entry) => entry.count > 0)
+    .sort((left, right) => right.count - left.count || String(left.key).localeCompare(String(right.key)));
+  const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+  return entries.slice(0, limit).map((entry) => ({
+    ...entry,
+    ratio: percent(entry.count, total)
+  }));
+}
+
+function suggestion(
+  id: string,
+  priority: WardrobeSuggestion["priority"],
+  title: string,
+  detail: string,
+  extra: Omit<WardrobeSuggestion, "id" | "priority" | "title" | "detail"> = {}
+): WardrobeSuggestion {
+  return { id, priority, title, detail, ...extra };
+}
+
+function basicColorRatio(colorDistribution: WardrobeInsights["colorDistribution"]): number {
+  const total = Object.values(colorDistribution).reduce((sum, count) => sum + count, 0);
+  if (!total) return 0;
+  const basic = Object.entries(colorDistribution)
+    .filter(([color]) => INSIGHT_BASIC_COLORS.has(color))
+    .reduce((sum, [, count]) => sum + count, 0);
+  return basic / total;
+}
+
+function percent(value: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((value / total) * 100);
+}
+
+function incrementCount(record: Record<string, number>, key: string): void {
+  const cleaned = key.trim();
+  if (!cleaned) return;
+  record[cleaned] = (record[cleaned] ?? 0) + 1;
 }
 
 export function exportOutfitData(db: AppDatabase): OutfitExport {

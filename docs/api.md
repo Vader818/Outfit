@@ -604,6 +604,68 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 { "ok": true }
 ```
 
+## GET /api/insights
+
+读取本地衣橱分析洞察。接口会保留基础统计、常穿/未穿列表，并基于仍拥有且未排除的活跃单品生成季节分布、风格倾向、健康度、洞察建议、购物建议和身材建议。
+
+响应：`WardrobeInsights`
+
+```json
+{
+  "totalGarments": 5,
+  "ownedGarments": 5,
+  "confirmedGarments": 3,
+  "pendingGarments": 2,
+  "categoryDistribution": { "top": 3, "bottom": 1, "shoes": 1 },
+  "colorDistribution": { "white": 2, "blue": 2, "black": 1 },
+  "seasonDistribution": { "spring": 4, "summer": 3, "autumn": 2, "winter": 1 },
+  "styleDistribution": { "casual": 3, "smart-casual": 1 },
+  "formalityDistribution": { "casual": 3, "smart-casual": 1, "sport": 1 },
+  "styleTendency": {
+    "dominantStyles": [{ "key": "casual", "count": 3, "ratio": 50 }],
+    "dominantFormalities": [{ "key": "casual", "count": 3, "ratio": 60 }]
+  },
+  "health": {
+    "score": 64,
+    "level": "needs-attention",
+    "components": {
+      "coreCompleteness": 60,
+      "seasonCoverage": 75,
+      "styleCoverage": 100,
+      "confirmationRate": 60,
+      "utilizationRate": 20
+    },
+    "issues": ["外套不足，换季层次会受限。"]
+  },
+  "insightSuggestions": [
+    {
+      "id": "top-heavy",
+      "priority": "medium",
+      "title": "上装占比偏高",
+      "detail": "上装超过衣橱 40%，后续购买可优先考虑下装、鞋履或外套。"
+    }
+  ],
+  "shoppingSuggestions": [
+    {
+      "id": "shop-outerwear",
+      "priority": "high",
+      "title": "补充一件经典外套",
+      "detail": "外套不足会影响换季和通勤层次，优先考虑风衣、夹克或轻薄大衣。"
+    }
+  ],
+  "bodySuggestions": [
+    {
+      "id": "body-slim-tall",
+      "priority": "low",
+      "title": "瘦高体型适合增加层次",
+      "detail": "基于当前个人画像，挺括外套、直筒下装和有结构感的层次能减少单薄感。"
+    }
+  ],
+  "mostWorn": [],
+  "neverWorn": []
+}
+```
+
 ## GET /api/weather
 
 按经纬度获取天气快照。服务优先读取 30 分钟内缓存；Open-Meteo 请求失败时，若有过期缓存则返回过期缓存，否则返回本地估算天气。

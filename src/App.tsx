@@ -61,7 +61,7 @@ import {
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
 import { ActionCluster, CommandBar, PageHeader, SettingsSection, StatTile, StatusPill, WorkbenchPanel } from "./components/workbench";
-import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailCandidate, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailCandidate, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
 type AuthInput = { username: string; password: string };
@@ -172,6 +172,16 @@ const TEMPERATURE_LABELS: Record<NonNullable<PersonalProfile["temperatureSensiti
   "runs-cold": "怕冷",
   neutral: "正常",
   "runs-hot": "怕热"
+};
+const HEALTH_LEVEL_LABELS: Record<WardrobeInsights["health"]["level"], string> = {
+  good: "健康",
+  fair: "可优化",
+  "needs-attention": "需关注"
+};
+const SUGGESTION_PRIORITY_LABELS: Record<WardrobeSuggestion["priority"], string> = {
+  high: "优先",
+  medium: "建议",
+  low: "可选"
 };
 const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
 const DEFAULT_LATITUDE = "39.9042";
@@ -1650,6 +1660,41 @@ export function HistoryInsightsView(props: {
             <Metric label="可穿" value={insights.ownedGarments} />
             <Metric label="已确认" value={insights.confirmedGarments} />
             <Metric label="待确认" value={insights.pendingGarments} />
+            <Metric label="健康度" value={insights.health.score} />
+          </div>
+          <div className="grid two">
+            <div className="panel card insight-health-panel">
+              <label>衣橱健康度</label>
+              <div className={`health-score ${insights.health.level}`}>
+                <strong>{insights.health.score}</strong>
+                <span>{HEALTH_LEVEL_LABELS[insights.health.level]}</span>
+              </div>
+              <Distribution data={{
+                核心完整度: insights.health.components.coreCompleteness,
+                季节覆盖: insights.health.components.seasonCoverage,
+                风格覆盖: insights.health.components.styleCoverage,
+                确认率: insights.health.components.confirmationRate,
+                利用率: insights.health.components.utilizationRate
+              }} />
+              <SuggestionList
+                items={insights.health.issues.map((issue, index) => ({
+                  id: `health-${index}`,
+                  priority: "medium",
+                  title: issue,
+                  detail: "这是当前衣橱健康度的主要扣分项。"
+                }))}
+                empty="衣橱结构暂未发现明显问题。"
+              />
+            </div>
+            <div className="panel card">
+              <label>风格倾向</label>
+              <Distribution data={labelStyleDistribution(insights.styleDistribution)} />
+              <div className="history-list">
+                {insights.styleTendency.dominantStyles.map((style) => (
+                  <span key={style.key}>{styleLabel(style.key)} · {style.count} 件 · {style.ratio}%</span>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="grid two">
             <div className="panel card">
@@ -1670,6 +1715,30 @@ export function HistoryInsightsView(props: {
               <label>颜色分布</label>
               <Distribution data={labelDistribution(insights.colorDistribution, COLOR_LABELS)} />
             </div>
+          </div>
+          <div className="grid two">
+            <div className="panel card">
+              <label>季节分布</label>
+              <Distribution data={labelDistribution(insights.seasonDistribution, SEASON_LABELS)} />
+            </div>
+            <div className="panel card">
+              <label>场合分布</label>
+              <Distribution data={labelDistribution(insights.formalityDistribution, OCCASION_LABELS)} />
+            </div>
+          </div>
+          <div className="grid two">
+            <div className="panel card">
+              <label>洞察建议</label>
+              <SuggestionList items={insights.insightSuggestions} empty="暂无需要关注的衣橱洞察。" />
+            </div>
+            <div className="panel card">
+              <label>购物建议</label>
+              <SuggestionList items={insights.shoppingSuggestions} empty="暂无需要优先补充的单品。" />
+            </div>
+          </div>
+          <div className="panel card">
+            <label>身材建议</label>
+            <SuggestionList items={insights.bodySuggestions} empty="当前个人画像没有额外身材建议。" />
           </div>
           <div className="panel card">
             <label>推荐历史</label>
@@ -1949,6 +2018,23 @@ function Distribution({ data }: { data: Record<string, number> }) {
   );
 }
 
+function SuggestionList({ items, empty }: { items: WardrobeSuggestion[]; empty: string }) {
+  if (!items.length) return <div className="empty-state">{empty}</div>;
+  return (
+    <div className="suggestion-list">
+      {items.map((item) => (
+        <article className={`suggestion-item ${item.priority}`} key={item.id}>
+          <span>{SUGGESTION_PRIORITY_LABELS[item.priority]}</span>
+          <div>
+            <strong>{item.title}</strong>
+            <p>{item.detail}</p>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return <StatTile className="metric stat" label={label} value={value} />;
 }
@@ -2099,6 +2185,16 @@ function labelDistribution<T extends string>(data: Partial<Record<T, number>> | 
   return Object.fromEntries(
     Object.entries(data).map(([key, value]) => [labels[key] || key, Number(value ?? 0)])
   );
+}
+
+function labelStyleDistribution(data: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [styleLabel(key), Number(value ?? 0)])
+  );
+}
+
+function styleLabel(value: string): string {
+  return OCCASION_LABELS[value as keyof typeof OCCASION_LABELS] || value;
 }
 
 function downloadJson(data: OutfitExport): void {

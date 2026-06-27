@@ -95,6 +95,65 @@ interface Garment {
 | `visionTags` | 本地视觉模型生成的标签建议，用户确认前不覆盖正式字段 |
 | `visionUpdatedAt` | 最近一次视觉处理或分析时间 |
 
+### WardrobeInsights
+
+`GET /api/insights` 返回结构化衣橱分析。基础计数保持全量衣橱语义；新增健康度、季节/风格分布和建议基于仍拥有且未排除的活跃单品计算。
+
+```ts
+interface WardrobeDistributionEntry<Key extends string = string> {
+  key: Key;
+  count: number;
+  ratio: number;
+}
+
+interface WardrobeHealth {
+  score: number;
+  level: "good" | "fair" | "needs-attention";
+  components: {
+    coreCompleteness: number;
+    seasonCoverage: number;
+    styleCoverage: number;
+    confirmationRate: number;
+    utilizationRate: number;
+  };
+  issues: string[];
+}
+
+interface WardrobeSuggestion {
+  id: string;
+  priority: "low" | "medium" | "high";
+  title: string;
+  detail: string;
+  evidence?: string[];
+  relatedGarmentIds?: number[];
+  relatedCategories?: GarmentCategory[];
+  relatedSeasons?: Season[];
+  relatedStyles?: string[];
+}
+
+interface WardrobeInsights {
+  totalGarments: number;
+  ownedGarments: number;
+  confirmedGarments: number;
+  pendingGarments: number;
+  categoryDistribution: Partial<Record<GarmentCategory, number>>;
+  colorDistribution: Record<string, number>;
+  seasonDistribution: Partial<Record<Season, number>>;
+  styleDistribution: Record<string, number>;
+  formalityDistribution: Partial<Record<Formality, number>>;
+  styleTendency: {
+    dominantStyles: WardrobeDistributionEntry[];
+    dominantFormalities: WardrobeDistributionEntry<Formality>[];
+  };
+  health: WardrobeHealth;
+  insightSuggestions: WardrobeSuggestion[];
+  shoppingSuggestions: WardrobeSuggestion[];
+  bodySuggestions: WardrobeSuggestion[];
+  mostWorn: WornGarmentInsight[];
+  neverWorn: WornGarmentInsight[];
+}
+```
+
 ### 本地视觉模型类型
 
 ```ts

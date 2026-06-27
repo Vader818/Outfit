@@ -138,3 +138,74 @@
 - 备注：
   - 本次未执行任何删除文件命令。
   - 未删除旧缩略图缓存，符合规格的非目标要求。
+
+## 会话：2026-06-27
+
+### 阶段 1：需求与发现
+- **状态：** complete
+- 执行的操作：
+  - 确认当前 `/goal` 已存在并处于 active 状态。
+  - 读取本地项目约束、现有计划文件、`package.json`、README、schema、后端和前端核心文件。
+  - 使用 GitHub connector 获取 `zironglv/clothy` 仓库元数据。
+  - 将 clot​​hy 只读克隆到 `C:\Users\Vader\AppData\Local\Temp\clothy-source-20260627215557`。
+  - 读取 clot​​hy 的 README、`src/core/analyzer.py`、`src/core/recommender.py`、`src/models/wardrobe.py`、`src/models/profile.py` 和 `docs/UPGRADE_PLAN.md` 相关片段。
+  - 确认本地已有 `/api/insights`、`getInsights()`、`WardrobeInsights` 和 `HistoryInsightsView`，本轮应扩展而非另起新 API。
+  - 开启 3 个只读子 Agent 复核外部功能口径、本地后端边界和本地前端边界。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+
+### 阶段 2：设计与测试顺序
+- **状态：** complete
+- 当前结论：
+  - 后端应扩展 `server/db.ts#getWardrobeInsights()`，共享类型在 `src/shared/types.ts`。
+  - 前端应扩展 `src/App.tsx#HistoryInsightsView`，样式补在 `src/styles.css`。
+  - 测试顺序应先覆盖 API 返回的新结构，再覆盖前端 API/页面渲染。
+
+### 阶段 3：后端 TDD 实现
+- **状态：** complete
+- 执行的操作：
+  - 先新增 `/api/insights` 失败测试，覆盖季节分布、风格倾向、健康度、洞察建议、购物建议和身材建议。
+  - 扩展 `WardrobeInsights` 共享类型。
+  - 扩展 `server/db.ts#getWardrobeInsights()`，保留原有字段并追加 clot​​hy 风格本地分析。
+  - 新增健康度、建议和分布 helper，基于活跃单品计算。
+- 创建/修改的文件：
+  - `src/shared/types.ts`
+  - `server/db.ts`
+  - `tests/api.test.ts`
+
+### 阶段 4：前端 TDD 实现
+- **状态：** complete
+- 执行的操作：
+  - 先扩展 `HistoryInsightsView` 渲染测试，确认页面必须展示新洞察区块。
+  - 扩展历史洞察页面，展示健康度、风格倾向、季节/场合分布、洞察建议、购物建议和身材建议。
+  - 新增健康分数和纵向建议列表样式。
+- 创建/修改的文件：
+  - `src/App.tsx`
+  - `src/styles.css`
+  - `tests/app.test.tsx`
+
+### 阶段 5：验证与文档
+- **状态：** complete
+- 执行的操作：
+  - 同步 `docs/schema.md` 的 `WardrobeInsights` 类型。
+  - 同步 `docs/api.md` 的 `GET /api/insights` 响应示例。
+  - 关闭 3 个已完成只读子 Agent。
+
+## 测试结果
+| 测试 | 输入 | 预期结果 | 实际结果 | 状态 |
+|------|------|---------|---------|------|
+| 目标 API 测试 | `npm test -- tests/api.test.ts -t "clot"` | 先失败，后通过 | 通过 | pass |
+| 目标前端测试 | `npm test -- tests/app.test.tsx -t "history insights"` | 先失败，后通过 | 通过 | pass |
+| 类型检查 | `npm run typecheck` | 通过 | 通过 | pass |
+| API 测试文件 | `npm test -- tests/api.test.ts` | 通过 | 50 个测试通过 | pass |
+| 前端测试文件 | `npm test -- tests/app.test.tsx` | 通过 | 54 个测试通过 | pass |
+| 完整 Node 测试 | `npm test` | 通过 | 15 个测试文件、194 个测试通过 | pass |
+| 构建 | `npm run build` | 通过 | Vite 构建通过 | pass |
+
+## 错误日志
+| 时间段 | 错误 | 尝试次数 | 解决方案 |
+|--------|------|---------|---------|
+| 2026-06-27 | 新建 `/goal` 失败，因线程已有 active goal | 1 | 读取并沿用当前 active goal |
+| 2026-06-27 | 一次 `Select-String` 搜索误扫 `logs/output` | 1 | 后续限定源码、测试、文档路径并避免扫描本地状态目录 |

@@ -129,6 +129,41 @@ export interface WornGarmentInsight {
   wearCount?: number;
 }
 
+export interface WardrobeDistributionEntry<Key extends string = string> {
+  key: Key;
+  count: number;
+  ratio: number;
+}
+
+export type WardrobeHealthLevel = "good" | "fair" | "needs-attention";
+
+export interface WardrobeHealth {
+  score: number;
+  level: WardrobeHealthLevel;
+  components: {
+    coreCompleteness: number;
+    seasonCoverage: number;
+    styleCoverage: number;
+    confirmationRate: number;
+    utilizationRate: number;
+  };
+  issues: string[];
+}
+
+export type WardrobeSuggestionPriority = "low" | "medium" | "high";
+
+export interface WardrobeSuggestion {
+  id: string;
+  priority: WardrobeSuggestionPriority;
+  title: string;
+  detail: string;
+  evidence?: string[];
+  relatedGarmentIds?: number[];
+  relatedCategories?: GarmentCategory[];
+  relatedSeasons?: Season[];
+  relatedStyles?: string[];
+}
+
 export interface WardrobeInsights {
   totalGarments: number;
   ownedGarments: number;
@@ -136,6 +171,17 @@ export interface WardrobeInsights {
   pendingGarments: number;
   categoryDistribution: Partial<Record<GarmentCategory, number>>;
   colorDistribution: Record<string, number>;
+  seasonDistribution: Partial<Record<Season, number>>;
+  styleDistribution: Record<string, number>;
+  formalityDistribution: Partial<Record<Formality, number>>;
+  styleTendency: {
+    dominantStyles: WardrobeDistributionEntry[];
+    dominantFormalities: WardrobeDistributionEntry<Formality>[];
+  };
+  health: WardrobeHealth;
+  insightSuggestions: WardrobeSuggestion[];
+  shoppingSuggestions: WardrobeSuggestion[];
+  bodySuggestions: WardrobeSuggestion[];
   mostWorn: WornGarmentInsight[];
   neverWorn: WornGarmentInsight[];
 }

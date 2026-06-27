@@ -1181,7 +1181,7 @@ describe("App", () => {
   });
 
   it("renders history insights metrics and export control", () => {
-    const insights: WardrobeInsights = {
+    const insights = {
       totalGarments: 4,
       ownedGarments: 4,
       confirmedGarments: 2,
@@ -1189,8 +1189,51 @@ describe("App", () => {
       categoryDistribution: { top: 1, bottom: 1, shoes: 1, outerwear: 1 },
       colorDistribution: { white: 1, blue: 1 },
       mostWorn: [{ id: 101, name: "白衬衫", wearCount: 2 }],
-      neverWorn: [{ id: 202, name: "黑长裤", category: "bottom" }]
-    };
+      neverWorn: [{ id: 202, name: "黑长裤", category: "bottom" }],
+      seasonDistribution: { spring: 3, summer: 2, autumn: 2, winter: 1 },
+      styleDistribution: { casual: 3, "smart-casual": 2 },
+      formalityDistribution: { casual: 2, "smart-casual": 2 },
+      styleTendency: {
+        dominantStyles: [{ key: "casual", count: 3, ratio: 75 }],
+        dominantFormalities: [{ key: "smart-casual", count: 2, ratio: 50 }]
+      },
+      health: {
+        score: 64,
+        level: "needs-attention",
+        components: {
+          coreCompleteness: 60,
+          seasonCoverage: 50,
+          styleCoverage: 70,
+          confirmationRate: 50,
+          utilizationRate: 25
+        },
+        issues: ["外套不足，换季层次会受限。"]
+      },
+      insightSuggestions: [
+        {
+          id: "top-heavy",
+          priority: "medium",
+          title: "上装占比偏高",
+          detail: "上装超过衣橱 40%，后续购买可优先考虑下装或鞋履。"
+        }
+      ],
+      shoppingSuggestions: [
+        {
+          id: "add-outerwear",
+          priority: "high",
+          title: "补充一件经典外套",
+          detail: "外套数量不足，换季搭配会受限。"
+        }
+      ],
+      bodySuggestions: [
+        {
+          id: "slim-tall-layer",
+          priority: "low",
+          title: "瘦高体型适合增加层次",
+          detail: "当前个人画像为瘦高，挺括外套或层次搭配会更平衡。"
+        }
+      ]
+    } as WardrobeInsights;
 
     const markup = renderToStaticMarkup(
       <HistoryInsightsView
@@ -1206,6 +1249,15 @@ describe("App", () => {
     expect(markup).toContain("历史洞察");
     expect(markup).toContain("常穿单品");
     expect(markup).toContain("近期未穿");
+    expect(markup).toContain("衣橱健康度");
+    expect(markup).toContain("季节分布");
+    expect(markup).toContain("风格倾向");
+    expect(markup).toContain("洞察建议");
+    expect(markup).toContain("购物建议");
+    expect(markup).toContain("身材建议");
+    expect(markup).toContain("上装占比偏高");
+    expect(markup).toContain("补充一件经典外套");
+    expect(markup).toContain("瘦高体型适合增加层次");
     expect(markup).toContain("白衬衫");
     expect(markup).toContain("导出备份");
     expect(markup).toContain('class="panel card"');

@@ -76,3 +76,67 @@
 - 新增前端 API 方法、衣服行动作按钮和 `ThumbnailPicker` 弹窗。
 - 候选弹窗展示后端返回的候选，不在前端复制安全过滤规则；候选图加载失败显示占位。
 - 验证通过：`npm run typecheck`、`npm test`、`npm run build`。
+
+## 2026-06-27 衣橱分析洞察
+
+### 需求
+- 用户希望把 GitHub 项目 `zironglv/clothy` 的“衣橱分析洞察”功能迁移到本地 Outfit 项目。
+- 必须先理解本地项目和 clot​​hy 项目，再在本地完成实现。
+- 本轮全程中文；优先 PowerShell 原生命令；PowerShell 使用 UTF-8；删除电脑文件前必须确保用户知晓。
+
+### clot​​hy 研究发现
+- `zironglv/clothy` 是 public 仓库，默认分支 `main`，已只读克隆到 `C:\Users\Vader\AppData\Local\Temp\clothy-source-20260627215557`。
+- clot​​hy 是 Python/OpenClaw Skill，不是 Web 应用；功能主要通过自然语言命令输出文本报告。
+- `src/core/analyzer.py` 的 `WardrobeAnalyzer.generate_report()` 生成衣橱诊断报告，包含基础数据、类别分布、衣橱健康度、颜色分析和搭配建议。
+- `src/core/analyzer.py` 的健康度规则包含：上衣少于 30%、下装少于 20%、鞋子少于 3、外套少于 2、缺少核心单品时无法组成完整搭配。
+- `src/core/analyzer.py` 的颜色规则关注基础色（黑、白、灰、米、卡其）比例：少于 40% 建议补基础款，高于 80% 建议加入彩色单品。
+- `src/core/recommender.py` 有 `analyze_wardrobe_coverage()`，按外套、上衣、下装、鞋子、配饰统计覆盖度，并按缺失/不足/基本/充足给出补充建议。
+- `docs/UPGRADE_PLAN.md` 的 `StyleAnalyzer` 设计包含：品类分布、颜色分布、季节分布、风格标签、身材建议、洞察建议和购物建议。
+- README/SKILL 对外描述的“衣橱分析洞察”包含配置分析（颜色分布、季节占比、风格偏向）、购物指南（缺什么、多什么）和理性消费（避免重复购买）。
+
+### 本地项目研究发现
+- 本地 Outfit 是 React + Vite + TypeScript 前端，Express + Node `node:sqlite` 后端。
+- 本地已经存在 `/api/insights`、`getInsights()`、`WardrobeInsights` 和 `HistoryInsightsView`。
+- 当前 `WardrobeInsights` 只包含总数、拥有/确认/待确认数量、品类分布、颜色分布、常穿、未穿。
+- 当前 `getWardrobeInsights()` 位于 `server/db.ts`，通过 `listGarments()` 和 `listWearLogs()` 计算基础洞察。
+- 本地 `Garment` 已有 `category`、`color`、`seasons`、`styles`、`formality`、`materials`、`patterns`、`tags`、`owned`、`confirmed`、`excluded`、`confidence` 等字段，可支撑 clot​​hy 的大部分本地分析。
+- 本地已有 `PersonalProfile` 和 `getPersonalProfile()`，可支撑身材/肤色/偏好建议。
+
+### 技术决策
+| 决策 | 理由 |
+|------|------|
+| 复用并扩展 `/api/insights` | 已有 API 客户端和历史洞察页面接入 |
+| 结构化返回而不是文本报告 | 本地是 Web UI，需要稳定字段渲染和测试 |
+| 保留现有字段并追加新字段 | 保持兼容，降低回归风险 |
+| 后端负责分析规则 | 数据在 SQLite，避免前端重复实现业务规则 |
+| 不迁移 clot​​hy 的多人衣橱和命令路由 | 与本地当前产品边界不一致 |
+
+### 需要实现的洞察维度
+- 季节分布：按 `Garment.seasons` 统计 spring/summer/autumn/winter。
+- 风格倾向：按 `Garment.styles`、`tags`、`patterns`、`materials` 和名称关键词统计。
+- 衣橱健康度：输出分数、状态和问题列表。
+- 洞察建议：多/少、季节不足、颜色结构、确认率、未穿率等。
+- 购物建议：优先补核心缺口，再补季节和风格缺口。
+- 身材建议：结合 `PersonalProfile.bodyType`、`heightCm`、`skinTone`、`colorDisposition`。
+
+### 实现结果
+- 扩展 `src/shared/types.ts`：新增 `WardrobeDistributionEntry`、`WardrobeHealth`、`WardrobeSuggestion`，并在 `WardrobeInsights` 上追加季节分布、风格分布、场合分布、风格倾向、健康度和三类建议。
+- 扩展 `server/db.ts#getWardrobeInsights()`：保留原有总数、品类/颜色分布、常穿/未穿字段；新增基于活跃单品的季节/风格/场合统计、健康评分、洞察建议、购物建议和身材建议。
+- 扩展 `src/App.tsx#HistoryInsightsView`：展示衣橱健康度、风格倾向、季节/场合分布、洞察建议、购物建议和身材建议。
+- 扩展 `src/styles.css`：新增健康度块和纵向建议列表样式，避免长建议文本挤入 chip。
+- 同步 `docs/schema.md` 和 `docs/api.md` 的 `WardrobeInsights` / `/api/insights` 文档。
+- 新增 API 集成测试和前端渲染测试，覆盖 clot​​hy 风格分析字段与页面展示。
+
+### 验证结果
+- `npm test -- tests/api.test.ts -t "clot"`：通过。
+- `npm test -- tests/app.test.tsx -t "history insights"`：通过。
+- `npm run typecheck`：通过。
+- `npm test -- tests/api.test.ts`：50 个测试通过。
+- `npm test -- tests/app.test.tsx`：54 个测试通过。
+- `npm test`：15 个测试文件、194 个测试通过。
+- `npm run build`：通过。
+
+### 风险
+- 本地颜色是英文枚举，clothy 的中文基础色规则需要映射。
+- 本地品类有 `dress` 和 `outerwear`，clothy 使用 `outer`；规则需要适配。
+- `src/App.tsx` 较大，前端修改应集中在 `HistoryInsightsView` 附近，避免无关重构。
