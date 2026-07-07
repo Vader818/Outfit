@@ -5,6 +5,7 @@ data/*.sqlite
 data/*.sqlite-*
 logs/
 output/
+.superpowers/
 __pycache__/
 *.pyc
 .DS_Store
