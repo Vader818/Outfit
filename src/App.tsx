@@ -60,7 +60,7 @@ import {
   type ImportSummary
 } from "./api";
 import { getTaobaoBookmarklet } from "./bookmarklet/taobaoBookmarklet";
-import { ActionCluster, CommandBar, PageHeader, SettingsSection, StatTile, StatusPill, WorkbenchPanel } from "./components/workbench";
+import { ActionCluster, CommandBar, PageHeader, SettingsSection, StatTile, StatusPill, SummaryStrip, WorkbenchPanel } from "./components/workbench";
 import type { AuthStatus, AuthUser, CaptureEngine, CaptureJob, Garment, OutfitExport, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailCandidate, VisionModelId, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 type Tab = "import" | "wardrobe" | "recommend" | "history" | "settings";
@@ -1034,7 +1034,7 @@ export function ImportView(props: {
         <span className="import-step"><b>检查</b><small>读取 JSON 并预览候选</small></span>
         <span className="import-step"><b>导入</b><small>确认后写入本地衣橱</small></span>
       </div>
-      <WorkbenchPanel className="selenium-panel capture-step">
+      <WorkbenchPanel className="selenium-panel capture-step" level="strong">
         <div className="panel-heading">
           <StatusPill tone="info">采集</StatusPill>
           <label>浏览器采集</label>
@@ -1088,7 +1088,7 @@ export function ImportView(props: {
         ) : null}
       </WorkbenchPanel>
       <div className="grid two">
-        <WorkbenchPanel className="bookmarklet-step">
+        <WorkbenchPanel className="bookmarklet-step" level="quiet">
           <div className="panel-heading">
             <StatusPill tone="neutral">采集</StatusPill>
             <label>书签脚本</label>
@@ -1223,7 +1223,7 @@ export function WardrobeView(props: {
         </ActionCluster>
       </PageHeader>
       {props.thumbnailRefreshMessage ? <p className="inline-feedback">{props.thumbnailRefreshMessage}</p> : null}
-      <div className="filter-bar">
+      <div className="filter-bar quiet-filter-bar">
         <input
           className="input input-bordered input-sm"
           value={filters.query}
@@ -1236,7 +1236,7 @@ export function WardrobeView(props: {
         <Select value={filters.season} options={SEASON_FILTER_OPTIONS} onChange={(value) => updateFilter("season", value as WardrobeFilters["season"])} />
         <Select value={filters.owned} options={OWNED_FILTER_OPTIONS} onChange={(value) => updateFilter("owned", value as WardrobeOwnedFilter)} />
       </div>
-      <div className="batch-strip">
+      <SummaryStrip className="batch-strip selection-strip">
         <span>{filteredGarments.length} 件当前结果，已选 {props.selectedIds.length} 件</span>
         <div className="actions">
           <button className="secondary btn btn-soft" disabled={!filteredIds.length} onClick={() => props.onSelect(filteredIds)}>
@@ -1252,12 +1252,12 @@ export function WardrobeView(props: {
             {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
           </button>
         </div>
-      </div>
+      </SummaryStrip>
       {props.garments.length ? (
         filteredGarments.length ? (
           <div className="wardrobe-list">
             {filteredGarments.map((item) => (
-          <article className={item.excluded ? "garment-row muted" : "garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
+          <article className={item.excluded ? "garment-row quiet-garment-row muted" : "garment-row quiet-garment-row"} key={item.id} title={garmentMeta(item).rawName || undefined}>
             <div className="garment-row-main">
               <input
                 className="checkbox checkbox-sm"
@@ -1278,7 +1278,7 @@ export function WardrobeView(props: {
                 />
               </div>
             </div>
-            <div className="garment-editor">
+            <div className="garment-editor garment-attribute-grid">
               <div className="field-grid">
                 <Select value={item.category} options={CATEGORY_OPTIONS} onChange={(value) => props.onUpdate(item.id, { category: value as Garment["category"] })} />
                 <Select value={item.color} options={withCurrentOption(COLOR_OPTIONS, item.color)} onChange={(value) => props.onUpdate(item.id, { color: value })} />
@@ -1303,7 +1303,7 @@ export function WardrobeView(props: {
               </div>
               {VisionSuggestion({ item, onApply: (update) => props.onUpdate(item.id, update) })}
             </div>
-            <div className="garment-actions-row">
+            <div className="garment-actions-row compact-action-grid">
               {props.onOpenThumbnailPicker ? (
                 <button className="status btn btn-sm" onClick={() => props.onOpenThumbnailPicker?.(item)}>
                   <ImageIcon size={16} />
@@ -1370,15 +1370,20 @@ export function RecommendationView(props: {
   const availableCount = props.availableGarmentCount ?? 0;
   const activeOccasion = OCCASION_LABELS[props.occasion as (typeof OCCASIONS)[number]] ?? props.occasion;
   return (
-    <section className="view">
-      <PageHeader title="今日推荐" description="默认工作台首页，按天气、场合和本地衣橱生成今日搭配。">
+    <section className="view recommendation-view">
+      <PageHeader
+        className="recommendation-hero"
+        variant="hero"
+        title="今日推荐"
+        description="按天气、场合和本地衣橱生成今日搭配。"
+      >
         <div className="header-stat-grid">
           <StatTile label="坐标" value={`${props.latitude}, ${props.longitude}`} />
           <StatTile label="可用衣物" value={`${availableCount} 件`} />
           <StatTile label="当前场合" value={<StatusPill tone="info">{activeOccasion}</StatusPill>} />
         </div>
       </PageHeader>
-      <CommandBar className="recommendation-command">
+      <CommandBar className="recommendation-command decision-command">
         <div className="toolbar segmented-control" aria-label="场合">
           {OCCASIONS.map((value) => (
             <button className={props.occasion === value ? "chip btn btn-sm active" : "chip btn btn-sm"} key={value} onClick={() => props.onOccasion(value)}>
@@ -1398,7 +1403,7 @@ export function RecommendationView(props: {
         </ActionCluster>
       </CommandBar>
       {props.weather ? (
-        <div className="weather-band context-band">
+        <div className="weather-band context-band compact-context">
           <CloudSun size={24} />
           <strong>{props.weather.summary}</strong>
           <span>{props.weather.apparentTemperature}°C 体感</span>
@@ -1407,9 +1412,9 @@ export function RecommendationView(props: {
         </div>
       ) : null}
       {props.recommendations?.outfits.length ? (
-        <div className="outfit-grid">
+        <div className="outfit-grid decision-grid">
           {props.recommendations.outfits.map((outfit) => (
-          <article className="outfit" key={outfit.id}>
+          <article className="outfit decision-card" key={outfit.id}>
             <div className="outfit-card-head">
               <StatusPill tone="good">搭配 {outfit.items.length} 件</StatusPill>
               <div className="score">匹配度 {outfit.matchPercent ?? Math.round(Math.min(100, outfit.score))}%</div>
@@ -1491,7 +1496,7 @@ export function SettingsView(props: {
       <PageHeader title="设置" description="SQLite: data/outfit.sqlite">
         <StatusPill tone="neutral">本地工作台</StatusPill>
       </PageHeader>
-      <WorkbenchPanel className="settings-panel">
+      <WorkbenchPanel className="settings-panel" level="quiet">
         <div className="settings-grid">
           <SettingsSection>
         <div className="section-title-row">
@@ -1640,7 +1645,7 @@ export function HistoryInsightsView(props: {
 }) {
   const insights = props.insights;
   return (
-    <section className="view">
+    <section className="view history-view">
       <PageHeader title="历史洞察" description={insights ? `${insights.totalGarments} 件衣物，${props.wearLogs.length} 条穿着记录。` : "本地穿着记录和推荐历史。"}>
         <ActionCluster>
           <button className="secondary btn btn-soft" disabled={props.busyAction === "history"} onClick={props.onRefresh}>
@@ -1655,7 +1660,7 @@ export function HistoryInsightsView(props: {
       </PageHeader>
       {insights ? (
         <>
-          <div className="metric-strip">
+          <div className="metric-strip insight-summary-strip">
             <Metric label="衣物总数" value={insights.totalGarments} />
             <Metric label="可穿" value={insights.ownedGarments} />
             <Metric label="已确认" value={insights.confirmedGarments} />
@@ -1663,7 +1668,7 @@ export function HistoryInsightsView(props: {
             <Metric label="健康度" value={insights.health.score} />
           </div>
           <div className="grid two">
-            <div className="panel card insight-health-panel">
+            <div className="panel card insight-health-panel diagnostic-panel">
               <label>衣橱健康度</label>
               <div className={`health-score ${insights.health.level}`}>
                 <strong>{insights.health.score}</strong>
