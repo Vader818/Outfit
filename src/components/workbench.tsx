@@ -12,15 +12,17 @@ export function PageHeader({
   title,
   description,
   children,
+  variant = "default",
   className
 }: {
   title: ReactNode;
   description?: ReactNode;
   children?: ReactNode;
+  variant?: "default" | "hero";
   className?: string;
 }) {
   return (
-    <header className={cx("page-header", className)}>
+    <header className={cx("page-header", variant === "hero" && "page-header-hero", className)}>
       <div className="page-header-copy">
         <h1>{title}</h1>
         {description ? <p>{description}</p> : null}
@@ -66,8 +68,24 @@ export function StatusPill({
   return <span className={cx("status-pill", `status-pill-${tone}`, className)}>{children}</span>;
 }
 
-export function WorkbenchPanel({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("panel workbench-panel", className)}>{children}</div>;
+export function WorkbenchPanel({
+  children,
+  level = "default",
+  className
+}: {
+  children: ReactNode;
+  level?: "default" | "quiet" | "strong";
+  className?: string;
+}) {
+  return <div className={cx("panel workbench-panel", `workbench-panel-${level}`, className)}>{children}</div>;
+}
+
+export function SurfaceSection({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cx("surface-section", className)}>{children}</section>;
+}
+
+export function SummaryStrip({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cx("summary-strip", className)}>{children}</div>;
 }
 
 export function SettingsSection({ children, className }: { children: ReactNode; className?: string }) {
