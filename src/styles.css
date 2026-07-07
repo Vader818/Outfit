@@ -1146,11 +1146,11 @@ select:focus {
 
 .garment-actions-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(6rem, 1fr));
+  grid-template-columns: repeat(3, minmax(7.25rem, 1fr));
   gap: 8px;
   min-width: 0;
-  width: min(100%, 360px);
-  max-width: 360px;
+  width: min(100%, 420px);
+  max-width: 420px;
   align-self: stretch;
   align-content: start;
   justify-self: end;
@@ -1179,7 +1179,7 @@ select:focus {
   width: 100%;
   min-width: 0;
   min-height: 42px;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .garment-actions-row > .icon-button {
@@ -1748,15 +1748,28 @@ li + li {
   }
 
   .workspace {
-    height: calc(100dvh - 92px);
+    height: calc(100dvh - 128px);
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 18px 18px 28px;
-    scroll-padding-bottom: 24px;
+    padding: 18px 18px 32px;
+    scroll-padding-bottom: 120px;
   }
 
   .view-header {
     display: grid;
+  }
+
+  .page-header {
+    grid-template-columns: 1fr;
+  }
+
+  .page-header-aside {
+    justify-content: stretch;
+    min-width: 0;
+  }
+
+  .header-stat-grid {
+    min-width: 0;
   }
 
   .grid.two,

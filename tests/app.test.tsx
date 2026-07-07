@@ -1637,9 +1637,11 @@ describe("App", () => {
     const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
     expect(cssRule(styles, ".garment-actions-row")).toMatch(/display:\s*grid;/);
-    expect(cssRule(styles, ".garment-actions-row")).toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(6rem,\s*1fr\)\);/);
+    expect(cssRule(styles, ".garment-actions-row")).toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(7\.25rem,\s*1fr\)\);/);
+    expect(cssRule(styles, ".garment-actions-row")).toMatch(/max-width:\s*420px;/);
     expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/width:\s*100%;/);
     expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/min-width:\s*0;/);
+    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/white-space:\s*nowrap;/);
     expect(cssRule(styles, '.garment-actions-row > .icon-button[title="删除"]')).toMatch(/grid-column:\s*3;/);
     expect(styles).toMatch(/@media\s+\(max-width:\s*560px\)[\s\S]*\.garment-actions-row\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   });
