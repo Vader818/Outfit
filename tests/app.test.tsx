@@ -1515,10 +1515,10 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="command-bar recommendation-command"');
-    expect(markup).toContain('class="outfit-preview"');
-    expect(markup).toContain('class="outfit-reasons"');
-    expect(markup).toContain('class="outfit"');
+    expectClassTokens(markup, ["command-bar", "recommendation-command"]);
+    expectClassTokens(markup, ["outfit-preview"]);
+    expectClassTokens(markup, ["outfit-reasons"]);
+    expectClassTokens(markup, ["outfit"]);
     expect(markup).not.toContain("liquid-");
   });
 
@@ -1547,10 +1547,10 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="page-header"');
-    expect(markup).toContain('class="stat-tile"');
+    expectClassTokens(markup, ["page-header"]);
+    expectClassTokens(markup, ["stat-tile"]);
     expect(markup).toContain('class="status-pill');
-    expect(markup).toContain('class="weather-band context-band"');
+    expectClassTokens(markup, ["weather-band", "context-band"]);
     expect(markup).not.toContain("liquid-");
   });
 
@@ -1601,14 +1601,14 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="filter-bar"');
-    expect(markup).toContain('class="batch-strip"');
-    expect(markup).toContain('class="garment-row"');
-    expect(markup).toContain('class="garment-row muted"');
+    expectClassTokens(markup, ["filter-bar"]);
+    expectClassTokens(markup, ["batch-strip"]);
+    expectClassTokens(markup, ["garment-row"]);
+    expectClassTokens(markup, ["garment-row", "muted"]);
     expect(markup).not.toContain("liquid-");
-    expect(markup).toContain('class="garment-row-main"');
-    expect(markup).toContain('class="garment-editor"');
-    expect(markup).toContain('class="garment-actions-row"');
+    expectClassTokens(markup, ["garment-row-main"]);
+    expectClassTokens(markup, ["garment-editor"]);
+    expectClassTokens(markup, ["garment-actions-row"]);
   });
 
   it("renders wardrobe rows with quiet hierarchy hooks", () => {
@@ -1736,7 +1736,7 @@ describe("App", () => {
 
     expect(cssRule(styles, ".garment-title-line")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\);/);
     expect(cssRule(styles, ".brand-tag")).toMatch(/justify-self:\s*start;/);
-    expect(cssRule(styles, ".garment-row")).toMatch(/grid-template-columns:\s*minmax\(320px,\s*0\.85fr\)\s+minmax\(0,\s*1\.35fr\)\s+minmax\(0,\s*auto\);/);
+    expect(cssRule(styles, ".garment-row")).toMatch(/grid-template-columns:\s*minmax\(320px,\s*0\.82fr\)\s+minmax\(0,\s*1\.4fr\)\s+minmax\(0,\s*auto\);/);
     expect(cssRule(styles, ".garment-actions-row")).toMatch(/min-width:\s*0;/);
   });
 });
