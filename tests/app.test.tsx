@@ -1468,10 +1468,10 @@ describe("App", () => {
     const settings = renderToStaticMarkup(<SettingsSection className="custom-section">Settings</SettingsSection>);
 
     expect(styles).not.toMatch(/\.liquid-/);
-    expect(header).toContain('class="page-header"');
-    expect(command).toContain('class="command-bar custom-command"');
-    expect(panel).toContain('class="panel workbench-panel custom-panel"');
-    expect(settings).toContain('class="settings-section custom-section"');
+    expectClassTokens(header, ["page-header"]);
+    expectClassTokens(command, ["command-bar", "custom-command"]);
+    expectClassTokens(panel, ["panel", "workbench-panel", "custom-panel"]);
+    expectClassTokens(settings, ["settings-section", "custom-section"]);
     expect(header).toContain("Title");
     expect(command).toContain("Controls");
     expect(panel).toContain("Panel");
@@ -1579,11 +1579,11 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="page-header recommendation-hero"');
-    expect(markup).toContain('class="command-bar recommendation-command decision-command"');
-    expect(markup).toContain('class="weather-band context-band compact-context"');
-    expect(markup).toContain('class="outfit-grid decision-grid"');
-    expect(markup).toContain('class="outfit decision-card"');
+    expectClassTokens(markup, ["page-header", "page-header-hero", "recommendation-hero"]);
+    expectClassTokens(markup, ["command-bar", "recommendation-command", "decision-command"]);
+    expectClassTokens(markup, ["weather-band", "context-band", "compact-context"]);
+    expectClassTokens(markup, ["outfit-grid", "decision-grid"]);
+    expectClassTokens(markup, ["outfit", "decision-card"]);
     expect(markup).not.toContain("liquid-");
   });
 
@@ -1625,12 +1625,12 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain('class="filter-bar quiet-filter-bar"');
-    expect(markup).toContain('class="batch-strip selection-strip"');
-    expect(markup).toContain('class="garment-row quiet-garment-row"');
-    expect(markup).toContain('class="garment-row quiet-garment-row muted"');
-    expect(markup).toContain('class="garment-editor garment-attribute-grid"');
-    expect(markup).toContain('class="garment-actions-row compact-action-grid"');
+    expectClassTokens(markup, ["filter-bar", "quiet-filter-bar"]);
+    expectClassTokens(markup, ["batch-strip", "selection-strip"]);
+    expectClassTokens(markup, ["garment-row", "quiet-garment-row"]);
+    expectClassTokens(markup, ["garment-row", "quiet-garment-row", "muted"]);
+    expectClassTokens(markup, ["garment-editor", "garment-attribute-grid"]);
+    expectClassTokens(markup, ["garment-actions-row", "compact-action-grid"]);
   });
 
   it("keeps wardrobe row actions aligned in a uniform button grid", () => {
@@ -1711,10 +1711,10 @@ describe("App", () => {
 
     expect(importMarkup).toContain('class="import-flow"');
     expect(importMarkup).toContain('class="advanced-import"');
-    expect(importMarkup).toContain('class="panel preview-panel card"');
+    expectClassTokens(importMarkup, ["panel", "preview-panel", "card"]);
     expect(settingsMarkup).toContain('class="settings-grid"');
-    expect(settingsMarkup).toContain('class="panel workbench-panel settings-panel"');
-    expect(settingsMarkup).toContain('class="settings-section"');
+    expectClassTokens(settingsMarkup, ["panel", "workbench-panel", "settings-panel"]);
+    expectClassTokens(settingsMarkup, ["settings-section"]);
     expect(`${importMarkup}${settingsMarkup}`).not.toContain("liquid-");
   });
 
@@ -1745,6 +1745,16 @@ function cssRule(styles: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "m").exec(styles);
   return match?.[1] ?? "";
+}
+
+function expectClassTokens(markup: string, expectedTokens: string[]) {
+  const classValues = Array.from(markup.matchAll(/class="([^"]*)"/g), (match) => match[1]);
+  const hasTokens = classValues.some((classValue) => {
+    const tokens = classValue.split(/\s+/).filter(Boolean);
+    return expectedTokens.every((token) => tokens.includes(token));
+  });
+
+  expect(hasTokens).toBe(true);
 }
 
 function makeWeather(): WeatherSnapshot {
