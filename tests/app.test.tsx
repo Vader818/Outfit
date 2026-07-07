@@ -1448,12 +1448,16 @@ describe("App", () => {
     expect(markup).not.toContain("<feSpecularLighting");
   });
 
-  it("keeps ordinary background styling without liquid material tokens", () => {
+  it("keeps quiet workbench styling without liquid material tokens", () => {
     const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
     expect(cssRule(styles, ":root")).not.toMatch(/--liquid-/);
-    expect(cssRule(styles, "body")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.16\)/);
-    expect(cssRule(styles, ".auth-shell")).toMatch(/linear-gradient\(120deg,\s*rgba\(14,\s*165,\s*164,\s*0\.18\)/);
+    expect(cssRule(styles, ":root")).toMatch(/--app-primary:\s*#0f766e;/);
+    expect(cssRule(styles, ":root")).toMatch(/--app-canvas:\s*#eef3f1;/);
+    expect(cssRule(styles, "body")).toMatch(/background:\s*var\(--app-canvas\);/);
+    expect(cssRule(styles, "body")).not.toMatch(/244,\s*114,\s*182/);
+    expect(cssRule(styles, "body")).not.toMatch(/255,\s*247,\s*237/);
+    expect(cssRule(styles, ".auth-shell")).toMatch(/background:\s*var\(--app-canvas\);/);
   });
 
   it("keeps reusable workbench surfaces on ordinary classes", () => {
@@ -1550,6 +1554,39 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
   });
 
+  it("renders recommendation as a decision panel with context and outfit surfaces", () => {
+    const weather = makeWeather();
+    const recommendations: RecommendationResult = {
+      weather,
+      occasion: "casual",
+      outfits: [makeOutfit()]
+    };
+
+    const markup = renderToStaticMarkup(
+      <RecommendationView
+        weather={weather}
+        recommendations={recommendations}
+        occasion="casual"
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="page-header recommendation-hero"');
+    expect(markup).toContain('class="command-bar recommendation-command decision-command"');
+    expect(markup).toContain('class="weather-band context-band compact-context"');
+    expect(markup).toContain('class="outfit-grid decision-grid"');
+    expect(markup).toContain('class="outfit decision-card"');
+    expect(markup).not.toContain("liquid-");
+  });
+
   it("renders wardrobe bulk state and row editing inside stable workbench regions", () => {
     const markup = renderToStaticMarkup(
       <WardrobeView
@@ -1572,6 +1609,28 @@ describe("App", () => {
     expect(markup).toContain('class="garment-row-main"');
     expect(markup).toContain('class="garment-editor"');
     expect(markup).toContain('class="garment-actions-row"');
+  });
+
+  it("renders wardrobe rows with quiet hierarchy hooks", () => {
+    const markup = renderToStaticMarkup(
+      <WardrobeView
+        garments={[makeGarment(1, "white shirt", "top"), makeGarment(2, "black pants", "bottom", { excluded: true })]}
+        selectedIds={[1]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onBulkConfirm={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="filter-bar quiet-filter-bar"');
+    expect(markup).toContain('class="batch-strip selection-strip"');
+    expect(markup).toContain('class="garment-row quiet-garment-row"');
+    expect(markup).toContain('class="garment-row quiet-garment-row muted"');
+    expect(markup).toContain('class="garment-editor garment-attribute-grid"');
+    expect(markup).toContain('class="garment-actions-row compact-action-grid"');
   });
 
   it("keeps wardrobe row actions aligned in a uniform button grid", () => {
@@ -1659,13 +1718,16 @@ describe("App", () => {
     expect(`${importMarkup}${settingsMarkup}`).not.toContain("liquid-");
   });
 
-  it("defines expanded workbench tokens and dense layout utilities", () => {
+  it("defines quiet workbench tokens and dense layout utilities", () => {
     const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
     expect(cssRule(styles, ":root")).toMatch(/--app-surface-solid:\s*#ffffff;/);
+    expect(cssRule(styles, ":root")).toMatch(/--app-surface-muted:\s*#f7faf9;/);
     expect(cssRule(styles, ":root")).toMatch(/--space-3:\s*12px;/);
     expect(cssRule(styles, ".command-bar")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
     expect(cssRule(styles, ".batch-strip")).toMatch(/position:\s*sticky;/);
+    expect(cssRule(styles, ".quiet-garment-row")).toMatch(/box-shadow:\s*none;/);
+    expect(cssRule(styles, ".decision-card")).toMatch(/box-shadow:\s*var\(--app-shadow\);/);
     expect(cssRule(styles, ".vision-model-table")).toMatch(/display:\s*grid;/);
   });
 
