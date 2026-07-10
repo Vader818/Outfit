@@ -1,0 +1,380 @@
+.recommendation-intro .page-intro__meta > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.85rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: var(--radius-pill);
+  color: var(--color-muted);
+  background: var(--color-surface-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.recommendation-layout {
+  align-items: start;
+}
+
+.decision-panel {
+  padding: clamp(1.25rem, 2.8vw, 2rem);
+  background: var(--color-surface);
+}
+
+.decision-panel__heading h2,
+.recommendation-alternatives h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 1.2rem;
+  letter-spacing: -0.025em;
+}
+
+.decision-panel__heading p {
+  margin: 0.4rem 0 0;
+  color: var(--color-muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.weather-context {
+  display: grid;
+  gap: var(--space-4);
+  padding-block: var(--space-5);
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.weather-context__lead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.weather-context__lead > svg {
+  width: 1.6rem;
+  height: 1.6rem;
+  color: var(--color-accent);
+}
+
+.weather-context__lead span,
+.weather-context__lead strong {
+  display: block;
+}
+
+.weather-context__lead span {
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.weather-context__lead strong {
+  margin-top: 0.15rem;
+  color: var(--color-ink);
+  font-size: 1.05rem;
+}
+
+.weather-context > p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.weather-context__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.weather-context__facts > div {
+  min-width: 0;
+}
+
+.weather-context__facts dt {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.weather-context__facts dd {
+  margin: 0.2rem 0 0;
+  color: var(--color-ink);
+  font-size: 0.88rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.occasion-picker {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.occasion-picker legend {
+  padding: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+  font-weight: 680;
+}
+
+.occasion-picker__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.occasion-picker__options .ui-button {
+  width: 100%;
+}
+
+.decision-panel__actions > .ui-button {
+  flex: 1 1 8rem;
+}
+
+.recommendation-empty-stage {
+  display: grid;
+  min-height: min(58dvh, 34rem);
+  align-items: center;
+  padding: clamp(1rem, 3vw, 2rem);
+  background: var(--color-surface);
+}
+
+.recommendation-empty-stage .ui-empty {
+  border: 0;
+  background: transparent;
+}
+
+.outfit-stage {
+  position: relative;
+  padding: clamp(1.1rem, 2.6vw, 2rem);
+  overflow: hidden;
+}
+
+.outfit-stage--featured {
+  border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-line));
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.outfit-stage--compact {
+  padding: 1rem;
+  background: var(--color-surface);
+}
+
+.outfit-stage__label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--color-accent-strong);
+  font-size: 0.74rem;
+  font-weight: 740;
+}
+
+.outfit-stage__header h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: clamp(1.25rem, 2.4vw, 2rem);
+  letter-spacing: -0.04em;
+}
+
+.outfit-stage__match {
+  display: grid;
+  justify-items: end;
+  min-width: 4.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.outfit-stage__match strong {
+  color: var(--color-accent-strong);
+  font-size: clamp(1.35rem, 2.5vw, 2rem);
+  line-height: 1;
+}
+
+.outfit-stage__match span {
+  margin-top: 0.25rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.outfit-piece {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.outfit-piece .garment-image {
+  border: 1px solid var(--color-line);
+}
+
+.outfit-piece figcaption {
+  min-width: 0;
+}
+
+.outfit-piece figcaption span,
+.outfit-piece figcaption strong {
+  display: block;
+}
+
+.outfit-piece figcaption span {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.outfit-piece figcaption strong {
+  margin-top: 0.18rem;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outfit-stage__explanation {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-line);
+}
+
+.outfit-stage__reasons,
+.outfit-stage__more ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--color-ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.outfit-stage__no-reason {
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.outfit-stage__more {
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.outfit-stage__more > summary {
+  color: var(--color-accent-strong);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.outfit-stage__more[open] > summary {
+  margin-bottom: var(--space-3);
+}
+
+.outfit-stage__alternatives {
+  margin-top: var(--space-4);
+}
+
+.outfit-stage__alternatives h3,
+.outfit-stage__alternatives p {
+  margin: 0;
+}
+
+.outfit-stage__alternatives h3 {
+  font-size: 0.9rem;
+}
+
+.outfit-stage__alternatives p {
+  margin-top: 0.25rem;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.outfit-stage__alternatives ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.outfit-stage__alternatives li {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.outfit-stage__alternatives .garment-image {
+  width: 3rem;
+}
+
+.outfit-stage__alternatives small,
+.outfit-stage__alternatives strong {
+  display: block;
+}
+
+.outfit-stage__alternatives small {
+  color: var(--color-muted);
+}
+
+.outfit-stage__alternatives strong {
+  margin-top: 0.15rem;
+  color: var(--color-ink);
+  font-size: 0.8rem;
+}
+
+.outfit-stage__footer {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.outfit-stage__feedback {
+  flex: 1 1 12rem;
+  min-height: 2.65rem;
+  padding-block: 0.5rem;
+}
+
+.recommendation-alternatives {
+  display: grid;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+}
+
+@media (max-width: 1023px) {
+  .recommendation-controls {
+    position: static;
+  }
+}
+
+@media (max-width: 640px) {
+  .recommendation-intro .page-intro__meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recommendation-intro .page-intro__meta > span:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .occasion-picker__options {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .outfit-stage__garments {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .outfit-stage__garments .outfit-piece:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .outfit-stage__garments .outfit-piece:last-child:nth-child(odd) .garment-image {
+    aspect-ratio: 4 / 3;
+  }
+}

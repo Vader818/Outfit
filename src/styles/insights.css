@@ -1,0 +1,393 @@
+.insight-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  padding-block: var(--space-4);
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.insight-facts > div {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0 var(--space-5);
+  border-right: 1px solid var(--color-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.insight-facts > div:first-child {
+  padding-left: 0;
+}
+
+.insight-facts > div:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.insight-facts dt {
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.insight-facts dd {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: clamp(1.4rem, 3vw, 2.25rem);
+  font-weight: 730;
+}
+
+.health-focus,
+.utilization-focus,
+.shopping-focus {
+  padding: clamp(1.1rem, 3vw, 1.8rem);
+}
+
+.health-focus {
+  display: grid;
+  gap: var(--space-5);
+  border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-line));
+  box-shadow: var(--shadow-soft);
+}
+
+.health-focus__header,
+.utilization-focus > header,
+.shopping-focus > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.health-focus__header span {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.health-focus h2,
+.utilization-focus h2,
+.shopping-focus h2,
+.insight-section h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  letter-spacing: -0.025em;
+}
+
+.health-focus__score {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.health-focus__score strong {
+  color: var(--color-accent-strong);
+  font-size: clamp(3.5rem, 9vw, 7rem);
+  font-weight: 740;
+  line-height: 0.86;
+  letter-spacing: -0.07em;
+}
+
+.health-focus__score span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.health-focus__issues {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.health-focus__issues h3 {
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: 0.82rem;
+}
+
+.health-focus__issues ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding-left: 1.1rem;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.health-focus__clear {
+  margin: 0;
+  color: var(--color-success);
+}
+
+.utilization-focus,
+.shopping-focus {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.utilization-focus > header,
+.shopping-focus > header {
+  justify-content: flex-start;
+}
+
+.utilization-focus > header svg,
+.shopping-focus > header svg {
+  color: var(--color-accent);
+}
+
+.utilization-focus > strong {
+  color: var(--color-ink);
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.utilization-focus > p,
+.shopping-focus p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.shopping-focus > div {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.shopping-focus > div > strong {
+  color: var(--color-ink);
+  font-size: 1rem;
+}
+
+.insight-section {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: clamp(1rem, 2.6vw, 1.6rem) 0 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.distribution-grid .insight-section,
+.suggestion-sections .insight-section {
+  padding: clamp(1rem, 2.4vw, 1.4rem);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface);
+}
+
+.distribution-bars,
+.insight-suggestion-list,
+.garment-insight-list,
+.dominant-style-list,
+.recommendation-history > ol {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.distribution-bar {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.distribution-bar__heading,
+.distribution-bar__measure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.distribution-bar__heading span,
+.distribution-bar__heading strong,
+.distribution-bar__measure small {
+  font-size: 0.76rem;
+}
+
+.distribution-bar__heading span {
+  color: var(--color-ink-soft);
+}
+
+.distribution-bar__heading strong,
+.distribution-bar__measure small {
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.distribution-bar__meter,
+.utilization-focus meter {
+  width: 100%;
+  height: 0.5rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  overflow: hidden;
+}
+
+.distribution-bar__meter::-webkit-meter-bar,
+.utilization-focus meter::-webkit-meter-bar {
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+}
+
+.distribution-bar__meter::-webkit-meter-optimum-value,
+.utilization-focus meter::-webkit-meter-optimum-value {
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.distribution-bar__meter::-moz-meter-bar,
+.utilization-focus meter::-moz-meter-bar {
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.distribution-bar__measure small {
+  width: 2.5rem;
+  text-align: right;
+}
+
+.distribution-bars__empty {
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.dominant-style-list {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+}
+
+.dominant-style-list li {
+  display: grid;
+  gap: 0.2rem;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.dominant-style-list strong {
+  color: var(--color-ink);
+  font-size: 0.84rem;
+}
+
+.dominant-style-list span {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.garment-insight-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  min-height: 2.5rem;
+}
+
+.garment-insight-list__rank {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  color: var(--color-accent-strong);
+  background: var(--color-surface-accent);
+  font-size: 0.7rem;
+  font-weight: 720;
+}
+
+.garment-insight-list strong {
+  color: var(--color-ink-soft);
+  font-size: 0.82rem;
+}
+
+.garment-insight-list small {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.insight-suggestion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.insight-suggestion__copy strong,
+.insight-suggestion__copy p {
+  display: block;
+  margin: 0;
+}
+
+.insight-suggestion__copy strong {
+  color: var(--color-ink);
+  font-size: 0.84rem;
+}
+
+.insight-suggestion__copy p {
+  margin-top: 0.3rem;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.insight-suggestion__evidence {
+  margin: var(--space-2) 0 0;
+  padding-left: 1rem;
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.recommendation-history > ol li {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: var(--space-4);
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.recommendation-history > ol li:last-child {
+  border-bottom: 0;
+}
+
+.recommendation-history time {
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.recommendation-history span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.history-insights-empty {
+  padding: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .insight-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .insight-facts > div {
+    padding: var(--space-3);
+    border-right: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .insight-facts > div:nth-child(odd) {
+    border-right: 1px solid var(--color-line);
+  }
+
+  .insight-facts > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .health-focus__score strong {
+    font-size: 4rem;
+  }
+}

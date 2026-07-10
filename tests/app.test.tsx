@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
-import { CommandBar, PageHeader, SettingsSection, WorkbenchPanel } from "../src/components/workbench";
+import { Button, Field, PageIntro, Surface } from "../src/components/ui";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 afterEach(() => {
@@ -40,7 +40,7 @@ describe("App", () => {
     expect(() => renderToStaticMarkup(<MainApp />)).not.toThrow();
   });
 
-  it("renders the loading auth card without liquid glass classes", () => {
+  it("renders a private local loading panel without liquid glass classes", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,
       setItem: vi.fn()
@@ -48,7 +48,10 @@ describe("App", () => {
 
     const markup = renderToStaticMarkup(<App />);
 
-    expect(markup).toContain('class="auth-card loading"');
+    expectClassTokens(markup, ["auth-panel", "auth-panel--loading"]);
+    expect(markup).toContain("正在打开你的衣橱");
+    expect(markup).toContain("保存在本机");
+    expect(markup).toContain('aria-hidden="true"');
     expect(markup).not.toContain("liquid-");
   });
 
@@ -80,6 +83,10 @@ describe("App", () => {
     expect(markup).toContain("用户名");
     expect(markup).toContain("密码");
     expect(markup).toContain("创建并进入");
+    expect(markup).toContain('for="auth-username"');
+    expect(markup).toContain('id="auth-username"');
+    expect(markup).toContain('for="auth-password"');
+    expect(markup).toContain('id="auth-password"');
     expect(markup).not.toContain("邮箱");
   });
 
@@ -96,6 +103,7 @@ describe("App", () => {
     expect(markup).toContain("登录 Outfit");
     expect(markup).toContain("进入衣橱");
     expect(markup).toContain("用户名或密码错误");
+    expect(markup).toContain('role="alert"');
   });
 
   it("wires the sidebar logout control", () => {
@@ -109,7 +117,7 @@ describe("App", () => {
     expect(onLogout).toHaveBeenCalled();
   });
 
-  it("renders a compact mobile logout control outside the hidden session card", () => {
+  it("renders a compact mobile header, logout control, and visible navigation labels", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,
       setItem: vi.fn()
@@ -119,9 +127,15 @@ describe("App", () => {
       <MainApp user={{ id: 1, username: "local_user" }} onLogout={vi.fn()} />
     );
 
-    expect(markup).toContain("has-mobile-logout");
-    expect(markup).toContain("mobile-logout");
+    expectClassTokens(markup, ["mobile-header"]);
+    expectClassTokens(markup, ["mobile-nav"]);
     expect(markup).toContain('aria-label="退出"');
+    expect(markup).toContain('aria-label="移动导航"');
+    expect(markup).toContain('class="app-nav__label">今日推荐</span>');
+    expect(markup).toContain('class="app-nav__label">衣服库</span>');
+    expect(markup).toContain('class="app-nav__label">历史洞察</span>');
+    expect(markup).toContain('class="app-nav__label">导入</span>');
+    expect(markup).toContain('class="app-nav__label">设置</span>');
   });
 
   it("renders a control for reading Selenium capture artifacts into the import JSON box", () => {
@@ -270,7 +284,7 @@ describe("App", () => {
     });
   });
 
-  it("wires the recommendation card wear button to the selected outfit", async () => {
+  it("renders the recommendation wear action and passes the selected outfit callback", async () => {
     const weather = makeWeather();
     const outfit = makeOutfit();
     const recommendations: RecommendationResult = {
@@ -314,11 +328,15 @@ describe("App", () => {
       onRecordWearLog
     });
 
-    const wearButtons = findButtonsByText(tree, "标记已穿");
-    expect(wearButtons).toHaveLength(1);
+    const markup = renderToStaticMarkup(<>{tree}</>);
+    const stages = findElementsByComponentName(tree, "OutfitStage");
 
-    wearButtons[0].props.onClick();
+    expect(markup).toContain("标记已穿");
+    expect(stages).toHaveLength(1);
+    expect(stages[0].props.outfit).toBe(outfit);
+    expect(stages[0].props.onRecordWearLog).toBe(onRecordWearLog);
 
+    stages[0].props.onRecordWearLog(stages[0].props.outfit);
     expect(onRecordWearLog).toHaveBeenCalledWith(outfit);
   });
 
@@ -364,7 +382,9 @@ describe("App", () => {
       onRecordWearLog: vi.fn()
     });
 
-    expect(renderToStaticMarkup(<>{tree}</>)).toContain("已标记已穿");
+    const markup = renderToStaticMarkup(<>{tree}</>);
+    expect(markup).toContain("已标记已穿");
+    expect(markup).toContain('role="status"');
   });
 
   it("renders wardrobe labels, color names, and season chips in Chinese without visible enum text", async () => {
@@ -584,9 +604,16 @@ describe("App", () => {
     expect(markup).toContain("smart-casual");
     expect(markup).toContain("cotton");
 
-    findButtonsByText(tree, "去背景")[0].props.onClick();
-    findButtonsByText(tree, "分析图片")[0].props.onClick();
-    findButtonsByText(tree, "应用建议")[0].props.onClick();
+    const garmentItem = findElementsByComponentName(tree, "GarmentItem")[0];
+    const garmentTree = renderFunctionElement(garmentItem);
+    const garmentEditor = findElementsByComponentName(garmentTree, "GarmentEditor")[0];
+    const editorTree = renderFunctionElement(garmentEditor);
+    const visionSuggestion = findElementsByComponentName(editorTree, "VisionSuggestion")[0];
+    const suggestionTree = renderFunctionElement(visionSuggestion);
+
+    findButtonsByText(garmentTree, "去背景")[0].props.onClick();
+    findButtonsByText(garmentTree, "分析图片")[0].props.onClick();
+    findButtonsByText(suggestionTree, "应用建议")[0].props.onClick();
 
     expect(onCutoutGarment).toHaveBeenCalledWith(405);
     expect(onAnalyzeGarmentVision).toHaveBeenCalledWith(405);
@@ -639,10 +666,13 @@ describe("App", () => {
       onAnalyzeGarmentVision: vi.fn()
     });
 
-    const appliedButtons = findButtonsByText(tree, "已应用");
-    expect(appliedButtons).toHaveLength(1);
-
     const markup = renderToStaticMarkup(<>{tree}</>);
+    const garmentTree = renderFunctionElement(findElementsByComponentName(tree, "GarmentItem")[0]);
+    const editorTree = renderFunctionElement(findElementsByComponentName(garmentTree, "GarmentEditor")[0]);
+    const suggestionTree = renderFunctionElement(findElementsByComponentName(editorTree, "VisionSuggestion")[0]);
+    const appliedButtons = findButtonsByText(suggestionTree, "已应用");
+
+    expect(appliedButtons).toHaveLength(1);
     expect(markup).toContain("已应用");
     expect(markup).not.toContain("应用建议");
 
@@ -681,7 +711,8 @@ describe("App", () => {
     });
 
     expect(renderToStaticMarkup(<>{tree}</>)).toContain("选择缩略图");
-    findButtonsByText(tree, "选择缩略图")[0].props.onClick();
+    const garmentTree = renderFunctionElement(findElementsByComponentName(tree, "GarmentItem")[0]);
+    findButtonsByText(garmentTree, "选择缩略图")[0].props.onClick();
     expect(onOpenThumbnailPicker).toHaveBeenCalledWith(expect.objectContaining({ id: 407 }));
   });
 
@@ -723,9 +754,13 @@ describe("App", () => {
     expect(markup).toContain("当前图");
     expect(markup).toContain("详情图");
     expect(markup).toContain("保存失败");
-    expect(markup).toContain('class="thumbnail-picker"');
+    expect(markup).toContain("<dialog");
+    expectClassTokens(markup, ["ui-dialog", "thumbnail-dialog"]);
+    expect(markup).toContain('aria-labelledby="thumbnail-dialog-title-408"');
+    expect(markup).toContain('role="alert"');
     expect(markup).not.toContain("liquid-");
-    expect(markup).toContain("thumbnail-candidate selected");
+    expectClassTokens(markup, ["thumbnail-candidate", "thumbnail-candidate--selected"]);
+    expect(markup).toContain('aria-pressed="true"');
     findButtonsByText(tree, "详情图")[0].props.onClick();
     findButtonsByText(tree, "保存为主图")[0].props.onClick();
     findButtonsByText(tree, "关闭")[0].props.onClick();
@@ -734,12 +769,12 @@ describe("App", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("styles the thumbnail picker modal and responsive candidate grid", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("styles the native thumbnail dialog and responsive candidate grid", () => {
+    const styles = readAppStyles();
 
-    expect(cssRule(styles, ".thumbnail-picker-backdrop")).toMatch(/position:\s*fixed;/);
-    expect(cssRule(styles, ".thumbnail-candidate-grid")).toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(140px,\s*1fr\)\);/);
-    expect(styles).toMatch(/@media\s+\(max-width:\s*560px\)[\s\S]*\.thumbnail-candidate-grid\s*{[\s\S]*grid-template-columns:\s*1fr;/);
+    expect(cssRule(styles, ".ui-dialog")).toMatch(/max-height:\s*min\(48rem,\s*calc\(100dvh\s*-\s*2rem\)\);/);
+    expect(cssRule(styles, ".thumbnail-dialog__skeletons")).toMatch(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(9rem,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*520px\)[\s\S]*\.thumbnail-dialog__candidates\s*{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
   });
 
   it("renders empty states for wardrobe and recommendation views", async () => {
@@ -798,8 +833,10 @@ describe("App", () => {
       onRecordWearLog: vi.fn()
     })}</>);
 
-    expect(wardrobeMarkup).toContain("还没有衣服");
+    expect(wardrobeMarkup).toContain("衣橱还是空的");
+    expectClassTokens(wardrobeMarkup, ["ui-empty"]);
     expect(recommendationMarkup).toContain("还没有推荐");
+    expectClassTokens(recommendationMarkup, ["recommendation-empty-stage"]);
   });
 
   it("renders personal profile controls in settings", () => {
@@ -1260,7 +1297,12 @@ describe("App", () => {
     expect(markup).toContain("瘦高体型适合增加层次");
     expect(markup).toContain("白衬衫");
     expect(markup).toContain("导出备份");
-    expect(markup).toContain('class="panel card"');
+    expectClassTokens(markup, ["history-insights-view", "view-shell"]);
+    expectClassTokens(markup, ["insights-content"]);
+    expectClassTokens(markup, ["health-focus"]);
+    expectClassTokens(markup, ["insight-section"]);
+    expect(markup).toContain('<meter min="0" max="100" value="25"');
+    expect(markup).toContain('aria-label="衣橱利用率 25%"');
     expect(markup).not.toContain("liquid-");
   });
 
@@ -1293,12 +1335,13 @@ describe("App", () => {
       onBulkConfirm: vi.fn()
     });
 
-    findButtonsByTitle(tree, "删除")[0].props.onClick();
+    const garmentTree = renderFunctionElement(findElementsByComponentName(tree, "GarmentItem")[0]);
+    findButtonsByText(garmentTree, "删除")[0].props.onClick();
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("短款针织衫"));
     expect(onDelete).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    findButtonsByTitle(tree, "删除")[0].props.onClick();
+    findButtonsByText(garmentTree, "删除")[0].props.onClick();
     expect(onDelete).toHaveBeenCalledWith(303);
   });
 
@@ -1395,42 +1438,40 @@ describe("App", () => {
     expect(markup).toContain("灰色夹克");
   });
 
-  it("keeps recommendation score badges from stretching when an outfit expands", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("keeps recommendation layout and match scores anchored to the top", () => {
+    const styles = readAppStyles();
 
-    expect(cssRule(styles, ".outfit-grid")).toMatch(/align-items:\s*start;/);
-    expect(cssRule(styles, ".outfit")).toMatch(/align-content:\s*start;/);
-    expect(cssRule(styles, ".score")).toMatch(/align-self:\s*start;/);
+    expect(cssRule(styles, ".recommendation-layout")).toMatch(/align-items:\s*start;/);
+    expect(cssRule(styles, ".outfit-stage")).toMatch(/overflow:\s*hidden;/);
+    expect(cssRule(styles, ".outfit-stage__match")).toMatch(/display:\s*grid;/);
+    expect(cssRule(styles, ".outfit-stage__match")).toMatch(/min-width:\s*4\.8rem;/);
   });
 
-  it("uses resilient layout utilities for filters and long imported text", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("uses resilient semantic layouts for wardrobe filters and technical paths", () => {
+    const styles = readAppStyles();
 
-    expect(cssRule(styles, ".filter-bar")).toMatch(/repeat\(auto-fit,\s*minmax\(min\(100%,\s*12rem\),\s*1fr\)\)/);
-    expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/overflow-wrap:\s*anywhere;/);
-    expect(cssRule(styles, ".text-wrap-anywhere")).toMatch(/word-break:\s*break-word;/);
+    expect(cssRule(styles, ".wardrobe-filter-panel__fields")).toMatch(/grid-template-columns:\s*minmax\(14rem,\s*1\.5fr\)\s*repeat\(5,\s*minmax\(7\.5rem,\s*0\.7fr\)\);/);
+    expect(cssRule(styles, ".technical-details dd")).toMatch(/overflow-wrap:\s*anywhere;/);
+    expect(cssRule(styles, ".ui-stat > strong")).toMatch(/overflow-wrap:\s*anywhere;/);
   });
 
-  it("removes liquid glass CSS, SVG hooks, and component module", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-    const workbench = readFileSync(new URL("../src/components/workbench.tsx", import.meta.url), "utf8");
+  it("removes liquid glass, backdrop filters, and legacy SVG filter hooks", () => {
+    const styles = readAppStyles();
+    const app = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
     const liquidDefsPath = new URL("../src/components/LiquidGlassDefs.tsx", import.meta.url);
 
     expect(styles).not.toMatch(/--glass-/);
     expect(styles).not.toMatch(/\.(glass-surface|glass-control|glass-sticky|glass-modal)\b/);
     expect(app).not.toMatch(/glass-(surface|control|sticky|modal)/);
-    expect(workbench).not.toMatch(/glass-(surface|control|sticky|modal)/);
     expect(styles).not.toMatch(/--liquid-/);
     expect(styles).not.toMatch(/\.liquid-/);
     expect(styles).not.toMatch(/liquid-glass-displacement/);
     expect(styles).not.toMatch(/backdrop-filter/);
     expect(app).not.toMatch(/LiquidGlassDefs|liquid-/);
-    expect(workbench).not.toMatch(/liquid-/);
     expect(existsSync(liquidDefsPath)).toBe(false);
-    expect(styles).toMatch(/@media\s+\(prefers-reduced-motion:\s*reduce\)[\s\S]*transform:\s*none;/);
-    expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*nav\s*{[\s\S]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
-    expect(styles).toMatch(/@media\s+\(max-width:\s*920px\)[\s\S]*\.nav-button\s*{[\s\S]*min-height:\s*54px;/);
+    expect(styles).toMatch(/@media\s+\(prefers-reduced-motion:\s*reduce\)[\s\S]*animation-duration:\s*1ms\s*!important;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*980px\)[\s\S]*\.mobile-nav\s*{[\s\S]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*980px\)[\s\S]*\.mobile-nav \.app-nav__item\s*{[\s\S]*min-height:\s*3\.35rem;/);
   });
 
   it("renders the app root without SVG liquid glass filter definitions", () => {
@@ -1448,34 +1489,36 @@ describe("App", () => {
     expect(markup).not.toContain("<feSpecularLighting");
   });
 
-  it("keeps quiet workbench styling without liquid material tokens", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("defines coordinated light and dark tokens without liquid materials", () => {
+    const styles = readAppStyles();
 
     expect(cssRule(styles, ":root")).not.toMatch(/--liquid-/);
-    expect(cssRule(styles, ":root")).toMatch(/--app-primary:\s*#0f766e;/);
-    expect(cssRule(styles, ":root")).toMatch(/--app-canvas:\s*#eef3f1;/);
-    expect(cssRule(styles, "body")).toMatch(/background:\s*var\(--app-canvas\);/);
-    expect(cssRule(styles, "body")).not.toMatch(/244,\s*114,\s*182/);
-    expect(cssRule(styles, "body")).not.toMatch(/255,\s*247,\s*237/);
-    expect(cssRule(styles, ".auth-shell")).toMatch(/background:\s*var\(--app-canvas\);/);
+    expect(cssRule(styles, ":root")).toMatch(/--color-accent:\s*#0f766e;/);
+    expect(cssRule(styles, ":root")).toMatch(/--color-canvas:\s*#f3f5f4;/);
+    expect(cssRule(styles, "body")).toMatch(/background:\s*var\(--color-canvas\);/);
+    expect(styles).toMatch(/@media\s+\(prefers-color-scheme:\s*dark\)[\s\S]*color-scheme:\s*dark;/);
+    expect(styles).toMatch(/@media\s+\(prefers-color-scheme:\s*dark\)[\s\S]*--color-canvas:\s*#101513;/);
+    expect(styles).toMatch(/@media\s+\(prefers-color-scheme:\s*dark\)[\s\S]*--color-accent:\s*#4cc6b7;/);
   });
 
-  it("keeps reusable workbench surfaces on ordinary classes", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-    const header = renderToStaticMarkup(<PageHeader title="Title" description="Description"><button>Action</button></PageHeader>);
-    const command = renderToStaticMarkup(<CommandBar className="custom-command"><span>Controls</span></CommandBar>);
-    const panel = renderToStaticMarkup(<WorkbenchPanel className="custom-panel">Panel</WorkbenchPanel>);
-    const settings = renderToStaticMarkup(<SettingsSection className="custom-section">Settings</SettingsSection>);
+  it("keeps reusable UI primitives semantic and avoids a fixed inner workspace", () => {
+    const styles = readAppStyles();
+    const header = renderToStaticMarkup(<PageIntro title="Title" description="Description" actions={<Button>Action</Button>} />);
+    const field = renderToStaticMarkup(<Field id="example-field" label="Example" value="Value" readOnly />);
+    const surface = renderToStaticMarkup(<Surface className="custom-surface">Panel</Surface>);
 
     expect(styles).not.toMatch(/\.liquid-/);
-    expectClassTokens(header, ["page-header"]);
-    expectClassTokens(command, ["command-bar", "custom-command"]);
-    expectClassTokens(panel, ["panel", "workbench-panel", "custom-panel"]);
-    expectClassTokens(settings, ["settings-section", "custom-section"]);
+    expectClassTokens(header, ["page-intro"]);
+    expectClassTokens(header, ["ui-button"]);
+    expectClassTokens(field, ["ui-field"]);
+    expectClassTokens(surface, ["ui-surface", "custom-surface"]);
     expect(header).toContain("Title");
-    expect(command).toContain("Controls");
-    expect(panel).toContain("Panel");
-    expect(settings).toContain("Settings");
+    expect(field).toContain('for="example-field"');
+    expect(field).toContain('id="example-field"');
+    expect(surface).toContain("Panel");
+    expect(cssRule(styles, ".app-layout")).toMatch(/min-height:\s*100dvh;/);
+    expect(cssRule(styles, ".app-main")).not.toMatch(/(?:min-)?height:\s*100(?:d?vh|%);/);
+    expect(cssRule(styles, ".app-page")).not.toMatch(/(?:min-)?height:\s*100(?:d?vh|%);/);
   });
 
   it("fetches the service worker shell from network before falling back to cache", () => {
@@ -1487,10 +1530,11 @@ describe("App", () => {
     expect(cacheIndex).toBeGreaterThanOrEqual(0);
     expect(fetchIndex).toBeLessThan(cacheIndex);
     expect(serviceWorker).toMatch(/cache\.put\(event\.request,\s*response\.clone\(\)\)/);
+    expect(serviceWorker).toMatch(/event\.request\.mode\s*===\s*"navigate"/);
     expect(serviceWorker).toMatch(/caches\.match\("\/index\.html"\)/);
   });
 
-  it("renders recommendation controls as a dense command bar with visual outfit previews", () => {
+  it("renders recommendation controls beside a visual outfit stage", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
       weather,
@@ -1515,14 +1559,17 @@ describe("App", () => {
       />
     );
 
-    expectClassTokens(markup, ["command-bar", "recommendation-command"]);
-    expectClassTokens(markup, ["outfit-preview"]);
-    expectClassTokens(markup, ["outfit-reasons"]);
-    expectClassTokens(markup, ["outfit"]);
+    expectClassTokens(markup, ["recommendation-layout"]);
+    expectClassTokens(markup, ["recommendation-controls"]);
+    expectClassTokens(markup, ["decision-panel"]);
+    expectClassTokens(markup, ["outfit-stage", "outfit-stage--featured"]);
+    expectClassTokens(markup, ["outfit-stage__garments"]);
+    expect(markup).toContain("今天先穿这一套");
+    expect(markup).toContain("标记已穿");
     expect(markup).not.toContain("liquid-");
   });
 
-  it("renders recommendation workbench header stats and weather context", () => {
+  it("renders recommendation page intro metadata and weather context", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
       weather,
@@ -1547,14 +1594,17 @@ describe("App", () => {
       />
     );
 
-    expectClassTokens(markup, ["page-header"]);
-    expectClassTokens(markup, ["stat-tile"]);
-    expect(markup).toContain('class="status-pill');
-    expectClassTokens(markup, ["weather-band", "context-band"]);
+    expectClassTokens(markup, ["page-intro", "recommendation-intro"]);
+    expectClassTokens(markup, ["page-intro__meta"]);
+    expectClassTokens(markup, ["weather-context", "weather-context--ready"]);
+    expectClassTokens(markup, ["weather-context__facts"]);
+    expect(markup).toContain("当前场合 休闲");
+    expect(markup).toContain("天气 晴");
+    expect(markup).toContain("体感");
     expect(markup).not.toContain("liquid-");
   });
 
-  it("renders recommendation as a decision panel with context and outfit surfaces", () => {
+  it("renders recommendation as an accessible decision and result layout", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
       weather,
@@ -1579,15 +1629,81 @@ describe("App", () => {
       />
     );
 
-    expectClassTokens(markup, ["page-header", "page-header-hero", "recommendation-hero"]);
-    expectClassTokens(markup, ["command-bar", "recommendation-command", "decision-command"]);
-    expectClassTokens(markup, ["weather-band", "context-band", "compact-context"]);
-    expectClassTokens(markup, ["outfit-grid", "decision-grid"]);
-    expectClassTokens(markup, ["outfit", "decision-card"]);
+    expectClassTokens(markup, ["recommendation-view", "view-shell"]);
+    expect(markup).toContain('aria-labelledby="recommendation-title"');
+    expect(markup).toContain('aria-labelledby="decision-context-title"');
+    expectClassTokens(markup, ["recommendation-layout"]);
+    expectClassTokens(markup, ["recommendation-stage"]);
+    expectClassTokens(markup, ["outfit-stage", "outfit-stage--featured"]);
+    expect(markup).toContain('aria-label="匹配度 91%"');
     expect(markup).not.toContain("liquid-");
   });
 
-  it("renders wardrobe bulk state and row editing inside stable workbench regions", () => {
+  it("renders recommendation empty states with one contextual next action", () => {
+    const importMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={0}
+        occasion="casual"
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />
+    );
+    const settingsMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={3}
+        occasion="casual"
+        latitude="invalid"
+        longitude="invalid"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />
+    );
+    const generateMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={3}
+        occasion="casual"
+        latitude="39.9042"
+        longitude="116.4074"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+      />
+    );
+
+    expectClassTokens(importMarkup, ["recommendation-empty-stage"]);
+    expectClassTokens(importMarkup, ["ui-empty"]);
+    expect(importMarkup).toContain("先导入衣物");
+    expect(importMarkup).not.toContain("设置位置");
+    expect(settingsMarkup).toContain("设置位置");
+    expect(generateMarkup).toContain("生成今日搭配");
+  });
+
+  it("renders wardrobe filters, selection state, and garment editing regions", () => {
     const markup = renderToStaticMarkup(
       <WardrobeView
         garments={[makeGarment(1, "white shirt", "top"), makeGarment(2, "black pants", "bottom", { excluded: true })]}
@@ -1601,20 +1717,21 @@ describe("App", () => {
       />
     );
 
-    expectClassTokens(markup, ["filter-bar"]);
-    expectClassTokens(markup, ["batch-strip"]);
-    expectClassTokens(markup, ["garment-row"]);
-    expectClassTokens(markup, ["garment-row", "muted"]);
+    expectClassTokens(markup, ["wardrobe-page"]);
+    expectClassTokens(markup, ["wardrobe-filter-panel"]);
+    expectClassTokens(markup, ["wardrobe-batch-bar"]);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--selected"]);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--excluded"]);
     expect(markup).not.toContain("liquid-");
-    expectClassTokens(markup, ["garment-row-main"]);
-    expectClassTokens(markup, ["garment-editor"]);
-    expectClassTokens(markup, ["garment-actions-row"]);
+    expectClassTokens(markup, ["garment-editor-panel"]);
+    expectClassTokens(markup, ["garment-library-item__primary-actions"]);
+    expectClassTokens(markup, ["garment-library-item__tools"]);
   });
 
-  it("renders wardrobe rows with quiet hierarchy hooks", () => {
+  it("separates pending review items from the wardrobe gallery", () => {
     const markup = renderToStaticMarkup(
       <WardrobeView
-        garments={[makeGarment(1, "white shirt", "top"), makeGarment(2, "black pants", "bottom", { excluded: true })]}
+        garments={[makeGarment(1, "white shirt", "top", { confirmed: false }), makeGarment(2, "black pants", "bottom", { excluded: true })]}
         selectedIds={[1]}
         busy={false}
         onRefresh={vi.fn()}
@@ -1625,28 +1742,59 @@ describe("App", () => {
       />
     );
 
-    expectClassTokens(markup, ["filter-bar", "quiet-filter-bar"]);
-    expectClassTokens(markup, ["batch-strip", "selection-strip"]);
-    expectClassTokens(markup, ["garment-row", "quiet-garment-row"]);
-    expectClassTokens(markup, ["garment-row", "quiet-garment-row", "muted"]);
-    expectClassTokens(markup, ["garment-editor", "garment-attribute-grid"]);
-    expectClassTokens(markup, ["garment-actions-row", "compact-action-grid"]);
+    expectClassTokens(markup, ["wardrobe-review-list"]);
+    expectClassTokens(markup, ["wardrobe-gallery"]);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--review"]);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--card", "garment-library-item--excluded"]);
+    expect(markup).toContain("等待确认");
+    expect(markup).toContain("日常衣橱");
   });
 
-  it("keeps wardrobe row actions aligned in a uniform button grid", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("renders wardrobe garments as scan-first cards with an edit drawer", () => {
+    const markup = renderToStaticMarkup(
+      <WardrobeView
+        garments={[
+          makeGarment(1, "white shirt", "top", { brand: "COS", wearCount: 3 }),
+          makeGarment(2, "black pants", "bottom", { confirmed: false })
+        ]}
+        selectedIds={[1]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onBulkConfirm={vi.fn()}
+      />
+    );
 
-    expect(cssRule(styles, ".garment-actions-row")).toMatch(/display:\s*grid;/);
-    expect(cssRule(styles, ".garment-actions-row")).toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(7\.25rem,\s*1fr\)\);/);
-    expect(cssRule(styles, ".garment-actions-row")).toMatch(/max-width:\s*420px;/);
-    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/width:\s*100%;/);
-    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/min-width:\s*0;/);
-    expect(cssRule(styles, ".garment-actions-row > .btn")).toMatch(/white-space:\s*nowrap;/);
-    expect(cssRule(styles, '.garment-actions-row > .icon-button[title="删除"]')).toMatch(/grid-column:\s*3;/);
-    expect(styles).toMatch(/@media\s+\(max-width:\s*560px\)[\s\S]*\.garment-actions-row\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--card"]);
+    expectClassTokens(markup, ["garment-library-item", "garment-library-item--review"]);
+    expectClassTokens(markup, ["garment-library-item__attributes"]);
+    expectClassTokens(markup, ["garment-library-item__details"]);
+    expect(markup).toContain('aria-label="选择 white shirt"');
+    expect(markup).toContain("已穿 3 次");
+    expect(markup).toContain("编辑与图片工具");
   });
 
-  it("renders import and settings pages with workbench grouping hooks", () => {
+  it("keeps wardrobe actions flexible across cards and review rows", () => {
+    const styles = readAppStyles();
+
+    expect(cssRule(styles, ".garment-library-item__tools")).toMatch(/display:\s*flex;/);
+    expect(cssRule(styles, ".garment-library-item__tools")).toMatch(/flex-wrap:\s*wrap;/);
+    expect(cssRule(styles, ".garment-library-item--review .garment-library-item__content")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*520px\)[\s\S]*\.garment-library-item__tools \.ui-button,[\s\S]*flex:\s*1\s+1\s+calc\(50%\s*-\s*var\(--space-2\)\);/);
+  });
+
+  it("collapses wardrobe filters and review items cleanly on mobile", () => {
+    const styles = readAppStyles();
+
+    expect(styles).toMatch(/@media\s+\(max-width:\s*760px\)[\s\S]*\.wardrobe-filter-panel__fields\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*760px\)[\s\S]*\.garment-library-item--review \.garment-library-item__content\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*520px\)[\s\S]*\.wardrobe-filter-panel__fields\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*520px\)[\s\S]*\.garment-editor-panel__grid\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+  });
+
+  it("renders import and settings pages with semantic sections and associated labels", () => {
     const importPreview: TaobaoImportPreview = {
       batchId: "preview-1",
       summary: {
@@ -1711,35 +1859,56 @@ describe("App", () => {
       />
     );
 
-    expect(importMarkup).toContain('class="import-flow"');
-    expect(importMarkup).toContain('class="advanced-import"');
-    expectClassTokens(importMarkup, ["panel", "preview-panel", "card"]);
-    expect(settingsMarkup).toContain('class="settings-grid"');
-    expectClassTokens(settingsMarkup, ["panel", "workbench-panel", "settings-panel"]);
+    expectClassTokens(importMarkup, ["view", "import-view"]);
+    expectClassTokens(importMarkup, ["page-intro"]);
+    expectClassTokens(importMarkup, ["capture-choice-grid"]);
+    expectClassTokens(importMarkup, ["capture-choice", "capture-choice--orders"]);
+    expectClassTokens(importMarkup, ["capture-choice", "capture-choice--item"]);
+    expectClassTokens(importMarkup, ["advanced-import"]);
+    expectClassTokens(importMarkup, ["preview-panel"]);
+    expect(importMarkup).toContain('for="capture-item-url"');
+    expect(importMarkup).toContain('id="capture-item-url"');
+    expect(importMarkup).toContain('for="import-json"');
+    expect(importMarkup).toContain('id="import-json"');
+    expectClassTokens(settingsMarkup, ["view", "settings-view"]);
+    expectClassTokens(settingsMarkup, ["settings-form"]);
     expectClassTokens(settingsMarkup, ["settings-section"]);
+    expectClassTokens(settingsMarkup, ["location-settings"]);
+    expectClassTokens(settingsMarkup, ["profile-settings"]);
+    expectClassTokens(settingsMarkup, ["vision-settings"]);
+    expect(settingsMarkup).toContain('for="settings-latitude"');
+    expect(settingsMarkup).toContain('id="settings-latitude"');
+    expect(settingsMarkup).toContain('for="profile-height"');
+    expect(settingsMarkup).toContain('id="profile-height"');
+    expect(settingsMarkup).toContain('for="vision-enabled"');
+    expect(settingsMarkup).toContain('id="vision-enabled"');
     expect(`${importMarkup}${settingsMarkup}`).not.toContain("liquid-");
   });
 
-  it("defines quiet workbench tokens and dense layout utilities", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("defines the new UI, garment, recommendation, and insight layout vocabulary", () => {
+    const styles = readAppStyles();
 
-    expect(cssRule(styles, ":root")).toMatch(/--app-surface-solid:\s*#ffffff;/);
-    expect(cssRule(styles, ":root")).toMatch(/--app-surface-muted:\s*#f7faf9;/);
-    expect(cssRule(styles, ":root")).toMatch(/--space-3:\s*12px;/);
-    expect(cssRule(styles, ".command-bar")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
-    expect(cssRule(styles, ".batch-strip")).toMatch(/position:\s*sticky;/);
-    expect(cssRule(styles, ".quiet-garment-row")).toMatch(/box-shadow:\s*none;/);
-    expect(cssRule(styles, ".decision-card")).toMatch(/box-shadow:\s*var\(--app-shadow\);/);
-    expect(cssRule(styles, ".vision-model-table")).toMatch(/display:\s*grid;/);
+    expect(cssRule(styles, ":root")).toMatch(/--color-surface-raised:\s*#ffffff;/);
+    expect(cssRule(styles, ":root")).toMatch(/--color-surface-muted:\s*#edf1ef;/);
+    expect(cssRule(styles, ":root")).toMatch(/--space-3:\s*0\.75rem;/);
+    expect(cssRule(styles, ".ui-button")).toMatch(/display:\s*inline-flex;/);
+    expect(cssRule(styles, ".page-intro")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s*auto;/);
+    expect(cssRule(styles, ".wardrobe-batch-bar")).toMatch(/position:\s*sticky;/);
+    expect(cssRule(styles, ".garment-library-item")).toMatch(/min-width:\s*0;/);
+    expect(cssRule(styles, ".recommendation-layout")).toMatch(/align-items:\s*start;/);
+    expect(cssRule(styles, ".insight-section")).toMatch(/border-top:\s*1px solid var\(--color-line\);/);
+    expect(cssRule(styles, ".vision-models")).toMatch(/display:\s*grid;/);
   });
 
-  it("keeps wardrobe title editing from collapsing beside long brand tags", () => {
-    const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  it("keeps garment identity and actions resilient beside long brand names", () => {
+    const styles = readAppStyles();
 
-    expect(cssRule(styles, ".garment-title-line")).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-    expect(cssRule(styles, ".brand-tag")).toMatch(/justify-self:\s*start;/);
-    expect(cssRule(styles, ".garment-row")).toMatch(/grid-template-columns:\s*minmax\(320px,\s*0\.82fr\)\s+minmax\(0,\s*1\.4fr\)\s+minmax\(0,\s*auto\);/);
-    expect(cssRule(styles, ".garment-actions-row")).toMatch(/min-width:\s*0;/);
+    expect(cssRule(styles, ".garment-library-item__identity")).toMatch(/min-width:\s*0;/);
+    expect(cssRule(styles, ".garment-library-item__brand")).toMatch(/text-overflow:\s*ellipsis;/);
+    expect(cssRule(styles, ".garment-library-item__identity h3")).toMatch(/text-overflow:\s*ellipsis;/);
+    expect(cssRule(styles, ".garment-library-item__identity h3")).toMatch(/white-space:\s*nowrap;/);
+    expect(cssRule(styles, ".garment-library-item--review")).toMatch(/grid-template-columns:\s*auto\s+5rem\s+minmax\(0,\s*1fr\);/);
+    expect(cssRule(styles, ".garment-library-item__tools")).toMatch(/flex-wrap:\s*wrap;/);
   });
 });
 
@@ -1824,7 +1993,7 @@ function findButtonsByText(node: ReactNode, text: string): ReactElement[] {
     }
 
     const props = current.props as { children?: ReactNode };
-    if (current.type === "button" && elementText(props.children).includes(text)) {
+    if (isButtonElement(current) && elementText(props.children).includes(text)) {
       matches.push(current);
     }
     visit(props.children);
@@ -1847,7 +2016,7 @@ function findButtonsByTitle(node: ReactNode, title: string): ReactElement[] {
     }
 
     const props = current.props as { children?: ReactNode; title?: string };
-    if (current.type === "button" && props.title === title) {
+    if (isButtonElement(current) && props.title === title) {
       matches.push(current);
     }
     visit(props.children);
@@ -1870,7 +2039,7 @@ function findInputsByType(node: ReactNode, type: string): ReactElement[] {
     }
 
     const props = current.props as { children?: ReactNode; type?: string };
-    if (current.type === "input" && props.type === type) {
+    if ((current.type === "input" || reactTypeName(current) === "Field") && props.type === type) {
       matches.push(current);
     }
     visit(props.children);
@@ -1878,6 +2047,63 @@ function findInputsByType(node: ReactNode, type: string): ReactElement[] {
 
   visit(node);
   return matches;
+}
+
+function findElementsByComponentName(node: ReactNode, name: string): ReactElement[] {
+  const matches: ReactElement[] = [];
+
+  function visit(current: ReactNode) {
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (!isValidElement(current)) {
+      return;
+    }
+
+    if (reactTypeName(current) === name) {
+      matches.push(current);
+    }
+    visit((current.props as { children?: ReactNode }).children);
+  }
+
+  visit(node);
+  return matches;
+}
+
+function renderFunctionElement(element: ReactElement): ReactNode {
+  if (typeof element.type !== "function") {
+    throw new Error(`Expected a function component, received ${reactTypeName(element) || "unknown"}`);
+  }
+  const Component = element.type as (props: Record<string, unknown>) => ReactNode;
+  return Component(element.props as Record<string, unknown>);
+}
+
+function reactTypeName(element: ReactElement): string {
+  if (typeof element.type === "string") return element.type;
+  if (typeof element.type === "function") {
+    const component = element.type as typeof element.type & { displayName?: string; name?: string };
+    return component.displayName || component.name || "";
+  }
+  if (element.type && typeof element.type === "object" && "render" in element.type) {
+    const render = (element.type as { render?: { displayName?: string; name?: string } | ((...args: unknown[]) => unknown) }).render;
+    if (typeof render === "function") return render.name;
+    return render?.displayName || render?.name || "";
+  }
+  return "";
+}
+
+function isButtonElement(element: ReactElement): boolean {
+  const name = reactTypeName(element);
+  return element.type === "button" || name === "Button" || name === "IconButton";
+}
+
+function readAppStyles(): string {
+  const entry = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const stylesDirectory = new URL("../src/styles/", import.meta.url);
+  const modules = Array.from(entry.matchAll(/@import\s+"\.\/styles\/([^";]+)";/g), (match) => match[1])
+    .map((name) => readFileSync(new URL(name, stylesDirectory), "utf8"));
+  return [entry, ...modules].join("\n");
 }
 
 function elementText(node: ReactNode): string {

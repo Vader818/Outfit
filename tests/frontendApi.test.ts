@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
+import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -277,6 +277,32 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/garments", expect.objectContaining({
       credentials: "same-origin"
     }));
+  });
+
+  it("preserves structured API errors and announces expired sessions", async () => {
+    const dispatchEvent = vi.fn();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: "UNAUTHENTICATED",
+        message: "请先登录",
+        details: { reason: "expired" }
+      }
+    }), { status: 401 }));
+    vi.stubGlobal("window", { dispatchEvent });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await getGarments().catch((requestError) => requestError);
+
+    expect(error).toBeInstanceOf(ApiClientError);
+    expect(error).toMatchObject({
+      name: "ApiClientError",
+      message: "请先登录",
+      status: 401,
+      code: "UNAUTHENTICATED",
+      details: { reason: "expired" }
+    });
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dispatchEvent.mock.calls[0][0]).toMatchObject({ type: AUTH_REQUIRED_EVENT });
   });
 
   it("posts Taobao item Selenium capture URL", async () => {

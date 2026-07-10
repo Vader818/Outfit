@@ -1,0 +1,212 @@
+.settings-form {
+  display: grid;
+  gap: var(--space-5);
+  width: min(100%, 72rem);
+}
+
+.settings-section {
+  display: grid;
+  gap: var(--space-5);
+  padding: clamp(1.1rem, 2.8vw, 1.8rem);
+}
+
+.settings-section__heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.settings-section__heading h2,
+.settings-section__heading p {
+  margin: 0;
+}
+
+.settings-section__heading h2 {
+  color: var(--color-ink);
+  font-size: 1.15rem;
+  letter-spacing: -0.025em;
+}
+
+.settings-section__heading p {
+  max-width: 56ch;
+  margin-top: 0.35rem;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.settings-field-grid--profile {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.vision-settings__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-block: var(--space-4);
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.vision-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  cursor: pointer;
+}
+
+.vision-toggle input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.15rem;
+  accent-color: var(--color-accent);
+}
+
+.vision-toggle span,
+.vision-toggle strong,
+.vision-toggle small {
+  display: block;
+}
+
+.vision-toggle strong {
+  color: var(--color-ink);
+  font-size: 0.86rem;
+}
+
+.vision-toggle small {
+  margin-top: 0.2rem;
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.vision-models {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.model-root-details {
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.model-root-details code {
+  display: block;
+  color: var(--color-muted);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.vision-model-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.vision-model-row__icon {
+  display: grid;
+  width: 2.4rem;
+  height: 2.4rem;
+  place-items: center;
+  border-radius: var(--radius-control);
+  color: var(--color-accent);
+  background: var(--color-surface-accent);
+}
+
+.vision-model-row__body {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.vision-model-row__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.vision-model-row__title > strong {
+  color: var(--color-ink);
+  font-size: 0.9rem;
+}
+
+.vision-model-row__body > p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.vision-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-soft);
+}
+
+.settings-actions p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 840px) {
+  .settings-field-grid--profile {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .settings-section__heading,
+  .vision-settings__toolbar,
+  .settings-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-field-grid,
+  .settings-field-grid--profile {
+    grid-template-columns: 1fr;
+  }
+
+  .vision-model-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .vision-model-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .settings-actions .ui-button {
+    width: 100%;
+  }
+}

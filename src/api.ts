@@ -1,5 +1,21 @@
 import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
+export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly details?: unknown;
+
+  constructor(message: string, options: { status: number; code?: string; details?: unknown }) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = options.status;
+    this.code = options.code;
+    this.details = options.details;
+  }
+}
+
 export interface CaptureStartResult {
   started: true;
   mode: "orders" | "item-detail";
@@ -263,10 +279,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = typeof data.error === "string"
-      ? data.error
-      : data.error?.message || "请求失败";
-    throw new Error(message);
+    const payload = data && typeof data === "object" ? data as {
+      error?: string | { message?: unknown; code?: unknown; details?: unknown };
+    } : {};
+    const errorPayload = payload.error;
+    const message = typeof errorPayload === "string"
+      ? errorPayload
+      : typeof errorPayload?.message === "string"
+        ? errorPayload.message
+        : "请求失败";
+    const code = typeof errorPayload === "object" && typeof errorPayload?.code === "string"
+      ? errorPayload.code
+      : undefined;
+    const details = typeof errorPayload === "object" ? errorPayload?.details : undefined;
+    if (response.status === 401 && code === "UNAUTHENTICATED" && typeof window !== "undefined") {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
+    throw new ApiClientError(message, { status: response.status, code, details });
   }
   return data as T;
 }
