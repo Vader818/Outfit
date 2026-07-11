@@ -271,3 +271,267 @@
 - 端口检查再次误用了相同形式，错误计数更新为 2；后续命令固定使用 `$rows = foreach (...) { ... }; $rows | ...`。
 - 应用内浏览器首个标签页在截图前失效，已按技能说明新建标签页并成功获得当前登录页截图。
 - 一次截图脚本来源搜索因混合通配符路径退出 1，后续改用明确文件列表。
+
+## 会话：2026-07-10（GitHub 功能调研与开发路线图）
+
+### 阶段 1：恢复上下文与项目全量审计
+- **状态：** in_progress
+- 执行的操作：
+  - 确认当前 active goal 与用户本轮目标一致并继续使用。
+  - 完整读取 `using-superpowers`、`planning-with-files-zh` 和 GitHub 工作流说明。
+  - 完整读取既有 `task_plan.md`、`findings.md`、`progress.md`，运行 session catchup。
+  - 将 `task_plan.md` 切换为本轮六阶段研究计划，在 `findings.md` 建立本轮证据区。
+  - 检查当前分支、Git 状态、根目录、文档、源码、服务与测试文件清单；确认本轮开始时除规划文件外没有未提交源码改动。
+  - 启动三个只读子 Agent，分别负责产品场景审计、架构扩展点审计和 GitHub 候选调研。
+  - 收到并复核产品场景与架构扩展点两个只读审计报告；均未修改文件或读取用户隐私目录。
+  - 完成本地 README、schema、API、共享类型、路由、主应用、五个功能域、数据库/推荐函数索引和测试契约的主线交叉核验。
+  - 已建立 10+ GitHub 候选池，并深入读取 wardrowbe、Libre-Closet、fashion-skill、wardrobe-hq 的实际源码/规则文件。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+
+### 当前错误
+| 时间戳 | 错误 | 尝试次数 | 解决方案 |
+|--------|------|---------|---------|
+| 2026-07-10 | 请求创建 goal 时已有相同 active goal | 1 | 读取并沿用现有 goal |
+| 2026-07-10 | 合并输出旧规划文件时内容被截断 | 1 | 改为按文件完整读取 |
+| 2026-07-10 | `foreach` 结果直接接管道导致 `EmptyPipeElement` | 2 | 已停止在命令字符串中使用该结构，固定改用 `$rows` 中间变量 |
+
+### 五问重启检查
+| 问题 | 答案 |
+|------|------|
+| 我在哪里？ | 阶段 1：项目全量审计 |
+| 我要去哪里？ | 建立场景缺口地图、检索 GitHub、筛选功能、形成开发路线图并验证交付 |
+| 目标是什么？ | 交付 Outfit 高价值功能研究与开发计划 Markdown |
+| 我学到了什么？ | 见 `findings.md` 的 2026-07-10 本轮章节 |
+| 我做了什么？ | 已恢复上下文并初始化本轮文件规划 |
+
+### 阶段 2–3：本地缺口地图与 GitHub 深度调研
+- **状态：** complete
+- 完成项目功能、用户场景、数据模型、API、推荐、隐私和扩展性地图；结论均由源码、测试或项目文档交叉核验。
+- 三个只读子 Agent 分别完成产品场景、架构缺口和 GitHub 候选调研；均未修改文件，也未读取用户数据目录。
+- 建立 17 个核心候选池，深入核验 wardrowbe、Libre-Closet、fashion-skill、wardrobe-analytics、AIPackr、wardrobe-hq 和 fashion-compatibility 的实际源码、成熟度与许可证。
+
+### 阶段 4–5：价值评估与开发路线图
+- **状态：** complete
+- 用六维加权矩阵评估功能，明确 P0/P1/P2；8 个功能的公式与总分均可复算。
+- 收敛为 M0–M6：可信基础、可信建档、保存搭配、反馈与可用状态、日记与周计划、决策支持、旅行与胶囊。
+- 为每个里程碑补齐数据/API、文件落点、TDD 任务、验收标准、隐私/许可证边界、P50/P80 工期和硬依赖/建议发布顺序。
+- 生成 `docs/2026-07-10-github-feature-research-and-development-plan.md`。
+
+### 阶段 6：两轮审稿与交付验证
+- **状态：** complete
+- 第一轮只读审稿发现并推动修正：跨 run 候选身份、图片后端净化/认证读取、旅行硬约束、版本化导出、阶段依赖、归档归属、CC BY 4.0、缺失反馈 API、迁移 baseline 和日期语义。
+- 第二轮审稿确认原 14 项中 13 项已解决；随后补齐 legacy context 的完整 JSON 类型/fixture，以及只存在于旅行 beam state 的洗衣模拟，避免规划修改现实 availability。
+- 最终机械验证：1126 行、30 个成对围栏、0 占位符、0 表格列问题、0 尾随空白；6/6 本地链接存在；8/8 评分公式一致。
+- 最终网络验证：35/35 GitHub 链接返回 HTTP 2xx/3xx。
+- Git 工作区复核确认只新增最终研究文档并更新 `task_plan.md`、`findings.md`、`progress.md`；没有删除文件，没有修改业务源码。
+
+### 本轮新增错误记录
+| 时间戳 | 错误 | 尝试次数 | 解决方案 |
+|--------|------|---------|---------|
+| 2026-07-10 | 首次 GitHub 链接并发校验的 `ForEach-Object -Parallel` 参数集在当前 PowerShell 不可用 | 1 | 改用顺序 `foreach` 与原生 `Invoke-WebRequest`，随后 35/35 通过 |
+| 2026-07-10 | 首次最终文档门禁把 `Get-Item -LiteralPath` 误写为 `Get-Item-LiteralPath`，产生非终止错误 | 1 | 作废该次 PASS，修正命令并启用 `$ErrorActionPreference='Stop'` 后完整重跑 |
+| 2026-07-10 | 首次严格门禁在压缩命令时把 `Get-Content -LiteralPath` 等命名参数空格合并 | 1 | 严格模式正确退出 1；改为可读多行 PowerShell，不再压缩 cmdlet 参数 |
+
+## 会话：2026-07-11（按研究计划完整研发）
+
+### 阶段 0：恢复、计划与基线
+- **状态：** complete
+- 执行的操作：
+  - 沿用 `/goal` 自动创建的 active goal；首次重复 `create_goal` 被拒绝后改为读取现有目标。
+  - 完整读取 `planning-with-files-zh` 技能、1126 行研发计划以及三份规划记录，运行 session catchup，无额外未同步输出。
+  - 核验当前分支、提交、工作区和项目指令；确认没有未提交业务源码。
+  - 核验规范点名的两个 superpowers 执行技能不可用，采用文件规划技能建立等价 TDD/提交清单。
+  - 创建独立 M0 分支 `codex/outfit-m0-foundation`。
+  - 启动三个只读子 Agent，分别审计数据库/导出、推荐预算/身份、隐私/默认值；均不会修改文件。
+- 修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+
+### M0 基线测试
+| 测试 | 结果 | 状态 |
+|---|---|---|
+| `npm run typecheck` | 通过，14.9 秒 | pass |
+| `npm test` | 15 个文件、200 项通过 | pass |
+| `npm run build` | 1586 模块，构建通过 | pass |
+| `python -m pytest -q` | 33 项通过 | pass |
+
+### 阶段 1：M0 可信基础
+- **状态：** in_progress
+- 当前工作：M0-A 已完成；进入 M0-B 有界推荐生成。
+- 删除操作：无。
+
+#### M0-A 版本化迁移骨架
+- **状态：** complete
+- TDD 记录：
+  - 首次新增 `tests/dbMigrations.test.ts`，按预期因 `server/db/migrations.ts` 不存在而失败。
+  - 首版实现 5 项测试转绿；数据库审计随后指出 baseline 原子性和空库误登记漏洞。
+  - 加严为 9 项迁移测试，新增 baseline/registry 同事务、外键时机、精确前缀、较新数据库与改名迁移拒绝；加严测试先 7 项失败后全部转绿。
+  - 冻结 baseline 后现有 `dbImport` 4 项测试失败；确认是测试依赖重复运行生产 migrate，改为显式测试 `legacyBaseline0`，未恢复生产重复执行。
+  - 再新增 rollback 异常保真红测；实现写锁后版本复查与 rollback 原始异常保留，最终 10 项迁移测试转绿。
+- 验证：
+  - `npm test -- tests/dbMigrations.test.ts tests/dbImport.test.ts`：2 文件、24 项通过。
+  - `npm run typecheck`：通过。
+- 提交：`83224f1 feat(db): introduce versioned migration baseline`。
+- 修改文件：
+  - `server/db.ts`
+  - `server/db/migrations.ts`
+  - `tests/dbMigrations.test.ts`
+  - `tests/dbImport.test.ts`
+
+#### M0-B 有界推荐生成
+- **状态：** complete
+- TDD 记录：
+  - 先增加旧实现上的小衣橱精确特征测试并通过，锁定前三套 items/score/reasons/alternatives。
+  - 再新增 500 件预算、资格过滤与 missingSlots 红测；旧实现分别因缺少 `generateCandidates`、放行未确认衣物和缺少 missingSlots 失败。
+  - 实现四层流式 beam、20,000 总预算、120 beam width 与服务层统一资格过滤后转绿。
+  - API 旧用例因只确认一件衣物而失败；修正为先验证空结果/缺槽，再确认足够核心衣物生成推荐。
+  - 只读复核发现后半段鞋/连衣裙饿死风险；两个公平性红测先失败，均匀采样实现后转绿。
+- 验证：
+  - 推荐/API/React 目标回归：3 文件、123 项通过。
+  - `npm test`：16 文件、216 项通过。
+  - `npm run typecheck`：通过。
+  - `npm run build`：通过。
+- 提交：`5035c3d feat(recommend): bound outfit candidate generation`。
+- 修改文件：
+  - `server/services/recommend.ts`
+  - `server/routes.ts`
+  - `src/shared/types.ts`
+  - `tests/recommendation.test.ts`
+  - `tests/api.test.ts`
+  - `tests/app.test.tsx`
+
+#### M0-C 全局候选身份与持久化
+- **状态：** complete
+- TDD 记录：
+  - 新增 signature/UUID/事务回滚测试与 migration 1 约束测试；先因候选服务和表不存在而失败。
+  - 实现 canonical slots、SHA-256 signature、UUID identity、migration 1、runId 返回与原子快照持久化。
+  - 新增连续两次 API 推荐集成测试，验证 runId、UUID 全局唯一、跨天气/场合 signature、rank/item/score 快照及伪造字段丢弃。
+  - 必填身份字段使前端 fixture 类型检查失败；统一改为 UUID 兼容 id 与显式 runId。
+  - 只读复核建议候选 JSON 数据库约束；新增红测后加入 JSON array/object CHECK。
+- 验证：
+  - 候选/迁移/API 目标测试：3 文件、65 项通过。
+  - `npm test`：17 文件、221 项通过。
+  - `npm run typecheck`：通过。
+  - `npm run build`：通过。
+- 提交：`45fda72 feat(recommend): persist stable candidate identities`。
+- 修改文件：
+  - `server/db.ts`
+  - `server/routes.ts`
+  - `server/services/recommend.ts`
+  - `server/services/recommendationCandidates.ts`
+  - `src/shared/types.ts`
+  - `tests/dbMigrations.test.ts`
+  - `tests/recommendationCandidates.test.ts`
+  - `tests/api.test.ts`
+  - `tests/app.test.tsx`
+
+#### M0-D OutfitExportV2
+- **状态：** complete
+- TDD 记录：
+  - 先写 V1 识别、V2 固定时钟快照、M0 candidates、全历史无截断、损坏 JSON 与敏感字段排除测试；旧实现因缺少 V2 服务而失败。
+  - V2 保留 V1 全部顶层业务数据，增加 `schemaVersion`、`features` 和 `recommendationCandidates`；wear logs 与 recommendation runs 改用无 UI limit 的确定性查询。
+  - 新增敏感备份确认；取消时不调用 export API、不创建 Blob/ObjectURL，`/api/export` 仍受 session 认证保护。
+  - 只读审计先发现跨表混合快照与 garment JSON 静默回退；补单一 SQLite 延迟读事务、异常回滚、画像/衣物/来源 JSON 结构校验后转绿。
+  - 深度版本校验覆盖 profile、garments、wear logs、runs、candidates 的必填字段与枚举；构建结果在 COMMIT 前通过自身校验。
+  - 规范复核补出资产路径红测：Windows/file/data/blob、空主机、协议相对磁盘路径、多重编码路径穿越、凭据、首尾空白和 `;base64,` 均被拒绝；受控本地 API 路径和合法 HTTP(S) URL 可导出。
+  - 数据库与隐私两个只读审计最终均确认无阻断、高风险或中风险。
+- 验证：
+  - `tests/export.test.ts`：7 项通过。
+  - `npm test`：18 个文件、229 项通过。
+  - `npm run typecheck`：通过。
+  - `npm run build`：通过。
+- 提交：
+  - `c91d677 feat(export): add versioned local backup format`
+  - `04dc3e6 fix(export): reject non-portable asset references`
+- 删除操作：无。
+- 修改文件：
+  - `server/db.ts`
+  - `server/routes.ts`
+  - `server/services/export.ts`
+  - `src/app/App.tsx`
+  - `src/lib/browser.ts`
+  - `src/shared/types.ts`
+  - `tests/api.test.ts`
+  - `tests/app.test.tsx`
+  - `tests/export.test.ts`
+  - `tests/frontendApi.test.ts`
+
+#### M0-E 可信默认值、确认语义与远程图片
+- **状态：** complete
+- TDD 记录：
+  - 先新增空默认、严格坐标解析、空画像设置、手工 POST、淘宝确认保留、pending/missingSlots 空态、远程图片会话授权与全部图片入口红测；首轮 13 项按预期失败。
+  - 前后端默认画像均改为 `{}`，坐标 fallback 改为空；画像 normalize 只保留用户真实提供字段，四个枚举选择框加入“未设置”。
+  - 共享位置解析器先 trim，再校验 finite 与范围；RecommendationView、天气请求、推荐请求和设置保存均复用，`""`/空白不再变为 `0`，合法 `0,0` 仍可用。
+  - 增加最小 `POST /api/garments`：严格白名单验证已有衣物字段，拒绝 `confirmed/owned/source` 等伪造；服务端显式写 `owned=1, confirmed=1, excluded=0, confidence=1`。淘宝首次导入仍未确认，重复导入不覆盖用户确认。
+  - 推荐、衣橱“可穿”与前端可用数统一为 `owned && confirmed && !excluded`；审核角标和推荐待确认数拆分，missingSlots 根据是否有待确认衣物跳“去确认衣物”或“补充衣物”。
+  - 远程淘宝图片状态只写 sessionStorage，默认 false；本地 cutout → 本地原图 → 显式允许后的可信淘宝原图，远程 cutout 永不阻断本地回退。策略贯穿衣橱、首选/备选/替代推荐和 ThumbnailDialog。
+  - 默认值、推荐/手工创建、图片三个只读审计最终均确认无阻断、高风险或中风险。
+- 验证：
+  - M0-E 目标测试：5 文件、164 项通过。
+  - `npm test`：18 个文件、240 项通过。
+  - `npm run typecheck`：通过。
+  - `npm run build`：通过。
+- 提交：`f98d192 feat(core): enforce trusted wardrobe defaults`。
+- 删除操作：无。
+
+#### M0-F 隐私、文档与发布门
+- **状态：** complete
+- 隐私清理 TDD：
+  - `privacy-clean` 计划新增 `output/playwright-taobao-profile`，与 Selenium profile 同为 `sensitive=true`、`requiresExtraConfirmation=true`。
+  - 测试覆盖无参数、仅 `--include-login-state`、仅 `--confirm`、双参数四种组合；两个登录态都只有双参数同时存在才进入清理集合。
+  - 默认真实预览已运行，两个 profile 均显示“仅提示”，并明确“不会删除任何文件”；未调用任何确认清理路径。
+- 当前验证：`tests/privacyClean.test.ts` 4 项通过；默认预览通过。
+- 并行工作：文档同步与合成旧库迁移演练分别由独立子 Agent 实施，写入范围互斥；迁移演练禁止读取真实 `data/`，禁止自动删除临时产物。
+- 安全复核发现词法路径校验无法阻止 `data` junction 指向项目外；已改为 glob 展开前校验容器 realpath、删除前校验每个存在目标 realpath，解析失败一律拒绝。纯 mock junction 测试不创建或删除文件，目标测试更新为 4 项通过，独立复核清零中风险。
+- 文档首轮已同步迁移、手工建档最小接口、推荐身份/预算、空默认、图片会话策略、V2 导出和双 profile；交叉复核后补充 junction/symlink 与 realpath fail-closed 的用户可见边界。
+- 迁移演练使用冻结的 `tests/fixtures/legacy-v0.sql` 创建完全合成的八表 source，先复制 backup 与 rehearsal，仅把 rehearsal 交给生产 `createDatabase()`；精确锁定迁移前八表、迁移后十表、旧列/FK/索引、候选表 FK/UNIQUE/CHECK/STRICT、旧数据、完整性及二次幂等。
+- source/backup 始终以只读连接核验，前后 SHA-256 相同且无 sidecar；测试源码没有 `data/` 路径或删除调用。可见路径命令 `npm test -- tests/dbMigrationRehearsal.test.ts --disableConsoleIntercept` 通过，最新保留产物：`C:\Users\Vader\AppData\Local\Temp\outfit-migration-rehearsal-ihoGoP`。
+- 子 Agent 调试/首轮演练目录同样按“不删除”约束保留：`outfit-migration-rehearsal-BOEeml`、`-FENs6q`、`-HBE94c`、`-V43XmF`；均位于系统 TEMP，不在工作区。
+- M0 定向回归：13 个测试文件、219 项通过。
+- 最终发布门：`npm run typecheck` 通过；`npm test` 19 个文件、244 项通过；`npm run build` 通过；`python -m pytest -q` 33 项通过。
+- 文档校验：`git diff --check` 通过，Markdown 围栏配对，`docs/api.md` 的 37 个 JSON 示例全部可解析。
+- 三轮交叉复核已清零 privacy-clean 越界、文档行为差异、fixture/baseline 漂移与 candidate 约束覆盖等全部 blocker/high/medium。
+- 最终 staged 审计确认 5 个修改、2 个新增，规划记录和研究计划未入索引；提交 `1453838 chore(m0): complete foundation release gates`。
+- 删除操作：无。
+
+### M1 可信建档与导入暂存区
+- **状态：** stopped_by_user
+- 已把规范 16 项实施任务与 7 项验收标准逐条复制到 `task_plan.md`，并拆为六个逐测试、逐提交边界。
+- M1-A 曾写入未提交的 migration/API 红测和局部实现；用户随后明确要求停止 M1–M6，因此这些未提交业务变更将手工撤回，不形成 M1 提交。
+- 三个 M1 只读调查子 Agent 已立即中止，不继续研究或写入。
+- 删除操作：无。
+
+### 用户终止与六文件拆分收尾
+- **状态：** complete
+- 用户最新要求：把 M1–M6 切分成六个独立子文件，停止此次研发目标并标记完成。
+- 收尾策略：保留 M0 七个已验收业务文件及提交 `1453838`；撤回未提交且未转绿的 M1-A 局部业务变更；不删除原计划、不删除分支、不删除任何电脑文件。
+- 将从 `docs/2026-07-10-github-feature-research-and-development-plan.md` 的六个里程碑章节原文生成独立子计划并做结构校验。
+- 已用精确章节边界拆分：M1=原 403–521 行、M2=522–626、M3=627–718、M4=719–817、M5=818–909、M6=910–1049；每个文件增加 8 行来源/状态前言，正文逐行与父计划一致。
+- 父计划保留完整正文，并新增六文件导航；六个子计划均有父计划回链。
+- 机械验证通过：六份正文分别为 119/105/92/99/92/140 行且逐行一致；代码围栏分别为 4/4/4/2/4/4，全部成对；本地链接和 `git diff --check` 通过。
+- 未提交 M1-A 业务源码与测试已使用补丁逐块撤回；`server/db.ts`、`server/validation.ts`、`src/shared/types.ts`、`tests/api.test.ts`、`tests/dbMigrations.test.ts` 均与 HEAD 无差异。
+- 当前 HEAD 仍为 `1453838 chore(m0): complete foundation release gates`；没有 M1 提交，没有删除文件，原综合计划保留。
+- 交付文件：
+  - `docs/2026-07-10-outfit-m1-trusted-ingestion-plan.md`
+  - `docs/2026-07-10-outfit-m2-saved-outfits-plan.md`
+  - `docs/2026-07-10-outfit-m3-feedback-availability-plan.md`
+  - `docs/2026-07-10-outfit-m4-diary-week-plan.md`
+  - `docs/2026-07-10-outfit-m5-decision-support-plan.md`
+  - `docs/2026-07-10-outfit-m6-trip-capsule-plan.md`
+- 删除操作：无。
+
+### 本轮错误
+| 时间戳 | 错误 | 尝试次数 | 解决方案 |
+|---|---|---:|---|
+| 2026-07-11 | 重复调用 `create_goal`，线程已存在 active goal | 1 | 使用 `get_goal` 沿用当前目标，不再重复创建 |
+| 2026-07-11 | 首次合并读取规划文件输出被截断 | 1 | 按文件和行段使用 UTF-8 分块读取，已完整恢复 |
+| 2026-07-11 | privacy-clean 仅用词法路径判断，junction 可让 glob 实际指向项目外 | 1 | 在 glob 展开前和删除前分别做 realpath containment 校验，解析失败 fail closed；新增 mock 回归测试且未执行删除 |
+| 2026-07-11 | 文档校验输出中的 `$doc:` 被 PowerShell 解析为驱动器变量而语法失败 | 1 | 改用 `-f` 格式化输出重跑；`git diff --check`、围栏配对与 37 个 JSON 示例解析全部通过 |
+| 2026-07-11 | M1-A 首轮合跑 DB/API 红测出现 5 个预期失败，并伴随一个 Vitest worker 异常退出 | 1 | 将 DB/API 改为单 worker 分开定位；用户随后终止 M1，未继续把该局部实现作为交付 |
+| 2026-07-11 | M1 migration 测试直接比较 `PRAGMA table_info` 完整行，多带 `cid/pk` 导致 1 项假失败 | 1 | 将测试投影到约定字段后确认该假失败消失；随后按用户要求撤回整组未提交 M1 测试 |
+| 2026-07-11 | M1 手工衣物 INSERT 初版少一个 value，API 返回 500 | 1 | 通过内存 SQLite 探针定位 `23 values for 24 columns` 并补齐；用户终止 M1 后将撤回未提交实现 |
+| 2026-07-11 | planning skill 指定的 `.claude` session-catchup 脚本不存在 | 1 | 完整读取现有 `task_plan.md`、`progress.md`、`findings.md` 并以 Git 状态直接恢复上下文 |
