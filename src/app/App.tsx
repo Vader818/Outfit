@@ -51,7 +51,7 @@ import { RecommendationView } from "../features/recommendations/RecommendationVi
 import { SettingsView } from "../features/settings/SettingsView";
 import { ThumbnailPicker } from "../features/wardrobe/ThumbnailDialog";
 import { WardrobeView } from "../features/wardrobe/WardrobeView";
-import { buildRecommendationWearLogInput, downloadJson, readLocalStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue } from "../lib/browser";
+import { buildRecommendationWearLogInput, downloadJson, exportBackupWithConfirmation, readLocalStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue } from "../lib/browser";
 import { applyGarmentPatch } from "../lib/garments";
 import { deleteGarmentForView, refreshGarmentsForView } from "../lib/view-actions";
 import {
@@ -700,8 +700,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setBusyAction("export");
     setError("");
     try {
-      downloadJson(await exportLocalData());
-      setStatusMessage("备份已生成");
+      const exported = await exportBackupWithConfirmation(
+        (message) => globalThis.confirm(message),
+        exportLocalData,
+        downloadJson
+      );
+      if (exported) setStatusMessage("备份已生成");
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "导出失败");
     } finally {

@@ -1,5 +1,8 @@
 import type { Garment, OutfitExport, OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "../shared/types";
 
+export const BACKUP_EXPORT_CONFIRMATION =
+  "备份包含个人画像、淘宝来源与价格、穿着记录和推荐历史等敏感本地数据。确定要生成 JSON 备份吗？";
+
 export function readLocalStorageValue(key: string, fallback: string): string {
   try {
     return globalThis.localStorage?.getItem(key) ?? fallback;
@@ -36,6 +39,16 @@ export function downloadJson(data: OutfitExport): void {
   link.download = `outfit-backup-${data.exportedAt.slice(0, 10)}.json`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+export async function exportBackupWithConfirmation(
+  confirmExport: (message: string) => boolean,
+  loadExport: () => Promise<OutfitExport>,
+  download: (data: OutfitExport) => void
+): Promise<boolean> {
+  if (!confirmExport(BACKUP_EXPORT_CONFIRMATION)) return false;
+  download(await loadExport());
+  return true;
 }
 
 export function buildRecommendationWearLogInput(

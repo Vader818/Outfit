@@ -432,7 +432,18 @@ describe("frontend API client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, garmentIds: [101], context: {}, wornAt: "2026-06-12T00:00:00.000Z" }]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 2, input: {}, result: {}, createdAt: "2026-06-12T00:00:00.000Z" }]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ totalGarments: 4, mostWorn: [], neverWorn: [] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 1, garments: [] }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: 2,
+        schemaVersion: 1,
+        exportedAt: "2026-07-11T06:00:00.000Z",
+        features: ["versioned-migrations", "recommendation-candidates"],
+        profile: {},
+        garments: [],
+        sourceOrderItems: [],
+        wearLogs: [],
+        recommendationRuns: [],
+        recommendationCandidates: []
+      }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getPersonalProfile()).resolves.toMatchObject({ bodyType: "slim-tall" });
@@ -446,7 +457,7 @@ describe("frontend API client", () => {
     await expect(getWearLogs()).resolves.toHaveLength(1);
     await expect(getRecommendationRuns()).resolves.toHaveLength(1);
     await expect(getInsights()).resolves.toMatchObject({ totalGarments: 4 });
-    await expect(exportLocalData()).resolves.toMatchObject({ version: 1 });
+    await expect(exportLocalData()).resolves.toMatchObject({ version: 2, schemaVersion: 1 });
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/profile", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/profile", expect.objectContaining({ method: "PUT" }));

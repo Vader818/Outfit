@@ -198,6 +198,8 @@ describe("API routes", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const unauthenticatedExport = await fetch(`${baseUrl}/api/export`);
+    expect(unauthenticatedExport.status).toBe(401);
     const authCookie = await registerTestUser(baseUrl);
 
     const unauthenticatedResponse = await fetch(`${baseUrl}/api/garments`);
@@ -1155,7 +1157,8 @@ describe("API routes", () => {
         size: "M",
         materials: ["cotton"],
         patterns: ["solid"],
-        tags: ["挺括", "层次"]
+        tags: ["挺括", "层次"],
+        confirmed: true
       })
     });
     expect(updateResponse.status).toBe(200);
@@ -1165,6 +1168,15 @@ describe("API routes", () => {
       patterns: ["solid"],
       tags: ["挺括", "层次"]
     });
+
+    for (const garment of garments.filter((garment) => garment.id !== top.id)) {
+      const confirmResponse = await fetch(`${baseUrl}/api/garments/${garment.id}`, {
+        method: "PUT",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ confirmed: true })
+      });
+      expect(confirmResponse.status).toBe(200);
+    }
 
     await fetch(`${baseUrl}/api/wear-logs`, {
       method: "POST",
@@ -1195,12 +1207,22 @@ describe("API routes", () => {
 
     const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
-      version: 1,
-      profile: expect.objectContaining({ bodyType: "slim-tall" }),
+      version: 2,
+      schemaVersion: 1,
+      features: ["versioned-migrations", "recommendation-candidates"],
+      profile: expect.any(Object),
       garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
       wearLogs: expect.any(Array),
       recommendationRuns: expect.any(Array),
-      sourceOrderItems: expect.any(Array)
+      sourceOrderItems: expect.any(Array),
+      recommendationCandidates: expect.arrayContaining([
+        expect.objectContaining({
+          candidateId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+          runId: expect.any(Number),
+          outfitSignature: expect.stringMatching(/^[a-f0-9]{64}$/),
+          itemIds: expect.any(Array)
+        })
+      ])
     });
   });
 

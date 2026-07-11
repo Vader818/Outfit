@@ -4,6 +4,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
+import { BACKUP_EXPORT_CONFIRMATION, exportBackupWithConfirmation } from "../src/lib/browser";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
@@ -14,6 +15,19 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("does not request or create a backup when sensitive export confirmation is cancelled", async () => {
+    const loadExport = vi.fn();
+    const download = vi.fn();
+    const confirmExport = vi.fn(() => false);
+
+    await expect(exportBackupWithConfirmation(confirmExport, loadExport, download)).resolves.toBe(false);
+
+    expect(BACKUP_EXPORT_CONFIRMATION).toMatch(/个人画像|淘宝|穿着记录|推荐历史/);
+    expect(confirmExport).toHaveBeenCalledWith(BACKUP_EXPORT_CONFIRMATION);
+    expect(loadExport).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it("renders recommendation occasion chips in Chinese", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,

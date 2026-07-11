@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Formality, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentThumbnailCandidatesResponse, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -1271,18 +1271,6 @@ function incrementCount(record: Record<string, number>, key: string): void {
   const cleaned = key.trim();
   if (!cleaned) return;
   record[cleaned] = (record[cleaned] ?? 0) + 1;
-}
-
-export function exportOutfitData(db: AppDatabase): OutfitExport {
-  return {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    profile: getPersonalProfile(db),
-    garments: listGarments(db),
-    sourceOrderItems: db.prepare("SELECT * FROM source_order_items ORDER BY id ASC").all(),
-    wearLogs: listWearLogs(db, 1000),
-    recommendationRuns: listRecommendationRuns(db, 200)
-  };
 }
 
 export function getCachedWeather(db: AppDatabase, latitude: number, longitude: number, maxAgeMs = 30 * 60 * 1000): WeatherSnapshot | null {

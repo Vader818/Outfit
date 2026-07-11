@@ -3,7 +3,8 @@ import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { deleteGarment, exportOutfitData, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
+import { deleteGarment, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
+import { buildOutfitExportV2 } from "./services/export";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
 import { persistRecommendationSnapshot } from "./services/recommendationCandidates";
@@ -225,7 +226,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.get("/api/export", (_request, response) => {
-    handle(response, () => exportOutfitData(db));
+    handle(response, () => buildOutfitExportV2(db));
   });
 
   app.get("/api/weather", async (request, response) => {

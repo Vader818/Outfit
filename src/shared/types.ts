@@ -196,8 +196,7 @@ export interface WardrobeInsights {
   neverWorn: WornGarmentInsight[];
 }
 
-export interface OutfitExport {
-  version: 1;
+export interface OutfitExportBase {
   exportedAt: string;
   profile: PersonalProfile;
   garments: Garment[];
@@ -205,6 +204,29 @@ export interface OutfitExport {
   wearLogs: WearLogEntry[];
   recommendationRuns: RecommendationRunEntry[];
 }
+
+export interface OutfitExportV1 extends OutfitExportBase {
+  version: 1;
+}
+
+export interface RecommendationCandidateExport {
+  candidateId: string;
+  runId: number;
+  outfitSignature: string;
+  rank: number;
+  itemIds: number[];
+  scoreSnapshot: unknown;
+  createdAt: string;
+}
+
+export interface OutfitExportV2 extends OutfitExportBase {
+  version: 2;
+  schemaVersion: number;
+  features: string[];
+  recommendationCandidates: RecommendationCandidateExport[];
+}
+
+export type OutfitExport = OutfitExportV1 | OutfitExportV2;
 
 export type VisionModelId = "rembg-isnet" | "clip-vit-base-patch32";
 export type VisionModelKind = "background-removal" | "tagging";
