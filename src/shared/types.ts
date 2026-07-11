@@ -72,6 +72,7 @@ export interface RecommendationResult {
   weatherScenario?: WeatherScenario;
   occasion: string;
   outfits: OutfitRecommendation[];
+  missingSlots: GarmentCategory[];
 }
 
 export type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";

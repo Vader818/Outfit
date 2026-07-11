@@ -256,7 +256,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   app.post("/api/recommendations", (request, response) => {
     handle(response, () => {
       const recommendationRequest = validateRecommendationRequest(request.body);
-      const garments = listGarments(db).filter((garment) => garment.owned && !garment.excluded);
+      const garments = listGarments(db);
       const recentlyWornGarmentIds = Array.from(new Set([
         ...recommendationRequest.recentlyWornGarmentIds,
         ...listRecentlyWornGarmentIds(db)

@@ -941,6 +941,7 @@ describe("API routes", () => {
     });
     const garments = (await garmentsResponse.json()) as Array<{ id: number; confirmed: boolean; itemUrl?: string; detailUrl?: string }>;
     expect(garments).toHaveLength(4);
+    expect(garments.every((garment) => garment.confirmed === false)).toBe(true);
     expect(garments.some((garment) => garment.itemUrl === "https://item.taobao.com/item.htm?id=1")).toBe(true);
 
     const linkedGarment = garments.find((garment) => garment.itemUrl || garment.detailUrl);
@@ -967,25 +968,46 @@ describe("API routes", () => {
       }
     });
 
+    const recommendationRequest = {
+      occasion: "casual",
+      weather: {
+        date: "2026-01-03",
+        temperature: 6,
+        apparentTemperature: 4,
+        precipitationProbability: 78,
+        windSpeed: 22,
+        weatherCode: 61,
+        summary: "小雨"
+      }
+    };
+    const incompleteRecommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(recommendationRequest)
+    });
+    expect(await incompleteRecommendationResponse.json()).toMatchObject({
+      outfits: [],
+      missingSlots: ["top", "bottom", "dress"]
+    });
+
+    for (const garment of garments.filter((garment) => garment.id !== linkedGarment?.id)) {
+      const confirmResponse = await fetch(`${baseUrl}/api/garments/${garment.id}`, {
+        method: "PUT",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ confirmed: true })
+      });
+      expect(confirmResponse.status).toBe(200);
+    }
+
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
       headers: jsonHeaders(authCookie),
-      body: JSON.stringify({
-        occasion: "casual",
-        weather: {
-          date: "2026-01-03",
-          temperature: 6,
-          apparentTemperature: 4,
-          precipitationProbability: 78,
-          windSpeed: 22,
-          weatherCode: 61,
-          summary: "小雨"
-        }
-      })
+      body: JSON.stringify(recommendationRequest)
     });
     const recommendation = await recommendationResponse.json();
     expect(recommendation.outfits).toHaveLength(1);
     expect(recommendation.outfits[0].items.length).toBeGreaterThanOrEqual(3);
+    expect(recommendation.missingSlots).toEqual([]);
   });
 
   it("deletes a garment from the wardrobe", async () => {

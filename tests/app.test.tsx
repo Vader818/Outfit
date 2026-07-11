@@ -290,7 +290,8 @@ describe("App", () => {
     const recommendations: RecommendationResult = {
       weather,
       occasion: "casual",
-      outfits: [outfit]
+      outfits: [outfit],
+      missingSlots: []
     };
     const appModule = await import("../src/App");
     const RecommendationView = (appModule as {
@@ -368,7 +369,8 @@ describe("App", () => {
       recommendations: {
         weather,
         occasion: "casual",
-        outfits: [outfit]
+        outfits: [outfit],
+        missingSlots: []
       },
       occasion: "casual",
       latitude: "39.9042",
@@ -1411,7 +1413,8 @@ describe("App", () => {
       recommendations: {
         weather,
         occasion: "casual",
-        outfits: [outfit]
+        outfits: [outfit],
+        missingSlots: []
       },
       occasion: "casual",
       latitude: "39.9042",
@@ -1539,7 +1542,8 @@ describe("App", () => {
     const recommendations: RecommendationResult = {
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
@@ -1574,7 +1578,8 @@ describe("App", () => {
     const recommendations: RecommendationResult = {
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
@@ -1609,7 +1614,8 @@ describe("App", () => {
     const recommendations: RecommendationResult = {
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
