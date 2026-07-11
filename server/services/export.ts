@@ -58,7 +58,7 @@ export function buildOutfitExportV2(
       features: [...OUTFIT_EXPORT_V2_FEATURES],
       profile: getPersonalProfile(db),
       garments: listGarments(db),
-      sourceOrderItems: db.prepare("SELECT * FROM source_order_items ORDER BY id ASC").all(),
+      sourceOrderItems: listSourceOrderItems(db),
       wearLogs: listAllWearLogs(db),
       recommendationRuns: listAllRecommendationRuns(db),
       recommendationCandidates: listRecommendationCandidates(db)
@@ -91,10 +91,16 @@ export function validateOutfitExport(value: unknown): OutfitExport {
     throw new OutfitExportError("Invalid export envelope: exportedAt/profile is missing");
   }
   const garments = value.garments as unknown[];
+  const sourceOrderItems = value.sourceOrderItems as unknown[];
   const wearLogs = value.wearLogs as unknown[];
   const recommendationRuns = value.recommendationRuns as unknown[];
   if (!garments.every(isGarmentShape)) {
     throw new OutfitExportError("Invalid export envelope: garments contains an invalid garment");
+  }
+  if (!sourceOrderItems.every(isSourceOrderItemAssetSafe)) {
+    throw new OutfitExportError(
+      "Invalid export envelope: sourceOrderItems contains a non-portable asset reference"
+    );
   }
   if (!wearLogs.every(isWearLogShape)) {
     throw new OutfitExportError("Invalid export envelope: wearLogs contains an invalid entry");
@@ -146,7 +152,7 @@ function assertStoredProfileJson(db: AppDatabase): void {
 
 function assertStoredGarmentJson(db: AppDatabase): void {
   const rows = db.prepare(`
-    SELECT id, seasons, styles, materials, patterns, tags, vision_tags
+    SELECT id, seasons, styles, materials, patterns, tags, vision_tags, image_url, cutout_image_url
     FROM garments
     ORDER BY id ASC
   `).all() as Array<{
@@ -157,6 +163,8 @@ function assertStoredGarmentJson(db: AppDatabase): void {
     patterns: string;
     tags: string;
     vision_tags: string | null;
+    image_url: string | null;
+    cutout_image_url: string | null;
   }>;
 
   for (const row of rows) {
@@ -178,7 +186,55 @@ function assertStoredGarmentJson(db: AppDatabase): void {
       );
       assertVisionTagSuggestion(suggestion, row.id);
     }
+    assertPortableAssetReference("garments", row.id, "image_url", row.image_url);
+    assertPortableAssetReference("garments", row.id, "cutout_image_url", row.cutout_image_url);
   }
+}
+
+function listSourceOrderItems(db: AppDatabase): unknown[] {
+  const rows = db.prepare("SELECT * FROM source_order_items ORDER BY id ASC").all() as Array<
+    Record<string, unknown> & { id: number }
+  >;
+  for (const row of rows) {
+    assertPortableAssetReference("source_order_items", row.id, "image_url", row.image_url);
+    if (row.detail_images !== null && row.detail_images !== undefined) {
+      if (typeof row.detail_images !== "string") {
+        throw invalidColumnShape("source_order_items", row.id, "detail_images", "a JSON string array");
+      }
+      const images = parseJsonColumn<unknown>(
+        "source_order_items",
+        row.id,
+        "detail_images",
+        row.detail_images
+      );
+      if (!isStringArray(images)) {
+        throw invalidColumnShape("source_order_items", row.id, "detail_images", "a string array");
+      }
+      for (const image of images) {
+        assertPortableAssetReference("source_order_items", row.id, "detail_images", image);
+      }
+    }
+    if (row.detail_props !== null && row.detail_props !== undefined) {
+      if (typeof row.detail_props !== "string") {
+        throw invalidColumnShape("source_order_items", row.id, "detail_props", "a JSON property array");
+      }
+      const properties = parseJsonColumn<unknown>(
+        "source_order_items",
+        row.id,
+        "detail_props",
+        row.detail_props
+      );
+      if (
+        !Array.isArray(properties) ||
+        !properties.every((property) =>
+          isRecord(property) && typeof property.name === "string" && typeof property.value === "string"
+        )
+      ) {
+        throw invalidColumnShape("source_order_items", row.id, "detail_props", "name/value objects");
+      }
+    }
+  }
+  return rows;
 }
 
 function listAllWearLogs(db: AppDatabase): WearLogEntry[] {
@@ -335,6 +391,80 @@ function invalidColumnShape(
   return new OutfitExportError(`Cannot export ${table} row ${rowId}: ${column} must contain ${expected}`);
 }
 
+function assertPortableAssetReference(
+  table: string,
+  rowId: string | number,
+  column: string,
+  value: unknown
+): void {
+  if (value === null || value === undefined) return;
+  if (typeof value !== "string" || !isPortableAssetReference(value)) {
+    throw invalidColumnShape(table, rowId, column, "a portable URL, never a filesystem path or embedded binary");
+  }
+}
+
+function isPortableAssetReference(value: string): boolean {
+  const cleaned = value.trim();
+  if (
+    cleaned !== value ||
+    /[\\\u0000-\u001f\u007f]/.test(cleaned) ||
+    /;base64,/i.test(cleaned) ||
+    /^(?:data|blob|file):/i.test(cleaned)
+  ) {
+    return false;
+  }
+  if (cleaned === "") return true;
+  if (cleaned.startsWith("//")) {
+    if (/^\/\/[a-z]:\//i.test(cleaned)) return false;
+    return isValidRemoteAssetUrl(`https:${cleaned}`);
+  }
+  if (/^https?:\/\//i.test(cleaned)) return isValidRemoteAssetUrl(cleaned);
+  if (!/^\/(?:api\/(?:garment-thumbnails|garment-assets)|assets)\//.test(cleaned)) {
+    return false;
+  }
+  return isSafeLocalAssetPath(cleaned);
+}
+
+function isValidRemoteAssetUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname) &&
+      parsed.username === "" &&
+      parsed.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSafeLocalAssetPath(value: string): boolean {
+  const path = value.split(/[?#]/, 1)[0];
+  let decoded = path;
+  let fullyDecoded = false;
+  try {
+    for (let pass = 0; pass < 8; pass += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) {
+        fullyDecoded = true;
+        break;
+      }
+      decoded = next;
+    }
+  } catch {
+    return false;
+  }
+  if (
+    !fullyDecoded ||
+    /[\\\u0000-\u001f\u007f]/.test(decoded) ||
+    decoded.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    return false;
+  }
+  return /^\/(?:api\/(?:garment-thumbnails|garment-assets)|assets)\//.test(decoded);
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -373,6 +503,8 @@ function isGarmentShape(value: unknown): boolean {
     !isStringArray(value.seasons) ||
     !value.seasons.every((season) => includes(SEASONS, season)) ||
     !isStringArray(value.styles) ||
+    typeof value.imageUrl !== "string" ||
+    !isPortableAssetReference(value.imageUrl) ||
     typeof value.owned !== "boolean" ||
     typeof value.confirmed !== "boolean" ||
     typeof value.excluded !== "boolean" ||
@@ -400,7 +532,50 @@ function isGarmentShape(value: unknown): boolean {
   ] as const) {
     if (value[key] !== undefined && typeof value[key] !== "string") return false;
   }
-  return value.visionTags === undefined || isVisionTagSuggestionShape(value.visionTags);
+  const cutoutImageUrl = value.cutoutImageUrl;
+  return (
+    (cutoutImageUrl === undefined ||
+      (typeof cutoutImageUrl === "string" && isPortableAssetReference(cutoutImageUrl))) &&
+    (value.visionTags === undefined || isVisionTagSuggestionShape(value.visionTags))
+  );
+}
+
+function isSourceOrderItemAssetSafe(value: unknown): boolean {
+  if (!isRecord(value)) return true;
+  if (
+    value.image_url !== undefined &&
+    value.image_url !== null &&
+    (typeof value.image_url !== "string" || !isPortableAssetReference(value.image_url))
+  ) {
+    return false;
+  }
+  if (value.detail_images !== undefined && value.detail_images !== null) {
+    if (typeof value.detail_images !== "string") return false;
+    try {
+      const images = JSON.parse(value.detail_images) as unknown;
+      if (!isStringArray(images) || !images.every(isPortableAssetReference)) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (value.detail_props !== undefined && value.detail_props !== null) {
+    if (typeof value.detail_props !== "string") return false;
+    try {
+      if (!isDetailPropertyArray(JSON.parse(value.detail_props) as unknown)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isDetailPropertyArray(value: unknown): boolean {
+  return Boolean(
+    Array.isArray(value) &&
+    value.every((property) =>
+      isRecord(property) && typeof property.name === "string" && typeof property.value === "string"
+    )
+  );
 }
 
 function isVisionTagSuggestionShape(value: unknown): boolean {

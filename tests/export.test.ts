@@ -83,6 +83,10 @@ describe("OutfitExportV2", () => {
     })).toThrow(/recommendationRuns/i);
     expect(() => validateOutfitExport({
       ...fixture,
+      sourceOrderItems: [{ detail_props: "not-json" }]
+    })).toThrow(/sourceOrderItems/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
       version: 2,
       schemaVersion: 1,
       features: [],
@@ -314,5 +318,54 @@ describe("OutfitExportV2", () => {
     expect(json).not.toContain("SECRET_SALT");
     expect(json).not.toContain("SECRET_TOKEN");
     expect(json).not.toContain("SECRET_WEATHER");
+  });
+
+  it("rejects absolute filesystem paths and embedded image bytes from JSON backups", () => {
+    const garmentDb = createDatabase(":memory:");
+    const row = garmentDb.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        materials, patterns, tags, image_url
+      ) VALUES ('private path', 'top', 'black', 'medium', '[]', '[]', 'casual', '[]', '[]', '[]', ?)
+    `).run("C:\\Users\\owner\\secret.webp");
+    expect(() => buildOutfitExportV2(garmentDb)).toThrow(
+      new RegExp(`garments.*${String(row.lastInsertRowid)}.*image_url.*portable`, "i")
+    );
+    garmentDb.prepare("UPDATE garments SET image_url = ? WHERE id = ?")
+      .run("data:image/png;base64,SECRET_BYTES", Number(row.lastInsertRowid));
+    expect(() => buildOutfitExportV2(garmentDb)).toThrow(/garments.*image_url.*portable/i);
+    for (const unsafeReference of [
+      "https://",
+      "//C:/Users/owner/secret.webp",
+      "/api/garment-assets/../../private",
+      "/api/garment-assets/%252e%252e/private",
+      "https://example.invalid/data:image/png;base64,SECRET_BYTES",
+      " https://img.alicdn.com/space.webp "
+    ]) {
+      garmentDb.prepare("UPDATE garments SET image_url = ? WHERE id = ?")
+        .run(unsafeReference, Number(row.lastInsertRowid));
+      expect(() => buildOutfitExportV2(garmentDb), unsafeReference).toThrow(
+        /garments.*image_url.*portable/i
+      );
+    }
+    garmentDb.prepare("UPDATE garments SET image_url = ? WHERE id = ?")
+      .run("/api/garment-thumbnails/local.webp", Number(row.lastInsertRowid));
+    expect(JSON.stringify(buildOutfitExportV2(garmentDb))).not.toContain("SECRET_BYTES");
+
+    const sourceDb = createDatabase(":memory:");
+    const source = sourceDb.prepare(`
+      INSERT INTO source_order_items (external_key, source, title, image_url, detail_images)
+      VALUES ('source-private', 'test', 'private source', ?, ?)
+    `).run("file:///C:/Users/owner/secret.webp", JSON.stringify(["https://img.alicdn.com/safe.webp"]));
+    expect(() => buildOutfitExportV2(sourceDb)).toThrow(
+      new RegExp(`source_order_items.*${String(source.lastInsertRowid)}.*image_url.*portable`, "i")
+    );
+    sourceDb.prepare("UPDATE source_order_items SET image_url = ?, detail_images = ? WHERE id = ?")
+      .run(
+        "https://img.alicdn.com/safe.webp",
+        JSON.stringify(["data:image/png;base64,SECRET_SOURCE_BYTES"]),
+        Number(source.lastInsertRowid)
+      );
+    expect(() => buildOutfitExportV2(sourceDb)).toThrow(/source_order_items.*detail_images.*portable/i);
   });
 });
