@@ -11,6 +11,13 @@ const DEFAULT_TARGETS = [
     kind: "directory"
   },
   {
+    relativePath: "output/playwright-taobao-profile",
+    description: "Playwright Chrome 淘宝登录态",
+    sensitive: true,
+    requiresExtraConfirmation: true,
+    kind: "directory"
+  },
+  {
     relativePath: "output/taobao-captures",
     description: "淘宝采集 JSON 产物",
     sensitive: true,
@@ -76,7 +83,7 @@ export function formatPrivacyCleanPlan(plan, args) {
     lines.push("如需清理采集产物、缩略图、日志和数据库，运行：npm run privacy:clean -- --confirm");
     lines.push("如需同时清除淘宝登录态，再额外加：--include-login-state");
   } else if (!args.includeLoginState) {
-    lines.push("已提供 --confirm，但未提供 --include-login-state；将保留 Selenium 淘宝登录态。");
+    lines.push("已提供 --confirm，但未提供 --include-login-state；将保留 Selenium 与 Playwright 淘宝登录态。");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -90,11 +97,17 @@ export function runPrivacyClean(root = process.cwd(), rawArgs = process.argv.sli
   const deleted = [];
   for (const target of plan) {
     if (!shouldCleanTarget(target, args)) continue;
+    const expansionRoot = target.kind === "glob"
+      ? path.dirname(target.absolutePath)
+      : target.absolutePath;
+    if (fs.existsSync(expansionRoot) && !isInsideRoot(root, expansionRoot)) {
+      throw new Error(`拒绝读取或清理项目目录外路径：${expansionRoot}`);
+    }
     for (const resolvedPath of expandTarget(target)) {
+      if (!fs.existsSync(resolvedPath)) continue;
       if (!isInsideRoot(root, resolvedPath)) {
         throw new Error(`拒绝清理项目目录外路径：${resolvedPath}`);
       }
-      if (!fs.existsSync(resolvedPath)) continue;
       fs.rmSync(resolvedPath, { recursive: true, force: true });
       deleted.push(resolvedPath);
     }
@@ -112,8 +125,22 @@ function expandTarget(target) {
     .map((entry) => path.join(directory, entry));
 }
 
-function isInsideRoot(root, targetPath) {
-  const relative = path.relative(path.resolve(root), path.resolve(targetPath));
+export function isInsideRoot(root, targetPath) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(targetPath);
+  if (!isResolvedInside(resolvedRoot, resolvedTarget)) return false;
+
+  try {
+    const realRoot = fs.realpathSync.native(resolvedRoot);
+    const realTarget = fs.realpathSync.native(resolvedTarget);
+    return isResolvedInside(realRoot, realTarget);
+  } catch {
+    return false;
+  }
+}
+
+function isResolvedInside(root, targetPath) {
+  const relative = path.relative(root, targetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 

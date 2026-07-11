@@ -8,6 +8,20 @@ data/outfit.sqlite
 
 数据库由 `server/db.ts` 在启动时自动迁移。应用返回给前端的公共类型定义在 `src/shared/types.ts`。
 
+## 迁移版本
+
+项目支持的未版本化 M0 前数据库在首次打开时执行：
+
+```text
+legacyBaseline0 → 登记 schema_migrations baseline 0 → 顺序执行编号迁移
+```
+
+- baseline 0 的名称为 `legacy-baseline`，负责把项目支持的未版本化历史数据库归一到 M0 之前的 schema，并在同一事务中登记版本 0。已经存在 `schema_migrations` 的数据库不会再次运行 baseline，而是校验已应用记录后继续编号迁移。
+- 当前编号迁移版本为 1，名称为 `recommendation-candidates`。
+- 编号必须是正整数并严格递增；数据库中的已应用记录必须是当前迁移列表的精确前缀。由更新版本应用过未知迁移的数据库会拒绝由旧代码继续写入。
+- 每个迁移使用独立的 `BEGIN IMMEDIATE` 事务。失败时 schema 修改和版本登记一起回滚；重复启动不会重复应用已登记迁移。
+- 生产代码只提供前向迁移，不提供 down migration。
+
 ## 枚举类型
 
 ```ts
@@ -21,6 +35,9 @@ type CaptureJobMode = "orders" | "item-detail";
 type CaptureEngine = "selenium" | "playwright";
 type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";
 type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
+type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
+type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
+type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
 ```
 
 说明：
@@ -84,6 +101,7 @@ interface Garment {
 | `materials` | 材质标签，预留给后续自动标签 |
 | `patterns` | 图案标签，预留给后续自动标签 |
 | `tags` | 用户或系统标签 |
+| `imageUrl` | 本地图片引用或来源图片 URL；前端默认不请求远程 URL，只有本次会话显式开启后才加载受信淘宝 CDN 图片 |
 | `owned` | 是否仍拥有 |
 | `confirmed` | 是否经过用户确认或手动编辑 |
 | `excluded` | 是否从推荐中排除 |
@@ -94,6 +112,48 @@ interface Garment {
 | `cutoutImageUrl` | 本地去背景透明 PNG 路径 |
 | `visionTags` | 本地视觉模型生成的标签建议，用户确认前不覆盖正式字段 |
 | `visionUpdatedAt` | 最近一次视觉处理或分析时间 |
+
+### ManualGarmentCreate
+
+`POST /api/garments` 使用以下负载创建无淘宝来源的手工衣物：
+
+```ts
+interface ManualGarmentCreate {
+  name: string;
+  category: GarmentCategory;
+  color: string;
+  warmth: GarmentWarmth;
+  seasons: Season[];
+  styles: string[];
+  formality: Formality;
+  brand?: string;
+  size?: string;
+  materials?: string[];
+  patterns?: string[];
+  tags?: string[];
+  notes?: string;
+}
+```
+
+服务端不接受来源、图片或状态字段，并固定写入 `source_order_item_id=NULL`、`raw_name=name`、空图片、`owned=1`、`confirmed=1`、`excluded=0`、`confidence=1`。
+
+### PersonalProfile
+
+```ts
+interface PersonalProfile {
+  heightCm?: number;
+  weightKg?: number;
+  bodyType?: BodyType;
+  skinTone?: SkinTone;
+  colorDisposition?: ColorDisposition;
+  temperatureSensitivity?: TemperatureSensitivity;
+  preferredColors?: string[];
+  avoidedColors?: string[];
+  preferredStyles?: string[];
+}
+```
+
+画像的所有字段均可省略。数据库没有保存画像时，`GET /api/profile` 返回 `{}`；前端初始经纬度也为空，不会静默注入北京坐标或具体个人数据。位置保存在浏览器 `localStorage`，不属于 `PersonalProfile` 或 SQLite 画像记录。
 
 ### WardrobeInsights
 
@@ -218,6 +278,8 @@ interface WeatherSnapshot {
 ```ts
 interface OutfitRecommendation {
   id: string;
+  candidateId: string;
+  outfitSignature: string;
   score: number;
   matchPercent?: number;
   scoreBreakdown?: RecommendationScoreBreakdown;
@@ -227,10 +289,12 @@ interface OutfitRecommendation {
 }
 
 interface RecommendationResult {
+  runId: number;
   weather: WeatherSnapshot;
   weatherScenario?: WeatherScenario;
   occasion: string;
   outfits: OutfitRecommendation[];
+  missingSlots: GarmentCategory[];
 }
 
 interface RecommendationScoreBreakdown {
@@ -243,6 +307,8 @@ interface RecommendationScoreBreakdown {
   recentWear: number;
   itemConfidence: number;
   userPreference: number;
+  bodyProportion: number;
+  colorSuitability: number;
 }
 
 interface UserPreferenceProfile {
@@ -259,6 +325,49 @@ interface UserPreferenceProfile {
 - `matchPercent` 是 `0-100` 的用户可理解匹配度。
 - `scoreBreakdown` 是归一化后的可解释维度分，方便展示天气舒适度、场合匹配、近期穿着惩罚和用户偏好贡献。
 - `weatherScenario` 是天气归一化层，用于解释推荐依据。
+- `runId` 指向保存本次请求与结果的 `recommendation_runs.id`。
+- `candidateId` 是全局唯一候选 UUID；`id === candidateId` 是当前兼容约定。
+- `outfitSignature` 是按固定 slot 顺序和衣物 ID 计算的完整组合 SHA-256 签名。它可跨 run 识别相同组合，但不代替天气、场合、rank 或评分上下文。
+- `missingSlots` 只表达无法构成连衣裙或“上装＋下装”核心时的结构化缺口；鞋履是软缺口。
+- 候选按核心、外套、鞋履、配饰分层生成，默认总评估上限 20,000，每层 beam width 上限 120；超限时采用确定性均匀采样。
+
+### OutfitExport
+
+```ts
+interface OutfitExportBase {
+  exportedAt: string;
+  profile: PersonalProfile;
+  garments: Garment[];
+  sourceOrderItems: unknown[];
+  wearLogs: WearLogEntry[];
+  recommendationRuns: RecommendationRunEntry[];
+}
+
+interface OutfitExportV1 extends OutfitExportBase {
+  version: 1;
+}
+
+interface RecommendationCandidateExport {
+  candidateId: string;
+  runId: number;
+  outfitSignature: string;
+  rank: number;
+  itemIds: number[];
+  scoreSnapshot: unknown;
+  createdAt: string;
+}
+
+interface OutfitExportV2 extends OutfitExportBase {
+  version: 2;
+  schemaVersion: number;
+  features: string[];
+  recommendationCandidates: RecommendationCandidateExport[];
+}
+
+type OutfitExport = OutfitExportV1 | OutfitExportV2;
+```
+
+`GET /api/export` 当前只生成 V2；内部校验器仍识别 V1 与 V2。`schemaVersion` 是数据库迁移版本，不等同于导出 envelope 的 `version`。导出没有条数截断，不内嵌图片二进制，图片和资产字段不允许绝对文件系统路径；当前没有恢复导入 API。
 
 ### 淘宝采集类型
 
@@ -383,6 +492,23 @@ interface TaobaoImportPreview {
 
 ## SQLite 表
 
+### schema_migrations
+
+记录 legacy baseline 与每个已成功提交的编号迁移。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `version` | INTEGER | PRIMARY KEY | `0` 为 legacy baseline，正整数为编号迁移 |
+| `name` | TEXT | NOT NULL | 稳定迁移名称 |
+| `applied_at` | TEXT | NOT NULL | 提交迁移时的 ISO 时间 |
+
+当前迁移列表对应：
+
+| version | name |
+| ---: | --- |
+| 0 | `legacy-baseline` |
+| 1 | `recommendation-candidates` |
+
 ### users
 
 保存本地门禁账号。当前产品仍是个人本地应用，只允许首次注册一个账号，不按用户隔离衣橱数据。
@@ -489,6 +615,9 @@ ON source_order_items(item_id);
 
 更新行为：
 
+- legacy 表定义中的 `confirmed` 默认值仍为 `0`。淘宝导入显式写入 `0`，手工创建接口显式写入 `1`；不能用表默认值推断衣物来源。
+- 淘宝重复导入不会覆盖用户已经确认的状态。
+- 推荐和替代单品只使用 `owned=1`、`confirmed=1`、`excluded=0` 的衣物。
 - `PUT /api/garments/:id` 会更新展示字段和 `updated_at`。
 - 用户确认过的名称在迁移回填时会尽量保留，避免被自动清洗覆盖。
 - 删除衣橱条目只删除 `garments` 行，不删除淘宝来源记录或采集文件。
@@ -535,6 +664,44 @@ ON source_order_items(item_id);
 | `result_json` | TEXT | NOT NULL | JSON 编码的推荐结果 |
 | `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
 
+推荐 run 与最终候选在同一事务中保存。`result_json` 包含响应 `runId`、`candidateId` 和 `outfitSignature`；任一候选写入失败时，run 与全部 candidate 一并回滚。
+
+### app_settings
+
+保存本机应用级设置；当前使用 `personalProfile` 键保存用户明确提交的个人画像。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `key` | TEXT | PRIMARY KEY | 设置键；当前画像键为 `personalProfile` |
+| `value` | TEXT | NOT NULL | JSON 编码的设置值 |
+| `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 最近更新时间 |
+
+未保存 `personalProfile` 行时画像为 `{}`；服务端不会写入具体身体数据默认值。位置经纬度保存在浏览器 `localStorage`，不属于该表。
+
+### recommendation_candidates
+
+保存最终返回的候选快照，不保存 beam search 的中间状态。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `candidate_id` | TEXT | PRIMARY KEY NOT NULL | 全局唯一候选 UUID |
+| `run_id` | INTEGER | NOT NULL, FK | 关联 `recommendation_runs.id`，删除 run 时级联删除 |
+| `signature` | TEXT | NOT NULL | 完整衣物组合的稳定 SHA-256 签名 |
+| `rank` | INTEGER | NOT NULL, `CHECK (rank >= 1)` | 在该 run 返回数组中的一基排名 |
+| `item_ids_json` | TEXT | NOT NULL, JSON array CHECK | 按 canonical slot 顺序保存的衣物 ID |
+| `score_snapshot` | TEXT | NOT NULL, JSON object CHECK | 返回时的分数、匹配度、breakdown 与理由快照 |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+
+约束与索引：
+
+```sql
+UNIQUE (run_id, rank);
+CREATE INDEX idx_recommendation_candidates_run_id ON recommendation_candidates(run_id);
+CREATE INDEX idx_recommendation_candidates_signature ON recommendation_candidates(signature);
+```
+
+`signature` 不唯一：同一组合可以在多个 run 中再次出现；`candidate_id` 才是单次候选快照的全局身份。
+
 ## 数据目录
 
 | 路径 | 内容 | 是否应提交 |
@@ -549,3 +716,5 @@ ON source_order_items(item_id);
 | `logs` | 本地日志 | 否 |
 
 这些路径已在 `.gitignore` 中忽略。
+
+`npm run privacy:clean` 默认只打印包含绝对路径的清理计划，不删除文件。`--confirm` 会清理采集产物、缩略图、日志和 `data/outfit.sqlite*`，但保留 Selenium 与 Playwright 登录 profile；只有同时加入 `--include-login-state` 才允许清理两个登录态目录。所有目标的词法路径和真实路径都必须位于项目根目录内；junction/symlink 外逃或 realpath 解析失败会中止清理。`output/models` 不在当前 privacy-clean 目标中。

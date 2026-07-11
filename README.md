@@ -56,6 +56,8 @@ npm run start
 
 前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8788`。
 
+API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 1（`recommendation-candidates`）。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
+
 ## 测试与构建
 
 Node/TypeScript 测试：
@@ -146,8 +148,16 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - 当前自动衣橱导入会为 `top`、`bottom`、`dress`、`outerwear`、`shoes`、`accessory` 创建衣橱草稿；配饰在推荐中作为可选增强项，不作为完整搭配的必需核心单品。
 - 导入预览不会写入数据库，可用于在正式导入前检查自动分类、置信度、重复项和跳过原因。
 - 商品详情采集可以补充品牌、商品名、详情图、参数和描述；后导入的详情会合并到已购 SKU。
-- 导入后的条目可以在应用中手动确认、编辑、排除或标记为未拥有。
-- 衣橱和推荐卡片默认只显示本地缓存缩略图 `/api/garment-thumbnails/...`；没有本地缩略图时显示占位图，不直接加载远程商品图片。需要本地化图片时，先使用应用内“刷新缩略图”让后端受控下载。
+- 淘宝导入创建的衣物默认 `confirmed=false`；重复导入不会把用户已经确认的衣物重新设为未确认。导入后的条目可以在应用中确认、编辑、排除或标记为未拥有。
+- `POST /api/garments` 创建不关联淘宝来源的手工衣物，服务端固定写入 `owned=true`、`confirmed=true`、`excluded=false`。当前接口不接收图片；本地照片建档属于后续资产流程。
+- 推荐及替代单品只使用同时满足 `owned=true`、`confirmed=true`、`excluded=false` 的衣物。无法组成连衣裙或“上装＋下装”核心时，响应会通过 `missingSlots` 说明缺口。
+- 衣服库和推荐卡片默认只加载本地 `/api/garment-thumbnails/...` 或 `/api/garment-assets/...` 图片，本地去背景图和缩略图始终优先。用户可在“设置 → 图片隐私”中显式开启本次会话加载淘宝远程图；该选择只保存在 `sessionStorage`，新会话恢复为关闭。开启后浏览器会直接请求通过校验的 HTTPS 淘宝 CDN 图片，可能暴露 IP 与 User-Agent；其他远程域名仍不会加载。
+
+## 推荐边界与稳定身份
+
+- 推荐按“核心组合 → 外套 → 鞋履 → 配饰”分层生成。默认一次最多评估 20,000 个中间候选，每层最多保留 120 个 beam 状态；超出预算时使用确定性均匀采样。因此结果是有界、可解释的启发式选择，不宣称全局最优。
+- 每次推荐响应包含数据库 `runId`。每套候选的 `candidateId` 是全局唯一 UUID，兼容字段 `id` 当前与 `candidateId` 相同。
+- `outfitSignature` 是完整衣物组合的稳定 SHA-256 内容签名；相同组合跨 run 保持一致，但天气、场合、rank 和评分仍属于各自的 run/candidate 快照。
 
 ## 隐私边界
 
@@ -158,7 +168,7 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；Playwright 商品详情采集使用 `output/playwright-taobao-profile`；这些目录在本机保存。
 - 采集 JSON 位于 `output/taobao-captures`，SQLite 位于 `data/outfit.sqlite`，两者可能包含购买商品信息。
 - 本地视觉模型只在用户点击下载或显式运行模型脚本时下载到 `output/models`；去背景和图片标签建议只读取本地缩略图，不调用付费 AI API，也不上传衣物图片。
-- 天气接口会向 Open-Meteo 发送经纬度。前端会把经纬度保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`。
+- 新安装的位置和个人画像均为真正未设置状态：经纬度初始为空，个人画像初始为 `{}`，不会静默使用北京坐标或具体身高、体重、体型和肤色。用户设置后，经纬度才会保存在浏览器 `localStorage` 的 `outfit.latitude`、`outfit.longitude`；首次获取天气或生成推荐前必须提供有效经纬度。天气接口会向 Open-Meteo 发送该坐标。
 - PWA service worker 只缓存静态 shell，不缓存衣橱、订单、推荐、导出或任何 `/api` 响应。
 - `.gitignore` 已忽略 `data/`、`output/`、`logs/`、`node_modules/` 和 `dist/`，不要把本地采集产物、Chrome profile 或数据库提交到仓库。
 
@@ -169,7 +179,8 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - `output/playwright-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Playwright Chrome 退出淘宝登录态。
 - `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
 - `output/garment-thumbnails` 是本地缩略图缓存。
-- `GET /api/export` 导出的是敏感备份，分享或同步前请确认接收方和存放位置可信。
+- `GET /api/export` 当前始终返回 `OutfitExportV2`，包含 `version=2`、当前 `schemaVersion`、功能标识、画像、衣物、淘宝来源、穿着记录、全部推荐 run 和推荐 candidate 快照。前端请求前会明确提示其中含有敏感本地数据。
+- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1 导出。
 
 查看隐私清理计划但不删除任何文件：
 
@@ -183,11 +194,13 @@ npm run privacy:clean
 npm run privacy:clean -- --confirm
 ```
 
-如需同时清除 Selenium 淘宝登录态，需要额外显式加入：
+如需同时清除 Selenium 与 Playwright 淘宝登录态，需要额外显式加入：
 
 ```powershell
 npm run privacy:clean -- --confirm --include-login-state
 ```
+
+不带 `--confirm` 时，脚本只打印所有目标的绝对路径和影响，不删除任何文件。只带 `--confirm` 时会清理采集产物、缩略图、日志和数据库，但保留两个浏览器登录 profile；只有同时提供 `--confirm --include-login-state` 才会清理 Selenium 与 Playwright 登录态。每个清理目标的词法路径和真实路径都必须位于项目根目录内；junction/symlink 指向项目外或 realpath 解析失败时，脚本会拒绝继续清理。模型缓存 `output/models` 不在当前清理范围内。
 
 本项目不会在安装、测试、构建、启动或 CI 中自动运行 `privacy:clean`。
 

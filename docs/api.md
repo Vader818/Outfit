@@ -400,6 +400,64 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 ]
 ```
 
+`imageUrl` 可能包含淘宝来源 URL，但这不表示前端会直接请求它。UI 默认只显示本地图；只有用户在本次会话显式开启远程淘宝图片后，才会加载通过校验的 HTTPS 淘宝 CDN 图片。
+
+## POST /api/garments
+
+创建一件不关联淘宝来源的手工衣物。成功时返回 HTTP 201 和创建后的 `Garment`。
+
+请求体：`ManualGarmentCreate`
+
+```json
+{
+  "name": "海军蓝针织衫",
+  "category": "top",
+  "color": "blue",
+  "warmth": "medium",
+  "seasons": ["spring", "autumn"],
+  "styles": ["casual", "smart-casual"],
+  "formality": "smart-casual",
+  "brand": "",
+  "size": "M",
+  "materials": ["wool"],
+  "patterns": ["solid"],
+  "tags": ["针织"],
+  "notes": "手工录入"
+}
+```
+
+规则：
+
+- 必填字段为 `name`、`category`、`color`、`warmth`、`seasons`、`styles`、`formality`。
+- 可选字段为 `brand`、`size`、`materials`、`patterns`、`tags`、`notes`。
+- 不接受 `sourceOrderItemId`、`rawName`、`imageUrl`、`owned`、`confirmed`、`excluded`、`confidence` 等服务端状态字段；传入未知字段返回 HTTP 400。
+- 服务端固定写入 `source_order_item_id=NULL`、`raw_name=name`、空图片、`owned=true`、`confirmed=true`、`excluded=false`、`confidence=1`。
+
+当前接口不处理本地照片上传。
+
+## GET /api/profile
+
+返回本地个人画像。所有字段都可省略；从未保存画像时返回 `{}`，不会注入具体身高、体重、体型、肤色或偏好默认值。
+
+响应：`PersonalProfile`
+
+```json
+{}
+```
+
+## PUT /api/profile
+
+用已校验的请求对象替换当前本地个人画像，而不是对旧对象做字段级 patch。提交 `{}` 可保存真正未设置的画像。
+
+允许字段：
+
+- `heightCm`：`120..230`
+- `weightKg`：`30..200`
+- `bodyType`、`skinTone`、`colorDisposition`、`temperatureSensitivity`
+- `preferredColors`、`avoidedColors`、`preferredStyles`
+
+响应：保存后的 `PersonalProfile`。
+
 ## POST /api/garments/thumbnails/refresh
 
 从 `source_order_items` 和 `output/taobao-captures` 中收集同一 `itemId` 的图片候选，按 URL 信号和轻量图片头校验选择商品图，低频下载到 `output/garment-thumbnails`，并把成功项的 `garments.image_url` 更新为 `/api/garment-thumbnails/<file>`。
@@ -424,6 +482,43 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 ```
 
 本地缩略图通过 `GET /api/garment-thumbnails/<file>` 读取，供衣服库和推荐卡片中的 `<img>` 直接使用。
+
+## GET /api/garments/:id/thumbnail-candidates
+
+返回指定衣物可选择的商品图候选。候选只来自该衣物当前图片、关联淘宝订单/详情和本地采集产物，并经过淘宝图片域名、协议及 URL 归一化校验；接口本身不下载图片，也不修改数据库。
+
+响应：`GarmentThumbnailCandidatesResponse`
+
+```json
+{
+  "garmentId": 7,
+  "currentImageUrl": "/api/garment-thumbnails/7-current.webp",
+  "candidates": [
+    {
+      "url": "https://img.alicdn.com/imgextra/example.jpg",
+      "source": "detail",
+      "score": 86,
+      "selected": false
+    }
+  ]
+}
+```
+
+`source` 取值为 `current`、`order`、`detail` 或 `capture`。返回远程候选 URL 不表示浏览器会直接展示它；选择后仍由后端受控下载并落为本地缩略图。
+
+## POST /api/garments/:id/thumbnail
+
+从上一个接口为同一件衣物重新计算出的候选集合中选择一张图，由后端执行受控下载并保存本地缩略图。客户端不能提交任意外站 URL 绕过候选集合。
+
+请求体：
+
+```json
+{
+  "imageUrl": "https://img.alicdn.com/imgextra/example.jpg"
+}
+```
+
+成功时返回更新后的 `Garment`，其 `imageUrl` 指向本地 `/api/garment-thumbnails/...`，旧去背景图引用会被清空。候选不属于该衣物时返回 HTTP 400；下载失败返回 HTTP 502。
 
 ## GET /api/vision/models
 
@@ -604,6 +699,98 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 { "ok": true }
 ```
 
+## GET /api/wear-logs
+
+返回最近的穿着记录，按 `worn_at`、`id` 从新到旧排序。当前接口不接收分页参数，默认最多返回 50 条。
+
+响应：`WearLogEntry[]`
+
+```json
+[
+  {
+    "id": 1,
+    "garmentIds": [1, 2, 3],
+    "context": { "occasion": "casual" },
+    "wornAt": "2026-07-11 08:00:00"
+  }
+]
+```
+
+## GET /api/recommendation-runs
+
+返回最近的推荐 run，按创建时间和 ID 从新到旧排序。当前接口不接收分页参数，默认最多返回 20 条。
+
+响应：`RecommendationRunEntry[]`
+
+```json
+[
+  {
+    "id": 12,
+    "input": {},
+    "result": {
+      "runId": 12,
+      "weather": {
+        "date": "2026-07-11",
+        "temperature": 24,
+        "apparentTemperature": 25,
+        "precipitationProbability": 10,
+        "windSpeed": 8,
+        "weatherCode": 1,
+        "summary": "晴"
+      },
+      "occasion": "casual",
+      "outfits": [],
+      "missingSlots": ["top", "bottom", "dress"]
+    },
+    "createdAt": "2026-07-11 08:00:00"
+  }
+]
+```
+
+## GET /api/export
+
+构建完整的敏感本地 JSON 备份。该接口不采用穿着记录或推荐历史列表接口的默认条数限制，当前始终返回 `OutfitExportV2`。
+
+```json
+{
+  "version": 2,
+  "schemaVersion": 1,
+  "exportedAt": "2026-07-11T08:00:00.000Z",
+  "features": [
+    "versioned-migrations",
+    "recommendation-candidates"
+  ],
+  "profile": {},
+  "garments": [],
+  "sourceOrderItems": [],
+  "wearLogs": [],
+  "recommendationRuns": [],
+  "recommendationCandidates": [
+    {
+      "candidateId": "11111111-1111-4111-8111-111111111111",
+      "runId": 12,
+      "outfitSignature": "07cf119e738366b94cfc2c55d75db97badd85675afd57241f0bfe02425af2130",
+      "rank": 1,
+      "itemIds": [3],
+      "scoreSnapshot": {
+        "score": 91,
+        "matchPercent": 86,
+        "scoreBreakdown": {},
+        "reasons": ["风格和轻商务场合匹配。"]
+      },
+      "createdAt": "2026-07-11 08:00:00"
+    }
+  ]
+}
+```
+
+说明：
+
+- 前端在请求前会显示敏感备份确认；直接调用 API 不会触发这层 UI 确认，但仍要求有效本地 session。调用方必须自行确认备份的接收方和存放位置可信。
+- JSON 不内嵌图片二进制；图片和资产字段不允许绝对文件系统路径、`data:`、`blob:` 或 `file:` 引用。本地图保留为 `/api/...` 或 `/assets/...` 引用，远程来源保留为 URL。
+- 内部版本校验器仍能识别旧 V1 envelope，但当前没有恢复导入 API。
+- `schemaVersion` 是数据库迁移版本，不等同于导出 envelope 的 `version`。
+
 ## GET /api/insights
 
 读取本地衣橱分析洞察。接口会保留基础统计、常穿/未穿列表，并基于仍拥有且未排除的活跃单品生成季节分布、风格倾向、健康度、洞察建议、购物建议和身材建议。
@@ -695,7 +882,9 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/recommendations
 
-生成搭配推荐。服务只使用 `owned = true` 且 `excluded = false` 的衣橱条目，并会合并请求中的 `recentlyWornGarmentIds` 与数据库最近穿着记录。
+生成搭配推荐。服务只使用同时满足 `owned=true`、`confirmed=true`、`excluded=false` 的衣橱条目，替代单品也遵循同一资格规则。请求中的 `recentlyWornGarmentIds` 会与数据库最近穿着记录合并。
+
+候选按“核心组合 → 外套 → 鞋履 → 配饰”分层生成。默认一次最多评估 20,000 个中间候选，每层最多保留 120 个 beam 状态；超出预算时使用确定性均匀采样。这是有界启发式计算，不保证遍历大衣橱的全部笛卡尔积。预算计数属于服务内部诊断，不作为响应字段返回。
 
 请求体：
 
@@ -725,6 +914,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ```json
 {
+  "runId": 12,
   "weather": {
     "date": "2026-06-11",
     "temperature": 24,
@@ -738,7 +928,9 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
   "occasion": "smart-casual",
   "outfits": [
     {
-      "id": "top:1-bottom:2-shoes:3",
+      "id": "11111111-1111-4111-8111-111111111111",
+      "candidateId": "11111111-1111-4111-8111-111111111111",
+      "outfitSignature": "07cf119e738366b94cfc2c55d75db97badd85675afd57241f0bfe02425af2130",
       "score": 91,
       "matchPercent": 86,
       "scoreBreakdown": {
@@ -750,15 +942,44 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
         "colorHarmony": 6,
         "recentWear": 0,
         "itemConfidence": 7,
-        "userPreference": 7
+        "userPreference": 7,
+        "bodyProportion": 0,
+        "colorSuitability": 0
       },
-      "items": [],
+      "items": [
+        {
+          "id": 3,
+          "brand": "",
+          "name": "海军蓝连衣裙",
+          "rawName": "海军蓝连衣裙",
+          "category": "dress",
+          "color": "blue",
+          "warmth": "light",
+          "seasons": ["spring", "summer"],
+          "styles": ["smart-casual"],
+          "formality": "smart-casual",
+          "imageUrl": "",
+          "owned": true,
+          "confirmed": true,
+          "excluded": false,
+          "confidence": 1
+        }
+      ],
       "reasons": ["风格和轻商务场合匹配。"],
       "alternatives": []
     }
-  ]
+  ],
+  "missingSlots": []
 }
 ```
+
+身份与空结果语义：
+
+- `runId` 是 `recommendation_runs.id`。
+- `candidateId` 是候选快照的全局唯一 UUID；兼容字段 `id` 当前与它相同。
+- `outfitSignature` 是完整已选衣物组合的稳定 SHA-256 内容签名。相同组合跨 run 可得到相同 signature，但天气、场合、rank 和评分仍属于各自的 run/candidate 快照。
+- 客户端请求体中的 `runId`、`candidateId`、`outfitSignature` 等未知字段不会进入已保存的推荐输入，也不能影响服务端生成的身份。
+- 无法组成一件连衣裙或“上装＋下装”核心时，返回 `outfits=[]` 和结构化 `missingSlots`。鞋履仍是软缺口，不会单独导致空结果。
 
 ## PowerShell 调用示例
 
