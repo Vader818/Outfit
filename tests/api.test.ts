@@ -1092,12 +1092,17 @@ describe("API routes", () => {
       headers: { cookie: authCookie }
     });
     expect(defaultProfileResponse.status).toBe(200);
-    expect(await defaultProfileResponse.json()).toMatchObject({
-      heightCm: 176,
-      weightKg: 57,
-      bodyType: "slim-tall",
-      skinTone: "dark-yellow"
+    expect(await defaultProfileResponse.json()).toEqual({});
+
+    const emptySaveResponse = await fetch(`${baseUrl}/api/profile`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({})
     });
+    expect(emptySaveResponse.status).toBe(200);
+    expect(await emptySaveResponse.json()).toEqual({});
+    expect(db.prepare("SELECT value FROM app_settings WHERE key = 'personalProfile'").get())
+      .toMatchObject({ value: "{}" });
 
     const saveResponse = await fetch(`${baseUrl}/api/profile`, {
       method: "PUT",
@@ -1130,6 +1135,69 @@ describe("API routes", () => {
     expect(await invalidResponse.json()).toMatchObject({
       error: { code: "VALIDATION_ERROR", message: expect.stringContaining("heightCm") }
     });
+  });
+
+  it("creates manual garments as confirmed wardrobe items without accepting source-state forgery", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const manual = (name: string, category: "top" | "bottom" | "shoes") => ({
+      name,
+      category,
+      color: "black",
+      warmth: "medium",
+      seasons: ["spring", "summer", "autumn", "winter"],
+      styles: ["casual"],
+      formality: "casual"
+    });
+
+    const forgedResponse = await fetch(`${baseUrl}/api/garments`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ ...manual("伪造上装", "top"), confirmed: false })
+    });
+    expect(forgedResponse.status).toBe(400);
+    expect(await forgedResponse.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("confirmed") }
+    });
+
+    const created = [];
+    for (const input of [manual("手工上装", "top"), manual("手工下装", "bottom"), manual("手工鞋履", "shoes")]) {
+      const response = await fetch(`${baseUrl}/api/garments`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(input)
+      });
+      expect(response.status).toBe(201);
+      created.push(await response.json());
+    }
+
+    expect(created[0]).toMatchObject({
+      name: "手工上装",
+      owned: true,
+      confirmed: true,
+      excluded: false,
+      confidence: 1
+    });
+    expect(created[0]).not.toHaveProperty("sourceOrderItemId");
+    expect(db.prepare("SELECT source_order_item_id, owned, confirmed, excluded FROM garments WHERE id = ?")
+      .get(created[0].id)).toEqual({ source_order_item_id: null, owned: 1, confirmed: 1, excluded: 0 });
+
+    const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ weather: recommendationWeather, occasion: "casual" })
+    });
+    expect(recommendationResponse.status).toBe(200);
+    const recommendation = await recommendationResponse.json();
+    expect(recommendation.outfits.length).toBeGreaterThan(0);
+    expect(recommendation.outfits[0].items.map((item: { id: number }) => item.id))
+      .toEqual(expect.arrayContaining(created.map((item) => item.id)));
   });
 
   it("updates garment detail fields and exposes local history insights and export data", async () => {

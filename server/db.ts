@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Formality, Garment, GarmentThumbnailCandidatesResponse, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -143,17 +143,7 @@ interface CaptureImageRecord {
   images: string[];
 }
 
-export const DEFAULT_PERSONAL_PROFILE: PersonalProfile = {
-  heightCm: 176,
-  weightKg: 57,
-  bodyType: "slim-tall",
-  skinTone: "dark-yellow",
-  colorDisposition: "cool-clean",
-  temperatureSensitivity: "neutral",
-  preferredColors: ["white", "blue", "gray"],
-  avoidedColors: ["yellow", "brown"],
-  preferredStyles: ["smart-casual"]
-};
+export const DEFAULT_PERSONAL_PROFILE: PersonalProfile = {};
 
 export function defaultDatabasePath(): string {
   return join(process.cwd(), "data", "outfit.sqlite");
@@ -588,6 +578,36 @@ export function listGarments(db: AppDatabase): Garment[] {
     ORDER BY garments.excluded ASC, garments.owned DESC, garments.id DESC
   `).all() as unknown as GarmentRow[];
   return rows.map(rowToGarment);
+}
+
+export function createManualGarment(db: AppDatabase, input: ManualGarmentCreate): Garment {
+  const insert = db.prepare(`
+    INSERT INTO garments (
+      source_order_item_id, brand, name, raw_name, category, color, warmth,
+      seasons, styles, formality, size, materials, patterns, tags, image_url,
+      owned, confirmed, excluded, confidence, notes
+    ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?)
+  `).run(
+    input.brand ?? "",
+    input.name,
+    input.name,
+    input.category,
+    input.color,
+    input.warmth,
+    JSON.stringify(input.seasons),
+    JSON.stringify(input.styles),
+    input.formality,
+    input.size ?? "",
+    JSON.stringify(input.materials ?? []),
+    JSON.stringify(input.patterns ?? []),
+    JSON.stringify(input.tags ?? []),
+    input.notes ?? ""
+  );
+  const id = Number(insert.lastInsertRowid);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("SQLite returned an invalid manual garment id");
+  }
+  return getGarmentById(db, id);
 }
 
 export function getGarmentById(db: AppDatabase, id: number): Garment {
@@ -1770,13 +1790,20 @@ function withStoredStandaloneDetail(
 }
 
 function normalizePersonalProfile(profile: PersonalProfile): PersonalProfile {
-  return {
-    ...DEFAULT_PERSONAL_PROFILE,
-    ...profile,
-    preferredColors: normalizeStringArray(profile.preferredColors ?? DEFAULT_PERSONAL_PROFILE.preferredColors),
-    avoidedColors: normalizeStringArray(profile.avoidedColors ?? DEFAULT_PERSONAL_PROFILE.avoidedColors),
-    preferredStyles: normalizeStringArray(profile.preferredStyles ?? DEFAULT_PERSONAL_PROFILE.preferredStyles)
-  };
+  const next: PersonalProfile = { ...profile };
+  for (const key of Object.keys(next) as Array<keyof PersonalProfile>) {
+    if (next[key] === undefined) delete next[key];
+  }
+  if (profile.preferredColors !== undefined) {
+    next.preferredColors = normalizeStringArray(profile.preferredColors);
+  }
+  if (profile.avoidedColors !== undefined) {
+    next.avoidedColors = normalizeStringArray(profile.avoidedColors);
+  }
+  if (profile.preferredStyles !== undefined) {
+    next.preferredStyles = normalizeStringArray(profile.preferredStyles);
+  }
+  return next;
 }
 
 function normalizeStringArray(value: unknown): string[] {

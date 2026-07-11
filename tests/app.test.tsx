@@ -4,7 +4,25 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
-import { BACKUP_EXPORT_CONFIRMATION, exportBackupWithConfirmation } from "../src/lib/browser";
+import {
+  BACKUP_EXPORT_CONFIRMATION,
+  REMOTE_TAOBAO_IMAGES_SESSION_KEY,
+  exportBackupWithConfirmation,
+  readSessionStorageValue,
+  writeSessionStorageValue
+} from "../src/lib/browser";
+import {
+  isRecommendationEligibleGarment,
+  isRecommendationPendingGarment,
+  isWardrobeReviewPendingGarment,
+  resolveGarmentImageSource
+} from "../src/lib/garments";
+import {
+  DEFAULT_LATITUDE,
+  DEFAULT_LONGITUDE,
+  DEFAULT_PROFILE,
+  parseLocationCoordinates
+} from "../src/shared/presentation";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
@@ -15,6 +33,43 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("starts with truly unset location and profile values and parses coordinates strictly", () => {
+    expect(DEFAULT_LATITUDE).toBe("");
+    expect(DEFAULT_LONGITUDE).toBe("");
+    expect(DEFAULT_PROFILE).toEqual({});
+
+    for (const coordinates of [
+      ["", ""],
+      ["   ", "116.4"],
+      ["31.2", ""],
+      ["NaN", "116.4"],
+      ["91", "116.4"],
+      ["31.2", "181"]
+    ] as const) {
+      expect(parseLocationCoordinates(coordinates[0], coordinates[1])).toBeNull();
+    }
+    expect(parseLocationCoordinates("0", "0")).toEqual({ latitude: 0, longitude: 0 });
+    expect(parseLocationCoordinates(" 31.2304 ", " 121.4737 ")).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737
+    });
+  });
+
+  it("stores remote image consent only in session storage", () => {
+    const sessionSet = vi.fn();
+    const localSet = vi.fn();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => key === REMOTE_TAOBAO_IMAGES_SESSION_KEY ? "true" : null,
+      setItem: sessionSet
+    });
+    vi.stubGlobal("localStorage", { setItem: localSet });
+
+    expect(readSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false")).toBe("true");
+    expect(writeSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false")).toBe(true);
+    expect(sessionSet).toHaveBeenCalledWith(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false");
+    expect(localSet).not.toHaveBeenCalled();
+  });
+
   it("does not request or create a backup when sensitive export confirmation is cancelled", async () => {
     const loadExport = vi.fn();
     const download = vi.fn();
@@ -467,7 +522,7 @@ describe("App", () => {
     expect(markup).not.toContain(">winter<");
   });
 
-  it("renders trusted Taobao remote garment images and still blocks unrelated remote URLs", async () => {
+  it("loads trusted Taobao garment images only after explicit session opt-in", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
       WardrobeView?: (props: {
@@ -479,10 +534,11 @@ describe("App", () => {
         onUpdate: (id: number, update: Partial<Garment>) => void;
         onDelete: (id: number) => void;
         onBulkConfirm: () => void;
+        allowRemoteTaobaoImages?: boolean;
       }) => ReactNode;
     }).WardrobeView;
 
-    const trustedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+    const defaultMarkup = renderToStaticMarkup(<>{WardrobeView?.({
       garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
       selectedIds: [],
       busy: false,
@@ -491,6 +547,17 @@ describe("App", () => {
       onUpdate: vi.fn(),
       onDelete: vi.fn(),
       onBulkConfirm: vi.fn()
+    })}</>);
+    const enabledMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      allowRemoteTaobaoImages: true
     })}</>);
     const blockedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
       garments: [makeGarment(405, "外站图片衬衫", "top", { imageUrl: "https://example.com/remote-shirt.jpg" })],
@@ -503,10 +570,31 @@ describe("App", () => {
       onBulkConfirm: vi.fn()
     })}</>);
 
-    expect(trustedMarkup).toContain('src="https://img.alicdn.com/remote-shirt.jpg"');
-    expect(trustedMarkup).toContain('referrerPolicy="no-referrer"');
+    expect(defaultMarkup).not.toContain("https://img.alicdn.com/remote-shirt.jpg");
+    expect(defaultMarkup).not.toContain("<img");
+    expect(enabledMarkup).toContain('src="https://img.alicdn.com/remote-shirt.jpg"');
+    expect(enabledMarkup).toContain('referrerPolicy="no-referrer"');
     expect(blockedMarkup).not.toContain("https://example.com/remote-shirt.jpg");
     expect(blockedMarkup).not.toContain("<img");
+  });
+
+  it("keeps local thumbnails ahead of remote cutouts and remote originals", () => {
+    const localOriginal = makeGarment(500, "本地图优先", "top", {
+      imageUrl: "/api/garment-thumbnails/local-original.webp",
+      cutoutImageUrl: "https://img.alicdn.com/remote-cutout.png"
+    });
+    expect(resolveGarmentImageSource(localOriginal, true)).toEqual({
+      url: "/api/garment-thumbnails/local-original.webp",
+      cutout: false,
+      remote: false
+    });
+    expect(resolveGarmentImageSource(
+      makeGarment(501, "远程原图", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })
+    )).toBeNull();
+    expect(resolveGarmentImageSource(
+      makeGarment(501, "远程原图", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" }),
+      true
+    )).toMatchObject({ url: "https://img.alicdn.com/remote-shirt.jpg", cutout: false, remote: true });
   });
 
   it("renders local cached garment thumbnails with privacy-preserving image attributes", async () => {
@@ -769,6 +857,20 @@ describe("App", () => {
       onClose
     });
     const markup = renderToStaticMarkup(<>{tree}</>);
+    const enabledMarkup = renderToStaticMarkup(
+      <ThumbnailPicker
+        garment={garment}
+        candidates={candidates}
+        selectedUrl={candidates[0].url}
+        loading={false}
+        saving={false}
+        error=""
+        allowRemoteTaobaoImages
+        onSelect={onSelect}
+        onSave={onSave}
+        onClose={onClose}
+      />
+    );
 
     expect(markup).toContain("选择缩略图");
     expect(markup).toContain("候选缩略图衬衫");
@@ -782,6 +884,8 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
     expectClassTokens(markup, ["thumbnail-candidate", "thumbnail-candidate--selected"]);
     expect(markup).toContain('aria-pressed="true"');
+    expect(markup).not.toContain('src="https://img.alicdn.com/');
+    expect(enabledMarkup).toContain('src="https://img.alicdn.com/');
     findButtonsByText(tree, "详情图")[0].props.onClick();
     findButtonsByText(tree, "保存为主图")[0].props.onClick();
     findButtonsByText(tree, "关闭")[0].props.onClick();
@@ -924,6 +1028,54 @@ describe("App", () => {
 
     expect(onProfile).toHaveBeenNthCalledWith(1, expect.objectContaining({ heightCm: undefined }));
     expect(onProfile).toHaveBeenNthCalledWith(2, expect.objectContaining({ weightKg: undefined }));
+  });
+
+  it("renders and preserves a genuinely unset profile in settings", () => {
+    const onProfile = vi.fn();
+    const tree = SettingsView({
+      latitude: "",
+      longitude: "",
+      busy: false,
+      profile: {},
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile
+    });
+    const profileSelects = findElementsByComponentName(tree, "SelectField")
+      .filter((field) => String(field.props.id).startsWith("profile-"));
+
+    expect(profileSelects).toHaveLength(4);
+    expect(profileSelects.every((field) => field.props.value === "")).toBe(true);
+    expect(renderToStaticMarkup(<>{tree}</>).match(/>未设置</g)?.length).toBeGreaterThanOrEqual(4);
+
+    profileSelects[0].props.onChange({ target: { value: "" } });
+    expect(onProfile).toHaveBeenCalledWith(expect.objectContaining({ bodyType: undefined }));
+  });
+
+  it("explains that remote image permission lasts only for the current session", () => {
+    const onRemoteTaobaoImagesEnabled = vi.fn();
+    const tree = SettingsView({
+      latitude: "",
+      longitude: "",
+      busy: false,
+      profile: {},
+      remoteTaobaoImagesEnabled: false,
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn(),
+      onRemoteTaobaoImagesEnabled
+    });
+    const remoteToggle = findInputsByType(tree, "checkbox")
+      .find((input) => input.props.id === "remote-taobao-images-enabled");
+
+    expect(renderToStaticMarkup(<>{tree}</>)).toMatch(/图片隐私|仅本次.*会话|淘宝 CDN/);
+    expect(remoteToggle?.props.checked).toBe(false);
+    remoteToggle?.props.onChange({ target: { checked: true } });
+    expect(onRemoteTaobaoImagesEnabled).toHaveBeenCalledWith(true);
   });
 
   it("renders local vision model status and download controls in settings", () => {
@@ -1073,7 +1225,9 @@ describe("App", () => {
     enabledVerifyButton?.props.onClick();
     expect(onVerifyVisionModel).toHaveBeenCalledWith("clip-vit-base-patch32");
 
-    findInputsByType(tree, "checkbox")[0].props.onChange({ target: { checked: false } });
+    findInputsByType(tree, "checkbox")
+      .find((input) => input.props.id === "vision-enabled")
+      ?.props.onChange({ target: { checked: false } });
     expect(onVisionEnabled).toHaveBeenCalledWith(false);
   });
 
@@ -1730,6 +1884,100 @@ describe("App", () => {
     expect(importMarkup).not.toContain("设置位置");
     expect(settingsMarkup).toContain("设置位置");
     expect(generateMarkup).toContain("生成今日搭配");
+  });
+
+  it("requires a non-blank valid location before the first recommendation", () => {
+    const renderLocation = (latitude: string, longitude: string) => renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={3}
+        occasion="casual"
+        latitude={latitude}
+        longitude={longitude}
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />
+    );
+
+    for (const [latitude, longitude] of [["", ""], ["   ", "  "]] as const) {
+      const markup = renderLocation(latitude, longitude);
+      expect(markup).toContain("设置位置");
+      expect(markup).not.toContain(">生成今日搭配</button>");
+    }
+    expect(renderLocation("0", "0")).toContain("生成今日搭配");
+  });
+
+  it("distinguishes pending garments and explains structured missing slots", () => {
+    const pendingMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={0}
+        pendingGarmentCount={2}
+        occasion="casual"
+        latitude="31.2304"
+        longitude="121.4737"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenWardrobe={vi.fn()}
+      />
+    );
+    const missingMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={makeWeather()}
+        recommendations={{
+          runId: 9,
+          weather: makeWeather(),
+          occasion: "casual",
+          outfits: [],
+          missingSlots: ["bottom", "dress"]
+        }}
+        availableGarmentCount={1}
+        pendingGarmentCount={0}
+        occasion="casual"
+        latitude="31.2304"
+        longitude="121.4737"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenWardrobe={vi.fn()}
+      />
+    );
+
+    expect(pendingMarkup).toContain("2 件衣物等待确认");
+    expect(pendingMarkup).toContain("去确认衣物");
+    expect(pendingMarkup).not.toContain("先导入衣物");
+    expect(missingMarkup).toContain("下装或连衣裙");
+    expect(missingMarkup).toContain("补充衣物");
+    expect(missingMarkup).not.toContain("去确认衣物");
+  });
+
+  it("uses the backend recommendation eligibility rule for visible counts", () => {
+    expect(isRecommendationEligibleGarment(makeGarment(1, "已确认", "top"))).toBe(true);
+    expect(isRecommendationEligibleGarment(makeGarment(2, "待确认", "top", { confirmed: false }))).toBe(false);
+    expect(isRecommendationEligibleGarment(makeGarment(3, "未拥有", "top", { owned: false }))).toBe(false);
+    expect(isRecommendationEligibleGarment(makeGarment(4, "已排除", "top", { excluded: true }))).toBe(false);
+    const notOwnedPending = makeGarment(5, "未拥有待审核", "top", { owned: false, confirmed: false });
+    expect(isWardrobeReviewPendingGarment(notOwnedPending)).toBe(true);
+    expect(isRecommendationPendingGarment(notOwnedPending)).toBe(false);
   });
 
   it("renders wardrobe filters, selection state, and garment editing regions", () => {

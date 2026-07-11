@@ -47,6 +47,22 @@ export interface Garment {
   visionUpdatedAt?: string;
 }
 
+export interface ManualGarmentCreate {
+  name: string;
+  category: GarmentCategory;
+  color: string;
+  warmth: GarmentWarmth;
+  seasons: Season[];
+  styles: string[];
+  formality: Formality;
+  brand?: string;
+  size?: string;
+  materials?: string[];
+  patterns?: string[];
+  tags?: string[];
+  notes?: string;
+}
+
 export interface WeatherSnapshot {
   date: string;
   temperature: number;

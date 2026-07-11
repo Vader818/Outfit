@@ -1,6 +1,7 @@
 import { ImageOff, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge, Button, Dialog, IconButton, Notice, Skeleton, cx } from "../../components/ui";
+import { displayThumbnailUrl } from "../../lib/garments";
 import { thumbnailSourceLabel } from "../../shared/presentation";
 import type { Garment, ThumbnailCandidate } from "../../shared/types";
 
@@ -11,6 +12,7 @@ export interface ThumbnailDialogProps {
   loading: boolean;
   saving: boolean;
   error: string;
+  allowRemoteTaobaoImages?: boolean;
   onSelect: (imageUrl: string) => void;
   onSave: () => void;
   onClose: () => void;
@@ -64,7 +66,10 @@ export function ThumbnailDialog(props: ThumbnailDialogProps) {
                   aria-pressed={selected}
                   onClick={() => props.onSelect(candidate.url)}
                 >
-                  <CandidateImage candidate={candidate} />
+                  <CandidateImage
+                    candidate={candidate}
+                    allowRemoteTaobaoImages={props.allowRemoteTaobaoImages ?? false}
+                  />
                   <span className="thumbnail-candidate__meta">
                     <span>
                       <strong>{sourceLabel}</strong>
@@ -107,23 +112,34 @@ export function ThumbnailDialog(props: ThumbnailDialogProps) {
   );
 }
 
-function CandidateImage({ candidate }: { candidate: ThumbnailCandidate }) {
+function CandidateImage({
+  candidate,
+  allowRemoteTaobaoImages
+}: {
+  candidate: ThumbnailCandidate;
+  allowRemoteTaobaoImages: boolean;
+}) {
   const [failed, setFailed] = useState(false);
   const sourceLabel = thumbnailSourceLabel(candidate.source);
+  const imageUrl = displayThumbnailUrl(candidate.url, allowRemoteTaobaoImages);
 
   useEffect(() => {
     setFailed(false);
-  }, [candidate.url]);
+  }, [imageUrl]);
 
   return (
     <span className="thumbnail-candidate__image">
-      {failed ? (
-        <span className="thumbnail-candidate__fallback" role="img" aria-label={`${sourceLabel}加载失败`}>
+      {failed || !imageUrl ? (
+        <span
+          className="thumbnail-candidate__fallback"
+          role="img"
+          aria-label={imageUrl ? `${sourceLabel}加载失败` : `${sourceLabel}远程图片未加载`}
+        >
           <ImageOff aria-hidden="true" size={25} />
         </span>
       ) : (
         <img
-          src={candidate.url}
+          src={imageUrl}
           alt={sourceLabel}
           loading="lazy"
           decoding="async"

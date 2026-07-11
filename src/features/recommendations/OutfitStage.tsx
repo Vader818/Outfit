@@ -14,13 +14,15 @@ export function OutfitStage({
   featured = false,
   recordingOutfitId,
   wearLogFeedback,
-  onRecordWearLog
+  onRecordWearLog,
+  allowRemoteTaobaoImages = false
 }: {
   outfit: OutfitRecommendation;
   featured?: boolean;
   recordingOutfitId: string | null;
   wearLogFeedback: WearLogFeedback | null;
   onRecordWearLog: (outfit: OutfitRecommendation) => void;
+  allowRemoteTaobaoImages?: boolean;
 }) {
   const titleId = useId();
   const matchPercent = outfit.matchPercent ?? Math.round(Math.min(100, outfit.score));
@@ -60,6 +62,7 @@ export function OutfitStage({
               item={item}
               variant={featured ? "stage" : "card"}
               eager={featured && index < 3}
+              allowRemoteTaobaoImages={allowRemoteTaobaoImages}
             />
             <figcaption>
               <span>{CATEGORY_LABELS[item.category]}</span>
@@ -99,7 +102,11 @@ export function OutfitStage({
               <ul>
                 {outfit.alternatives.map((item) => (
                   <li key={item.id}>
-                    <GarmentImage item={item} variant="thumbnail" />
+                    <GarmentImage
+                      item={item}
+                      variant="thumbnail"
+                      allowRemoteTaobaoImages={allowRemoteTaobaoImages}
+                    />
                     <span>
                       <small>{CATEGORY_LABELS[item.category]}</small>
                       <strong>{garmentName(item)}</strong>

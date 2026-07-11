@@ -23,12 +23,14 @@ export interface SettingsViewProps {
   profile: PersonalProfile;
   visionModels?: VisionModelsResponse | null;
   visionEnabled?: boolean;
+  remoteTaobaoImagesEnabled?: boolean;
   onLatitude: (value: string) => void;
   onLongitude: (value: string) => void;
   onLocate: () => void;
   onSave: () => void;
   onProfile: (profile: PersonalProfile) => void;
   onVisionEnabled?: (enabled: boolean) => void;
+  onRemoteTaobaoImagesEnabled?: (enabled: boolean) => void;
   onRefreshVisionModels?: () => void;
   onDownloadVisionModel?: (id: VisionModelId) => void;
   onVerifyVisionModel?: (id: VisionModelId) => void;
@@ -112,30 +114,46 @@ export function SettingsView(props: SettingsViewProps) {
             <SelectField
               id="profile-body-type"
               label="体型"
-              value={props.profile.bodyType ?? "slim-tall"}
+              value={props.profile.bodyType ?? ""}
               options={BODY_TYPE_OPTIONS}
-              onChange={(event) => updateProfile({ bodyType: event.target.value as PersonalProfile["bodyType"] })}
+              onChange={(event) => updateProfile({
+                bodyType: event.target.value
+                  ? event.target.value as PersonalProfile["bodyType"]
+                  : undefined
+              })}
             />
             <SelectField
               id="profile-skin-tone"
               label="肤色"
-              value={props.profile.skinTone ?? "dark-yellow"}
+              value={props.profile.skinTone ?? ""}
               options={SKIN_TONE_OPTIONS}
-              onChange={(event) => updateProfile({ skinTone: event.target.value as PersonalProfile["skinTone"] })}
+              onChange={(event) => updateProfile({
+                skinTone: event.target.value
+                  ? event.target.value as PersonalProfile["skinTone"]
+                  : undefined
+              })}
             />
             <SelectField
               id="profile-color-disposition"
               label="色彩倾向"
-              value={props.profile.colorDisposition ?? "cool-clean"}
+              value={props.profile.colorDisposition ?? ""}
               options={COLOR_DISPOSITION_OPTIONS}
-              onChange={(event) => updateProfile({ colorDisposition: event.target.value as PersonalProfile["colorDisposition"] })}
+              onChange={(event) => updateProfile({
+                colorDisposition: event.target.value
+                  ? event.target.value as PersonalProfile["colorDisposition"]
+                  : undefined
+              })}
             />
             <SelectField
               id="profile-temperature"
               label="温度感受"
-              value={props.profile.temperatureSensitivity ?? "neutral"}
+              value={props.profile.temperatureSensitivity ?? ""}
               options={TEMPERATURE_OPTIONS}
-              onChange={(event) => updateProfile({ temperatureSensitivity: event.target.value as PersonalProfile["temperatureSensitivity"] })}
+              onChange={(event) => updateProfile({
+                temperatureSensitivity: event.target.value
+                  ? event.target.value as PersonalProfile["temperatureSensitivity"]
+                  : undefined
+              })}
             />
             <Field
               id="profile-preferred-colors"
@@ -160,6 +178,32 @@ export function SettingsView(props: SettingsViewProps) {
               onChange={(event) => updateProfile({ preferredStyles: parseList(event.target.value) })}
             />
           </div>
+        </Surface>
+
+        <Surface className="settings-section image-privacy-settings" aria-labelledby="image-privacy-title">
+          <div className="settings-section__heading">
+            <div>
+              <h2 id="image-privacy-title">图片隐私</h2>
+              <p>本地缩略图始终优先；远程淘宝商品图默认不会加载。</p>
+            </div>
+            <Badge tone={props.remoteTaobaoImagesEnabled ? "warning" : "success"}>
+              {props.remoteTaobaoImagesEnabled ? "本会话已开启" : "远程图已关闭"}
+            </Badge>
+          </div>
+          <label className="vision-toggle" htmlFor="remote-taobao-images-enabled">
+            <input
+              id="remote-taobao-images-enabled"
+              type="checkbox"
+              checked={props.remoteTaobaoImagesEnabled ?? false}
+              onChange={(event) => props.onRemoteTaobaoImagesEnabled?.(event.target.checked)}
+            />
+            <span>
+              <strong>本次会话加载淘宝远程图</strong>
+              <small>
+                开启后浏览器会直接请求淘宝 CDN，可能暴露 IP 与 User-Agent；仅本次浏览器会话有效。
+              </small>
+            </span>
+          </label>
         </Surface>
 
         <Surface className="settings-section vision-settings" aria-labelledby="vision-settings-title">

@@ -10,7 +10,7 @@ import {
   Stat,
   Surface
 } from "../../components/ui";
-import { matchesWardrobeFilters } from "../../lib/garments";
+import { isRecommendationEligibleGarment, isWardrobeReviewPendingGarment, matchesWardrobeFilters } from "../../lib/garments";
 import {
   buildColorFilterOptions,
   CATEGORY_FILTER_OPTIONS,
@@ -45,6 +45,7 @@ export interface WardrobeViewProps {
   visionEnabled?: boolean;
   visionBusyId?: number | null;
   thumbnailRefreshMessage?: string;
+  allowRemoteTaobaoImages?: boolean;
 }
 
 export function WardrobeView(props: WardrobeViewProps) {
@@ -52,11 +53,11 @@ export function WardrobeView(props: WardrobeViewProps) {
   const colorFilterOptions = buildColorFilterOptions(props.garments);
   const filteredGarments = props.garments.filter((item) => matchesWardrobeFilters(item, filters));
   const selectedSet = new Set(props.selectedIds);
-  const reviewGarments = filteredGarments.filter((item) => !item.confirmed && !item.excluded);
+  const reviewGarments = filteredGarments.filter(isWardrobeReviewPendingGarment);
   const libraryGarments = filteredGarments.filter((item) => item.confirmed || item.excluded);
   const filteredIds = filteredGarments.map((item) => item.id);
-  const pendingCount = props.garments.filter((item) => !item.confirmed && !item.excluded).length;
-  const activeCount = props.garments.filter((item) => item.owned && !item.excluded).length;
+  const pendingCount = props.garments.filter(isWardrobeReviewPendingGarment).length;
+  const activeCount = props.garments.filter(isRecommendationEligibleGarment).length;
 
   function updateFilter<K extends keyof WardrobeFilters>(key: K, value: WardrobeFilters[K]) {
     props.onFilters?.({ ...filters, [key]: value });
@@ -216,6 +217,7 @@ export function WardrobeView(props: WardrobeViewProps) {
                     busyAction={props.busyAction}
                     visionEnabled={props.visionEnabled}
                     visionBusyId={props.visionBusyId}
+                    allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                     onSelect={(selected) => updateSelection(item.id, selected)}
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}
@@ -247,6 +249,7 @@ export function WardrobeView(props: WardrobeViewProps) {
                     busyAction={props.busyAction}
                     visionEnabled={props.visionEnabled}
                     visionBusyId={props.visionBusyId}
+                    allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                     onSelect={(selected) => updateSelection(item.id, selected)}
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}

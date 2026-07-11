@@ -27,6 +27,7 @@ export interface GarmentItemProps {
   busyAction?: BusyAction | null;
   visionEnabled?: boolean;
   visionBusyId?: number | null;
+  allowRemoteTaobaoImages?: boolean;
   onSelect: (selected: boolean) => void;
   onUpdate: (id: number, update: Partial<Garment>) => void;
   onDelete: (id: number) => void;
@@ -42,6 +43,7 @@ export function GarmentItem({
   busyAction,
   visionEnabled,
   visionBusyId,
+  allowRemoteTaobaoImages,
   onSelect,
   onUpdate,
   onDelete,
@@ -75,7 +77,11 @@ export function GarmentItem({
       </label>
 
       <div className="garment-library-item__media">
-        <GarmentImage item={item} variant={presentation === "review" ? "thumbnail" : "card"} />
+        <GarmentImage
+          item={item}
+          variant={presentation === "review" ? "thumbnail" : "card"}
+          allowRemoteTaobaoImages={allowRemoteTaobaoImages}
+        />
       </div>
 
       <div className="garment-library-item__content">

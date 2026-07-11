@@ -3,7 +3,7 @@ import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { deleteGarment, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
+import { createManualGarment, deleteGarment, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
 import { buildOutfitExportV2 } from "./services/export";
 import { previewTaobaoImport } from "./services/importTaobao";
 import { recommendOutfits } from "./services/recommend";
@@ -12,7 +12,7 @@ import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, r
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validateManualGarmentCreate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -147,6 +147,14 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
 
   app.get("/api/garments", (_request, response) => {
     handle(response, () => listGarments(db));
+  });
+
+  app.post("/api/garments", (request, response) => {
+    try {
+      response.status(201).json(createManualGarment(db, validateManualGarmentCreate(request.body)));
+    } catch (error) {
+      sendError(response, error);
+    }
   });
 
   app.get("/api/vision/models", (_request, response) => {

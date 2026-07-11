@@ -3,6 +3,7 @@ import { Button, EmptyState, PageIntro, Surface, cx } from "../../components/ui"
 import {
   OCCASIONS,
   OCCASION_LABELS,
+  parseLocationCoordinates,
   type BusyAction,
   type WearLogFeedback
 } from "../../shared/presentation";
@@ -13,6 +14,7 @@ export type RecommendationViewProps = {
   weather: WeatherSnapshot | null;
   recommendations: RecommendationResult | null;
   availableGarmentCount?: number;
+  pendingGarmentCount?: number;
   occasion: string;
   latitude: string;
   longitude: string;
@@ -26,23 +28,48 @@ export type RecommendationViewProps = {
   onRecordWearLog: (outfit: OutfitRecommendation) => void;
   onOpenImport?: () => void;
   onOpenSettings?: () => void;
+  onOpenWardrobe?: () => void;
+  allowRemoteTaobaoImages?: boolean;
 };
 
-function isCoordinate(value: string, min: number, max: number): boolean {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= min && parsed <= max;
+function missingSlotsDescription(slots: RecommendationResult["missingSlots"]): string {
+  const missing = new Set(slots);
+  if (missing.size === 2 && missing.has("bottom") && missing.has("dress")) {
+    return "缺少已确认的下装或连衣裙；请先在衣服库确认或补齐。";
+  }
+  if (missing.size === 2 && missing.has("top") && missing.has("dress")) {
+    return "缺少已确认的上装或连衣裙；请先在衣服库确认或补齐。";
+  }
+  return "需要已确认的“上装＋下装”或一件连衣裙，才能组成完整核心搭配。";
 }
 
 export function RecommendationView(props: RecommendationViewProps) {
   const availableCount = props.availableGarmentCount ?? 0;
+  const pendingCount = props.pendingGarmentCount ?? 0;
   const activeOccasion = OCCASION_LABELS[props.occasion as (typeof OCCASIONS)[number]] ?? props.occasion;
   const outfits = props.recommendations?.outfits ?? [];
   const hasOutfits = outfits.length > 0;
-  const hasLocation = isCoordinate(props.latitude, -90, 90) && isCoordinate(props.longitude, -180, 180);
+  const hasLocation = Boolean(parseLocationCoordinates(props.latitude, props.longitude));
+  const missingSlots = props.recommendations?.missingSlots ?? [];
   const generating = props.busyAction === "recommend";
   const fetchingWeather = props.busyAction === "weather";
 
-  const emptyAction = availableCount === 0 && props.onOpenImport ? (
+  const emptyAction = missingSlots.length > 0 && pendingCount > 0 && props.onOpenWardrobe ? (
+    <Button variant="primary" onClick={props.onOpenWardrobe}>
+      <Upload aria-hidden="true" />
+      去确认衣物
+    </Button>
+  ) : missingSlots.length > 0 && props.onOpenImport ? (
+    <Button variant="primary" onClick={props.onOpenImport}>
+      <Upload aria-hidden="true" />
+      补充衣物
+    </Button>
+  ) : availableCount === 0 && pendingCount > 0 && props.onOpenWardrobe ? (
+    <Button variant="primary" onClick={props.onOpenWardrobe}>
+      <Upload aria-hidden="true" />
+      去确认衣物
+    </Button>
+  ) : availableCount === 0 && props.onOpenImport ? (
     <Button variant="primary" onClick={props.onOpenImport}>
       <Upload aria-hidden="true" />
       先导入衣物
@@ -59,7 +86,11 @@ export function RecommendationView(props: RecommendationViewProps) {
     </Button>
   );
 
-  const emptyDescription = availableCount === 0
+  const emptyDescription = missingSlots.length > 0
+    ? missingSlotsDescription(missingSlots)
+    : availableCount === 0 && pendingCount > 0
+      ? `${pendingCount} 件衣物等待确认，确认后才能参与推荐。`
+      : availableCount === 0
     ? "先把常穿衣物放进衣橱，再生成今天的搭配。"
     : !hasLocation
       ? "设置位置后，Outfit 才能结合天气判断体感。"
@@ -76,6 +107,7 @@ export function RecommendationView(props: RecommendationViewProps) {
         meta={(
           <>
             <span>可用衣物 {availableCount} 件</span>
+            {pendingCount > 0 ? <span>待确认 {pendingCount} 件</span> : null}
             <span>当前场合 {activeOccasion}</span>
             <span>{props.weather ? `天气 ${props.weather.summary}` : "天气待获取"}</span>
           </>
@@ -150,6 +182,7 @@ export function RecommendationView(props: RecommendationViewProps) {
                 recordingOutfitId={props.recordingOutfitId}
                 wearLogFeedback={props.wearLogFeedback}
                 onRecordWearLog={props.onRecordWearLog}
+                allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
               />
               {outfits.length > 1 ? (
                 <section className="recommendation-alternatives" aria-labelledby="alternative-outfits-title">
@@ -162,6 +195,7 @@ export function RecommendationView(props: RecommendationViewProps) {
                         recordingOutfitId={props.recordingOutfitId}
                         wearLogFeedback={props.wearLogFeedback}
                         onRecordWearLog={props.onRecordWearLog}
+                        allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                       />
                     ))}
                   </div>

@@ -123,7 +123,7 @@ function InsightsContent({ insights, recommendationRuns }: {
     <div className="insights-content flex flex-col gap-6">
       <dl className="insight-facts">
         <div><dt>衣物总数</dt><dd>{insights.totalGarments}</dd></div>
-        <div><dt>可穿</dt><dd>{insights.ownedGarments}</dd></div>
+        <div><dt>已拥有</dt><dd>{insights.ownedGarments}</dd></div>
         <div><dt>已确认</dt><dd>{insights.confirmedGarments}</dd></div>
         <div><dt>待确认</dt><dd>{insights.pendingGarments}</dd></div>
       </dl>

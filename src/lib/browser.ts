@@ -2,6 +2,7 @@ import type { Garment, OutfitExport, OutfitRecommendation, RecommendationResult,
 
 export const BACKUP_EXPORT_CONFIRMATION =
   "备份包含个人画像、淘宝来源与价格、穿着记录和推荐历史等敏感本地数据。确定要生成 JSON 备份吗？";
+export const REMOTE_TAOBAO_IMAGES_SESSION_KEY = "outfit.remoteTaobaoImages.enabled";
 
 export function readLocalStorageValue(key: string, fallback: string): string {
   try {
@@ -14,6 +15,23 @@ export function readLocalStorageValue(key: string, fallback: string): string {
 export function writeLocalStorageValue(key: string, value: string): boolean {
   try {
     globalThis.localStorage?.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readSessionStorageValue(key: string, fallback: string): string {
+  try {
+    return globalThis.sessionStorage?.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeSessionStorageValue(key: string, value: string): boolean {
+  try {
+    globalThis.sessionStorage?.setItem(key, value);
     return true;
   } catch {
     return false;

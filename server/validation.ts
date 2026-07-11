@@ -1,4 +1,4 @@
-import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, ManualGarmentCreate, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -46,6 +46,21 @@ const GARMENT_STRING_LIMITS: Partial<Record<keyof GarmentUpdate, number>> = {
   size: 120,
   notes: 1000
 };
+const MANUAL_GARMENT_FIELDS = new Set([
+  "name",
+  "category",
+  "color",
+  "warmth",
+  "seasons",
+  "styles",
+  "formality",
+  "brand",
+  "size",
+  "materials",
+  "patterns",
+  "tags",
+  "notes"
+]);
 
 export function assertRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -83,6 +98,41 @@ export function validateGarmentUpdate(value: unknown): GarmentUpdate {
   if ("excluded" in record) update.excluded = booleanValue(record.excluded, "excluded");
 
   return update;
+}
+
+export function validateManualGarmentCreate(value: unknown): ManualGarmentCreate {
+  const record = assertRecord(value, "手工衣物必须是 JSON 对象");
+  for (const key of Object.keys(record)) {
+    if (!MANUAL_GARMENT_FIELDS.has(key)) {
+      throw new ValidationError(`手工衣物不允许字段 ${key}`);
+    }
+  }
+  const update = validateGarmentUpdate(record);
+  const name = update.name?.trim();
+  if (!name) throw new ValidationError("name 不能为空");
+  if (!update.category) throw new ValidationError("category 为必填字段");
+  if (!update.color) throw new ValidationError("color 为必填字段");
+  if (!update.warmth) throw new ValidationError("warmth 为必填字段");
+  if (!update.seasons) throw new ValidationError("seasons 为必填字段");
+  if (!update.styles) throw new ValidationError("styles 为必填字段");
+  if (!update.formality) throw new ValidationError("formality 为必填字段");
+
+  const input: ManualGarmentCreate = {
+    name,
+    category: update.category as GarmentCategory,
+    color: update.color,
+    warmth: update.warmth as GarmentWarmth,
+    seasons: update.seasons as Season[],
+    styles: update.styles,
+    formality: update.formality as Formality
+  };
+  for (const key of ["brand", "size", "notes"] as const) {
+    if (update[key] !== undefined) input[key] = update[key];
+  }
+  for (const key of ["materials", "patterns", "tags"] as const) {
+    if (update[key] !== undefined) input[key] = update[key];
+  }
+  return input;
 }
 
 export function validatePersonalProfile(value: unknown): PersonalProfile {

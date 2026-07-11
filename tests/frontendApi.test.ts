@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
+import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, createGarment, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -411,6 +411,36 @@ describe("frontend API client", () => {
           occasion: "smart-casual"
         }
       })
+    }));
+  });
+
+  it("creates a manual garment through the authenticated JSON endpoint", async () => {
+    const response = {
+      id: 77,
+      brand: "",
+      rawName: "手工衬衫",
+      imageUrl: "",
+      owned: true,
+      confirmed: true,
+      excluded: false,
+      confidence: 1
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(response), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = {
+      name: "手工衬衫",
+      category: "top" as const,
+      color: "blue",
+      warmth: "light" as const,
+      seasons: ["spring", "summer"] as Array<"spring" | "summer">,
+      styles: ["casual"],
+      formality: "casual" as const
+    };
+
+    await expect(createGarment(input)).resolves.toMatchObject({ id: 77, confirmed: true });
+    expect(fetchMock).toHaveBeenCalledWith("/api/garments", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(input)
     }));
   });
 

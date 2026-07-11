@@ -51,14 +51,15 @@ import { RecommendationView } from "../features/recommendations/RecommendationVi
 import { SettingsView } from "../features/settings/SettingsView";
 import { ThumbnailPicker } from "../features/wardrobe/ThumbnailDialog";
 import { WardrobeView } from "../features/wardrobe/WardrobeView";
-import { buildRecommendationWearLogInput, downloadJson, exportBackupWithConfirmation, readLocalStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue } from "../lib/browser";
-import { applyGarmentPatch } from "../lib/garments";
+import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, buildRecommendationWearLogInput, downloadJson, exportBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
+import { applyGarmentPatch, isRecommendationEligibleGarment, isRecommendationPendingGarment, isWardrobeReviewPendingGarment } from "../lib/garments";
 import { deleteGarmentForView, refreshGarmentsForView } from "../lib/view-actions";
 import {
   DEFAULT_LATITUDE,
   DEFAULT_LONGITUDE,
   DEFAULT_PROFILE,
   DEFAULT_WARDROBE_FILTERS,
+  parseLocationCoordinates,
   type AppTab,
   type AuthInput,
   type BusyAction,
@@ -209,6 +210,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
   const [visionModels, setVisionModels] = useState<VisionModelsResponse | null>(null);
   const [visionEnabled, setVisionEnabled] = useState(() => readLocalStorageValue("outfit.localVision.enabled", "true") !== "false");
+  const [remoteTaobaoImagesEnabled, setRemoteTaobaoImagesEnabled] = useState(() =>
+    readSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false") === "true"
+  );
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
   const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
@@ -223,8 +227,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [statusMessage, setStatusMessage] = useState("");
 
   const bookmarklet = useMemo(() => getTaobaoBookmarklet(), []);
-  const pendingCount = garments.filter((item) => !item.confirmed && !item.excluded).length;
-  const activeGarments = garments.filter((item) => item.owned && !item.excluded);
+  const reviewPendingCount = garments.filter(isWardrobeReviewPendingGarment).length;
+  const recommendationPendingCount = garments.filter(isRecommendationPendingGarment).length;
+  const recommendationGarments = garments.filter(isRecommendationEligibleGarment);
   const canLogout = Boolean(props.user && props.onLogout);
 
   function navigateTo(nextTab: AppTab) {
@@ -581,6 +586,11 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     writeLocalStorageValue("outfit.localVision.enabled", enabled ? "true" : "false");
   }
 
+  function updateRemoteTaobaoImagesEnabled(enabled: boolean) {
+    setRemoteTaobaoImagesEnabled(enabled);
+    writeSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, enabled ? "true" : "false");
+  }
+
   function updateLatitude(value: string) {
     updateCoordinateForRecommendation(value, setLatitude, setWeather, setRecommendations);
   }
@@ -613,10 +623,16 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function fetchForecast() {
+    const coordinates = parseLocationCoordinates(latitude, longitude);
+    if (!coordinates) {
+      setError("请先在设置中确认有效位置");
+      navigateTo("settings");
+      return;
+    }
     setBusyAction("weather");
     setError("");
     try {
-      setWeather(await getWeather(Number(latitude), Number(longitude)));
+      setWeather(await getWeather(coordinates.latitude, coordinates.longitude));
       setRecommendations(null);
       setWearLogFeedback(null);
     } catch (weatherError) {
@@ -633,10 +649,16 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function generateRecommendations() {
+    const coordinates = parseLocationCoordinates(latitude, longitude);
+    if (!coordinates) {
+      setError("请先在设置中确认有效位置");
+      navigateTo("settings");
+      return;
+    }
     setBusyAction("recommend");
     setError("");
     try {
-      const snapshot = weather ?? await getWeather(Number(latitude), Number(longitude));
+      const snapshot = weather ?? await getWeather(coordinates.latitude, coordinates.longitude);
       setWeather(snapshot);
       setRecommendations(await getRecommendations({ weather: snapshot, occasion, userProfile: profile }));
     } catch (recommendError) {
@@ -668,6 +690,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function saveSettings() {
     if (!profileLoaded) {
       setError("个人画像尚未成功读取，请刷新后再保存");
+      return;
+    }
+    if ((latitude.trim() || longitude.trim()) && !parseLocationCoordinates(latitude, longitude)) {
+      setError("位置需要同时填写有效的纬度和经度");
       return;
     }
     setBusyAction("save-settings");
@@ -724,7 +750,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
               key={item.id}
               active={tab === item.id}
               icon={item.icon}
-              label={item.id === "wardrobe" && pendingCount ? `${item.label} (${pendingCount})` : item.label}
+              label={item.id === "wardrobe" && reviewPendingCount ? `${item.label} (${reviewPendingCount})` : item.label}
               onClick={() => navigateTo(item.id)}
             />
           ))}
@@ -755,7 +781,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
               <RecommendationView
                 weather={weather}
                 recommendations={recommendations}
-                availableGarmentCount={activeGarments.length}
+                availableGarmentCount={recommendationGarments.length}
+                pendingGarmentCount={recommendationPendingCount}
                 occasion={occasion}
                 latitude={latitude}
                 longitude={longitude}
@@ -769,6 +796,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onRecordWearLog={recordRecommendationWear}
                 onOpenImport={() => navigateTo("import")}
                 onOpenSettings={() => navigateTo("settings")}
+                onOpenWardrobe={() => navigateTo("wardrobe")}
+                allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
               />
             ) : null}
             {tab === "wardrobe" ? (
@@ -791,6 +820,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 visionEnabled={visionEnabled}
                 visionBusyId={visionBusyId}
                 thumbnailRefreshMessage={thumbnailRefreshMessage}
+                allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
               />
             ) : null}
             {tab === "history" ? (
@@ -836,12 +866,14 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 profile={profile}
                 visionModels={visionModels}
                 visionEnabled={visionEnabled}
+                remoteTaobaoImagesEnabled={remoteTaobaoImagesEnabled}
                 onLatitude={updateLatitude}
                 onLongitude={updateLongitude}
                 onLocate={locate}
                 onSave={saveSettings}
                 onProfile={setProfile}
                 onVisionEnabled={updateVisionEnabled}
+                onRemoteTaobaoImagesEnabled={updateRemoteTaobaoImagesEnabled}
                 onRefreshVisionModels={refreshVisionModels}
                 onDownloadVisionModel={downloadLocalVisionModel}
                 onVerifyVisionModel={verifyLocalVisionModel}
@@ -857,7 +889,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             key={item.id}
             active={tab === item.id}
             icon={item.icon}
-            label={item.id === "wardrobe" && pendingCount ? `${item.label} ${pendingCount}` : item.label}
+            label={item.id === "wardrobe" && reviewPendingCount ? `${item.label} ${reviewPendingCount}` : item.label}
             onClick={() => navigateTo(item.id)}
           />
         ))}
@@ -871,6 +903,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           loading={thumbnailPicker.loading}
           saving={thumbnailPicker.saving}
           error={thumbnailPicker.error}
+          allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
           onSelect={chooseThumbnailCandidate}
           onSave={saveThumbnailSelection}
           onClose={closeThumbnailPicker}

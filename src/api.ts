@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -140,6 +140,13 @@ export async function readLatestTaobaoCapture(options: { wardrobeOnly?: boolean 
 
 export async function getGarments(): Promise<Garment[]> {
   return request<Garment[]>("/api/garments");
+}
+
+export async function createGarment(input: ManualGarmentCreate): Promise<Garment> {
+  return request<Garment>("/api/garments", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
 export async function getPersonalProfile(): Promise<PersonalProfile> {

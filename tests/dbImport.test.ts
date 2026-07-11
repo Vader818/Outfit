@@ -51,6 +51,18 @@ describe("database import", () => {
     });
   });
 
+  it("keeps a user's confirmation when the same Taobao item is imported again", () => {
+    const db = createDatabase(":memory:");
+    importTaobaoBatchIntoDb(db, payload);
+    const garment = listGarments(db)[0];
+    expect(garment.confirmed).toBe(false);
+
+    updateGarment(db, garment.id, { confirmed: true });
+    importTaobaoBatchIntoDb(db, payload);
+
+    expect(listGarments(db)[0].confirmed).toBe(true);
+  });
+
   it("marks an existing garment unavailable when a later import shows the item was refunded", () => {
     const db = createDatabase(":memory:");
 
