@@ -4,10 +4,15 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
+import { ImportReviewTable } from "../src/features/import/ImportReviewTable";
+import { ManualGarmentDialog, yuanToCents } from "../src/features/wardrobe/ManualGarmentDialog";
+import { fitImageDimensions, prepareGarmentImageForUpload } from "../src/lib/imageSanitization";
 import {
   BACKUP_EXPORT_CONFIRMATION,
+  COMPLETE_BACKUP_SENSITIVE_NOTICE,
   REMOTE_TAOBAO_IMAGES_SESSION_KEY,
   exportBackupWithConfirmation,
+  exportCompleteBackupWithConfirmation,
   readSessionStorageValue,
   writeSessionStorageValue
 } from "../src/lib/browser";
@@ -81,6 +86,66 @@ describe("App", () => {
     expect(confirmExport).toHaveBeenCalledWith(BACKUP_EXPORT_CONFIRMATION);
     expect(loadExport).not.toHaveBeenCalled();
     expect(download).not.toHaveBeenCalled();
+  });
+
+  it("previews complete-backup sensitivity and size before asking to create a ZIP", async () => {
+    const loadPreview = vi.fn(async () => ({
+      assetCount: 4,
+      includedAssetCount: 3,
+      assetBytes: 5_000_000,
+      includedAssetBytes: 4_000_000,
+      estimatedBytes: 4_500_000,
+      warnings: [{ code: "ASSET_UNAVAILABLE" as const, assetId: 17, message: "asset unavailable" }]
+    }));
+    const loadArchive = vi.fn();
+    const download = vi.fn();
+    const confirmExport = vi.fn(() => false);
+
+    await expect(exportCompleteBackupWithConfirmation(
+      confirmExport,
+      loadPreview,
+      loadArchive,
+      download
+    )).resolves.toBe(false);
+
+    expect(loadPreview).toHaveBeenCalledOnce();
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringMatching(/个人画像.*淘宝来源.*本地衣物图片/s));
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringMatching(/3.*4.*4\.3 MB/s));
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringContaining("1 项资产无法加入"));
+    expect(COMPLETE_BACKUP_SENSITIVE_NOTICE).toContain("不会删除");
+    expect(loadArchive).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("uses browser canvas only to resize and re-encode a local upload preview", async () => {
+    const drawImage = vi.fn();
+    const closeBitmap = vi.fn();
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({ drawImage })),
+      toBlob: vi.fn((callback: (blob: Blob | null) => void, type: string) => {
+        callback(new Blob([new Uint8Array(1024)], { type }));
+      })
+    };
+    vi.stubGlobal("document", {
+      createElement: vi.fn(() => canvas)
+    });
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({
+      width: 4096,
+      height: 2048,
+      close: closeBitmap
+    })));
+
+    const source = new Blob([new Uint8Array(2048)], { type: "image/jpeg" });
+    const prepared = await prepareGarmentImageForUpload(source);
+
+    expect(fitImageDimensions(4096, 2048)).toEqual({ width: 2048, height: 1024 });
+    expect(drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 2048, 1024);
+    expect(prepared).not.toBe(source);
+    expect(prepared.type).toBe("image/webp");
+    expect(prepared.size).toBeLessThanOrEqual(5 * 1024 * 1024);
+    expect(closeBitmap).toHaveBeenCalledOnce();
   });
 
   it("renders recommendation occasion chips in Chinese", () => {
@@ -264,7 +329,7 @@ describe("App", () => {
     expect(markup).toContain("checked");
   });
 
-  it("renders the wardrobe-only capture filter summary in the import view", () => {
+  it("reports that refund events remain available for database-aware import review", () => {
     const markup = renderToStaticMarkup(
       <ImportView
         bookmarklet="https://example.com/bookmarklet"
@@ -272,8 +337,8 @@ describe("App", () => {
         importResult={null}
         filterSummary={{
           originalItems: 8,
-          keptItems: 3,
-          skippedRefunded: 1,
+          keptItems: 4,
+          skippedRefunded: 0,
           skippedNonApparel: 4
         }}
         captureUrl=""
@@ -291,8 +356,8 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain("已从 8 条订单中保留 3 条衣服/鞋候选");
-    expect(markup).toContain("退款过滤 1 条");
+    expect(markup).toContain("已从 8 条订单中保留 4 条可审阅记录");
+    expect(markup).toContain("退款事件保留 完整");
     expect(markup).toContain("非服饰过滤 4 条");
   });
 
@@ -319,7 +384,7 @@ describe("App", () => {
     });
 
     expect(findButtonsByText(tree, "预览中")[0].props.disabled).toBe(true);
-    expect(findButtonsByText(tree, "导入")[0].props.disabled).toBe(false);
+    expect(findButtonsByText(tree, "提交选择")[0].props.disabled).toBe(true);
     expect(findButtonsByText(tree, "读取产物")[0].props.disabled).toBe(false);
   });
 
@@ -1455,6 +1520,7 @@ describe("App", () => {
         busy={false}
         onRefresh={vi.fn()}
         onExport={vi.fn()}
+        onExportComplete={vi.fn()}
       />
     );
 
@@ -1471,7 +1537,8 @@ describe("App", () => {
     expect(markup).toContain("补充一件经典外套");
     expect(markup).toContain("瘦高体型适合增加层次");
     expect(markup).toContain("白衬衫");
-    expect(markup).toContain("导出备份");
+    expect(markup).toContain("导出 JSON");
+    expect(markup).toContain("完整备份（含图片）");
     expectClassTokens(markup, ["history-insights-view", "view-shell"]);
     expectClassTokens(markup, ["insights-content"]);
     expectClassTokens(markup, ["health-focus"]);
@@ -1481,7 +1548,7 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
   });
 
-  it("asks for explicit confirmation before deleting a garment", async () => {
+  it("asks for explicit confirmation before archiving a garment", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
       WardrobeView?: (props: {
@@ -1511,12 +1578,12 @@ describe("App", () => {
     });
 
     const garmentTree = renderFunctionElement(findElementsByComponentName(tree, "GarmentItem")[0]);
-    findButtonsByText(garmentTree, "删除")[0].props.onClick();
+    findButtonsByText(garmentTree, "归档")[0].props.onClick();
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("短款针织衫"));
     expect(onDelete).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    findButtonsByText(garmentTree, "删除")[0].props.onClick();
+    findButtonsByText(garmentTree, "归档")[0].props.onClick();
     expect(onDelete).toHaveBeenCalledWith(303);
   });
 
@@ -2092,8 +2159,15 @@ describe("App", () => {
           color: "white",
           warmth: "light",
           seasons: ["spring"],
+          styles: ["minimal"],
+          formality: "smart-casual",
+          materials: ["cotton"],
+          patterns: ["solid"],
+          tags: ["通勤"],
+          notes: "",
           confidence: 0.88,
-          imageUrl: ""
+          imageUrl: "",
+          disposition: "create"
         }
       ],
       skipped: []
@@ -2186,6 +2260,109 @@ describe("App", () => {
     expect(cssRule(styles, ".garment-library-item__identity h3")).toMatch(/white-space:\s*nowrap;/);
     expect(cssRule(styles, ".garment-library-item--review")).toMatch(/grid-template-columns:\s*auto\s+5rem\s+minmax\(0,\s*1fr\);/);
     expect(cssRule(styles, ".garment-library-item__tools")).toMatch(/flex-wrap:\s*wrap;/);
+  });
+
+  it("exposes trusted manual creation, archive recovery, batch editing, and complete import review", () => {
+    const active = makeGarment(901, "白色衬衫", "top");
+    const archived = makeGarment(902, "旧外套", "outerwear", {
+      archivedAt: "2026-07-11T00:00:00.000Z"
+    });
+    const wardrobeMarkup = renderToStaticMarkup(
+      <WardrobeView
+        garments={[active]}
+        archivedGarments={[archived]}
+        selectedIds={[active.id]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onRestore={vi.fn()}
+        onAddGarment={vi.fn()}
+        onBulkConfirm={vi.fn()}
+        onBulkSeasons={vi.fn()}
+        onBulkTags={vi.fn()}
+        onBulkExcluded={vi.fn()}
+      />
+    );
+    expect(wardrobeMarkup).toContain("添加衣物");
+    expect(wardrobeMarkup).toContain("归档");
+    expect(wardrobeMarkup).not.toContain(">删除<");
+    expect(wardrobeMarkup).toContain("已归档");
+    expect(wardrobeMarkup).toContain("恢复");
+    for (const label of ["品牌", "风格", "正式度", "备注", "排除推荐", "批量季节", "批量添加标签"]) {
+      expect(wardrobeMarkup).toContain(label);
+    }
+
+    const candidates = Array.from({ length: 7 }, (_, index) => ({
+      sourceItemKey: `v2:${String(index).padStart(64, "0")}`,
+      brand: "",
+      name: `候选衣物 ${index + 1}`,
+      rawName: `候选衣物 ${index + 1}`,
+      category: "top" as const,
+      color: "white",
+      warmth: "light" as const,
+      seasons: ["spring" as const],
+      styles: ["casual"],
+      formality: "casual" as const,
+      materials: [],
+      patterns: [],
+      tags: [],
+      notes: "",
+      confidence: 0.9,
+      imageUrl: "",
+      disposition: index === 6 ? "unchanged" as const : "create" as const
+    }));
+    const preview: TaobaoImportPreview = {
+      batchId: "batch-review",
+      summary: { totalItems: 7, uniqueItems: 7, skippedRefunded: 0, skippedNonApparel: 0, createdGarments: 6 },
+      duplicateCount: 0,
+      candidates,
+      skipped: []
+    };
+    const decisions = Object.fromEntries(candidates.map((item) => [item.sourceItemKey, {
+      sourceItemKey: item.sourceItemKey,
+      include: item.disposition === "create"
+    }]));
+    const importMarkup = renderToStaticMarkup(
+      <ImportView
+        bookmarklet="javascript:void(0)"
+        importText="{}"
+        importResult={null}
+        importPreview={preview}
+        importDecisions={decisions}
+        filterSummary={null}
+        captureUrl=""
+        captureEngine="selenium"
+        captureResult={null}
+        busy={false}
+        onCopyBookmarklet={vi.fn()}
+        onImportText={vi.fn()}
+        onImport={vi.fn()}
+        onImportDecision={vi.fn()}
+        onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
+        onStartOrdersCapture={vi.fn()}
+        onStartItemCapture={vi.fn()}
+        onReadLatestCapture={vi.fn()}
+        onPreviewImport={vi.fn()}
+      />
+    );
+    expect(importMarkup).toContain("淘宝衣物导入逐项审阅");
+    expect(importMarkup).toContain("候选衣物 7");
+    expect(importMarkup).toContain("提交选择");
+    expect(importMarkup).not.toContain("preview-list");
+    expect(renderToStaticMarkup(
+      <ImportReviewTable preview={preview} decisions={decisions} onDecision={vi.fn()} />
+    )).toContain("已选择 6 / 7 个可处理候选");
+
+    expect(yuanToCents("299.05")).toBe(29905);
+    expect(yuanToCents("-1")).toBeNull();
+    const manualMarkup = renderToStaticMarkup(
+      <ManualGarmentDialog open busy={false} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(manualMarkup).toContain("本地照片（可选）");
+    expect(manualMarkup).toContain("image/jpeg,image/png,image/webp");
   });
 });
 

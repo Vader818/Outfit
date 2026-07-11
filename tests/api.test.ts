@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabase, type AppDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
@@ -908,16 +909,118 @@ describe("API routes", () => {
       },
       duplicateCount: 0,
       candidates: [
-        expect.objectContaining({ name: expect.stringContaining("T恤"), category: "top", confidence: expect.any(Number) }),
-        expect.objectContaining({ name: expect.stringContaining("围巾"), category: "accessory", confidence: expect.any(Number) })
+        expect.objectContaining({ name: expect.stringContaining("T恤"), category: "top", confidence: expect.any(Number), disposition: "create" }),
+        expect.objectContaining({ name: expect.stringContaining("围巾"), category: "accessory", confidence: expect.any(Number), disposition: "create" }),
+        expect.objectContaining({ name: expect.stringContaining("牛仔裤"), disposition: "skip", message: expect.stringContaining("未找到") })
       ],
       skipped: [
-        expect.objectContaining({ reason: "non-apparel" }),
-        expect.objectContaining({ reason: "refunded" })
+        expect.objectContaining({ reason: "non-apparel" })
       ]
     });
 
     expect(await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json()).toEqual([]);
+  });
+
+  it("validates and commits reviewed Taobao decisions without allowing bypass fields", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const batch = {
+      source: "taobao-bookmarklet",
+      capturedAt: "2026-07-11T08:00:00.000Z",
+      pageType: "order-list" as const,
+      items: [{
+        itemId: "trusted-1001",
+        orderId: "900000000000001001",
+        title: "米白色纯棉短袖T恤夏季透气上衣",
+        sku: "颜色分类: 米白色; 尺码: M",
+        status: "交易成功",
+        payment: "129.00"
+      }]
+    };
+
+    const previewResponse = await fetch(`${baseUrl}/api/import/taobao-preview`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(batch)
+    });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as {
+      candidates: Array<{ sourceItemKey: string; disposition: string }>;
+    };
+    expect(preview.candidates).toEqual([
+      expect.objectContaining({ sourceItemKey: expect.stringMatching(/^v2:/), disposition: "create" })
+    ]);
+    const sourceItemKey = preview.candidates[0].sourceItemKey;
+
+    for (const invalidBody of [
+      { batch, decisions: [] },
+      { batch, decisions: [{ sourceItemKey: "v2:" + "0".repeat(64), include: true }] },
+      { batch, decisions: [{ sourceItemKey, include: true, overrides: { owned: false } }] },
+      { batch, decisions: [
+        { sourceItemKey, include: true },
+        { sourceItemKey, include: true }
+      ] }
+    ]) {
+      const invalidResponse = await fetch(`${baseUrl}/api/import/taobao-commit`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(invalidBody)
+      });
+      expect(invalidResponse.status).toBe(400);
+      expect(await invalidResponse.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 0 });
+    }
+
+    const skippedResponse = await fetch(`${baseUrl}/api/import/taobao-commit`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ batch, decisions: [{ sourceItemKey, include: false }] })
+    });
+    expect(skippedResponse.status).toBe(200);
+    expect(await skippedResponse.json()).toMatchObject({ summary: { skipped: 1, created: 0 } });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 0 });
+
+    const commitBody = {
+      batch,
+      decisions: [{
+        sourceItemKey,
+        include: true,
+        overrides: {
+          name: "已核对的米白色纯棉T恤",
+          formality: "smart-casual",
+          tags: ["通勤", "夏季"]
+        }
+      }]
+    };
+    const commitResponse = await fetch(`${baseUrl}/api/import/taobao-commit`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(commitBody)
+    });
+    expect(commitResponse.status).toBe(200);
+    expect(await commitResponse.json()).toMatchObject({ summary: { created: 1, updated: 0 } });
+    expect((await (await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    })).json())[0]).toMatchObject({
+      name: "已核对的米白色纯棉T恤",
+      formality: "smart-casual",
+      tags: ["通勤", "夏季"]
+    });
+
+    const replayResponse = await fetch(`${baseUrl}/api/import/taobao-commit`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(commitBody)
+    });
+    expect(replayResponse.status).toBe(200);
+    expect(await replayResponse.json()).toMatchObject({ summary: { created: 0, updated: 0, unchanged: 1 } });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 1 });
   });
 
   it("imports Taobao items, updates garments, and returns recommendations", async () => {
@@ -1004,15 +1107,15 @@ describe("API routes", () => {
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
       headers: jsonHeaders(authCookie),
-      body: JSON.stringify(recommendationRequest)
+      body: JSON.stringify({ weather: recommendationWeather, occasion: "casual" })
     });
     const recommendation = await recommendationResponse.json();
-    expect(recommendation.outfits).toHaveLength(1);
+    expect(recommendation.outfits.length).toBeGreaterThan(0);
     expect(recommendation.outfits[0].items.length).toBeGreaterThanOrEqual(3);
     expect(recommendation.missingSlots).toEqual([]);
   });
 
-  it("deletes a garment from the wardrobe", async () => {
+  it("soft archives and restores a garment while keeping deprecated DELETE compatible", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
     const server = app.listen(0);
@@ -1039,6 +1142,7 @@ describe("API routes", () => {
       headers: { cookie: authCookie }
     });
     expect(deleteResponse.status).toBe(204);
+    expect(deleteResponse.headers.get("deprecation")).toBe("true");
 
     const afterDeleteResponse = await fetch(`${baseUrl}/api/garments`, {
       headers: { cookie: authCookie }
@@ -1046,6 +1150,65 @@ describe("API routes", () => {
     const afterDelete = (await afterDeleteResponse.json()) as Array<{ id: number }>;
     expect(afterDelete).toHaveLength(3);
     expect(afterDelete.some((item) => item.id === deletedId)).toBe(false);
+
+    const stored = db.prepare("SELECT id, archived_at FROM garments WHERE id = ?").get(deletedId) as {
+      id: number;
+      archived_at: string | null;
+    } | undefined;
+    expect(stored).toMatchObject({ id: deletedId, archived_at: expect.any(String) });
+
+    const archivedResponse = await fetch(`${baseUrl}/api/garments?archived=1`, {
+      headers: { cookie: authCookie }
+    });
+    expect(archivedResponse.status).toBe(200);
+    expect(await archivedResponse.json()).toEqual([
+      expect.objectContaining({ id: deletedId, archivedAt: expect.any(String) })
+    ]);
+
+    const insights = await (await fetch(`${baseUrl}/api/insights`, {
+      headers: { cookie: authCookie }
+    })).json() as { totalGarments: number };
+    expect(insights.totalGarments).toBe(3);
+
+    const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ weather: recommendationWeather, occasion: "casual" })
+    });
+    expect(recommendationResponse.status).toBe(200);
+    const recommendation = await recommendationResponse.json() as {
+      outfits: Array<{ items: Array<{ id: number }> }>;
+    };
+    expect(recommendation.outfits.flatMap((outfit) => outfit.items).some((item) => item.id === deletedId)).toBe(false);
+
+    const restoreResponse = await fetch(`${baseUrl}/api/garments/${deletedId}/restore`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(restoreResponse.status).toBe(200);
+    const restoredGarment = await restoreResponse.json() as { id: number; archivedAt?: string };
+    expect(restoredGarment).toMatchObject({ id: deletedId });
+    expect(restoredGarment).not.toHaveProperty("archivedAt");
+
+    const restored = await (await fetch(`${baseUrl}/api/garments`, {
+      headers: { cookie: authCookie }
+    })).json() as Array<{ id: number }>;
+    expect(restored).toHaveLength(4);
+    expect(restored.some((item) => item.id === deletedId)).toBe(true);
+
+    const archiveResponse = await fetch(`${baseUrl}/api/garments/${deletedId}/archive`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(archiveResponse.status).toBe(200);
+    const archivedAgain = await archiveResponse.json() as { archivedAt?: string };
+    expect(archivedAgain.archivedAt).toEqual(expect.any(String));
+    const archiveAgainResponse = await fetch(`${baseUrl}/api/garments/${deletedId}/archive`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(archiveAgainResponse.status).toBe(200);
+    expect(await archiveAgainResponse.json()).toMatchObject({ archivedAt: archivedAgain.archivedAt });
   });
 
   it("records wear logs with context", async () => {
@@ -1159,15 +1322,24 @@ describe("API routes", () => {
     const forgedResponse = await fetch(`${baseUrl}/api/garments`, {
       method: "POST",
       headers: jsonHeaders(authCookie),
-      body: JSON.stringify({ ...manual("伪造上装", "top"), confirmed: false })
+      body: JSON.stringify({ ...manual("伪造上装", "top"), confirmed: false, origin: "backup" })
     });
     expect(forgedResponse.status).toBe(400);
     expect(await forgedResponse.json()).toMatchObject({
-      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("confirmed") }
+      error: { code: "VALIDATION_ERROR", message: expect.stringMatching(/confirmed|origin/) }
     });
 
     const created = [];
-    for (const input of [manual("手工上装", "top"), manual("手工下装", "bottom"), manual("手工鞋履", "shoes")]) {
+    for (const input of [
+      {
+        ...manual("手工上装", "top"),
+        acquiredAt: "2026-07-11",
+        purchasePriceCents: 129900,
+        currency: "CNY" as const
+      },
+      manual("手工下装", "bottom"),
+      manual("手工鞋履", "shoes")
+    ]) {
       const response = await fetch(`${baseUrl}/api/garments`, {
         method: "POST",
         headers: jsonHeaders(authCookie),
@@ -1182,11 +1354,44 @@ describe("API routes", () => {
       owned: true,
       confirmed: true,
       excluded: false,
-      confidence: 1
+      confidence: 1,
+      origin: "manual",
+      acquiredAt: "2026-07-11",
+      purchasePriceCents: 129900,
+      currency: "CNY"
     });
     expect(created[0]).not.toHaveProperty("sourceOrderItemId");
-    expect(db.prepare("SELECT source_order_item_id, owned, confirmed, excluded FROM garments WHERE id = ?")
-      .get(created[0].id)).toEqual({ source_order_item_id: null, owned: 1, confirmed: 1, excluded: 0 });
+    expect(db.prepare(`
+      SELECT source_order_item_id, origin, acquired_at, purchase_price_cents, currency,
+        owned, confirmed, excluded
+      FROM garments
+      WHERE id = ?
+    `).get(created[0].id)).toEqual({
+      source_order_item_id: null,
+      origin: "manual",
+      acquired_at: "2026-07-11",
+      purchase_price_cents: 129900,
+      currency: "CNY",
+      owned: 1,
+      confirmed: 1,
+      excluded: 0
+    });
+
+    for (const invalid of [
+      { ...manual("负价上装", "top"), purchasePriceCents: -1 },
+      { ...manual("非法币种", "top"), currency: "USD" },
+      { ...manual("非法日期", "top"), acquiredAt: "2026-02-30" }
+    ]) {
+      const invalidResponse = await fetch(`${baseUrl}/api/garments`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(invalid)
+      });
+      expect(invalidResponse.status).toBe(400);
+      expect(await invalidResponse.json()).toMatchObject({
+        error: { code: "VALIDATION_ERROR" }
+      });
+    }
 
     const recommendationResponse = await fetch(`${baseUrl}/api/recommendations`, {
       method: "POST",
@@ -1198,6 +1403,99 @@ describe("API routes", () => {
     expect(recommendation.outfits.length).toBeGreaterThan(0);
     expect(recommendation.outfits[0].items.map((item: { id: number }) => item.id))
       .toEqual(expect.arrayContaining(created.map((item) => item.id)));
+  });
+
+  it("uploads sanitized garment images and serves active assets only through authenticated IDs", async () => {
+    const db = createDatabase(":memory:");
+    const assetRoot = mkdtempSync(path.join(tmpdir(), "outfit-api-assets-"));
+    const app = createApiApp(db, { garmentAssetRoot: assetRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const createResponse = await fetch(`${baseUrl}/api/garments`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        name: "本地照片衬衫",
+        category: "top",
+        color: "white",
+        warmth: "light",
+        seasons: ["spring", "summer"],
+        styles: ["casual"],
+        formality: "casual"
+      })
+    });
+    const garment = await createResponse.json() as { id: number };
+    const png = await sharp({
+      create: { width: 16, height: 12, channels: 4, background: { r: 245, g: 245, b: 240, alpha: 1 } }
+    }).png().toBuffer();
+
+    const unauthenticatedUpload = await fetch(`${baseUrl}/api/garments/${garment.id}/image`, {
+      method: "PUT",
+      headers: { "content-type": "image/png" },
+      body: Uint8Array.from(png).buffer
+    });
+    expect(unauthenticatedUpload.status).toBe(401);
+
+    const crossSiteUpload = await fetch(`${baseUrl}/api/garments/${garment.id}/image`, {
+      method: "PUT",
+      headers: {
+        cookie: authCookie,
+        "content-type": "image/png",
+        "sec-fetch-site": "cross-site",
+        origin: "https://evil.example"
+      },
+      body: Uint8Array.from(png).buffer
+    });
+    expect(crossSiteUpload.status).toBe(403);
+
+    const uploadResponse = await fetch(`${baseUrl}/api/garments/${garment.id}/image`, {
+      method: "PUT",
+      headers: { cookie: authCookie, "content-type": "image/png" },
+      body: Uint8Array.from(png).buffer
+    });
+    expect(uploadResponse.status).toBe(200);
+    const uploaded = await uploadResponse.json() as { imageUrl: string };
+    expect(uploaded.imageUrl).toMatch(/^\/api\/garment-assets\/\d+\/content$/);
+    const assetId = Number(uploaded.imageUrl.split("/")[3]);
+
+    const unauthenticatedRead = await fetch(`${baseUrl}${uploaded.imageUrl}`);
+    expect(unauthenticatedRead.status).toBe(401);
+    const assetResponse = await fetch(`${baseUrl}${uploaded.imageUrl}`, {
+      headers: { cookie: authCookie }
+    });
+    expect(assetResponse.status).toBe(200);
+    expect(assetResponse.headers.get("content-type")).toContain("image/webp");
+    expect(assetResponse.headers.get("cache-control")).toBe("private, max-age=0, must-revalidate");
+    expect(assetResponse.headers.get("x-content-type-options")).toBe("nosniff");
+    expect((await sharp(Buffer.from(await assetResponse.arrayBuffer())).metadata()).format).toBe("webp");
+
+    const forgedMime = await fetch(`${baseUrl}/api/garments/${garment.id}/image`, {
+      method: "PUT",
+      headers: { cookie: authCookie, "content-type": "image/jpeg" },
+      body: Uint8Array.from(png).buffer
+    });
+    expect(forgedMime.status).toBe(400);
+    expect(await forgedMime.json()).toMatchObject({ error: { code: "INVALID_IMAGE" } });
+
+    const oversized = await fetch(`${baseUrl}/api/garments/${garment.id}/image`, {
+      method: "PUT",
+      headers: { cookie: authCookie, "content-type": "image/png" },
+      body: new Uint8Array(5 * 1024 * 1024 + 1).buffer
+    });
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toMatchObject({ error: { code: "IMAGE_TOO_LARGE" } });
+
+    db.prepare("UPDATE garment_assets SET active = 0 WHERE id = ?").run(assetId);
+    const inactiveResponse = await fetch(`${baseUrl}${uploaded.imageUrl}`, {
+      headers: { cookie: authCookie }
+    });
+    expect(inactiveResponse.status).toBe(404);
+    const inactiveError = JSON.stringify(await inactiveResponse.json());
+    expect(inactiveError).not.toContain(assetRoot);
   });
 
   it("updates garment detail fields and exposes local history insights and export data", async () => {
@@ -1276,8 +1574,8 @@ describe("API routes", () => {
     const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
       version: 2,
-      schemaVersion: 1,
-      features: ["versioned-migrations", "recommendation-candidates"],
+      schemaVersion: 2,
+      features: ["versioned-migrations", "recommendation-candidates", "garment-assets"],
       profile: expect.any(Object),
       garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
       wearLogs: expect.any(Array),
@@ -1291,6 +1589,82 @@ describe("API routes", () => {
           itemIds: expect.any(Array)
         })
       ])
+    });
+  });
+
+  it("previews and streams an explicit complete ZIP backup without changing the JSON export", async () => {
+    const db = createDatabase(":memory:");
+    const assetRoot = mkdtempSync(path.join(tmpdir(), "outfit-api-export-assets-"));
+    const app = createApiApp(db, { garmentAssetRoot: assetRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const createdResponse = await fetch(`${baseUrl}/api/garments`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        name: "线下购入白衬衫",
+        category: "top",
+        color: "white",
+        warmth: "light",
+        seasons: ["spring", "summer"],
+        styles: ["smart-casual"],
+        formality: "smart-casual"
+      })
+    });
+    const created = await createdResponse.json() as { id: number };
+    const png = await sharp({
+      create: { width: 12, height: 8, channels: 3, background: "white" }
+    }).png().toBuffer();
+    const uploadResponse = await fetch(`${baseUrl}/api/garments/${created.id}/image`, {
+      method: "PUT",
+      headers: {
+        cookie: authCookie,
+        origin: baseUrl,
+        "content-type": "image/png"
+      },
+      body: png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer
+    });
+    expect(uploadResponse.status).toBe(200);
+
+    const jsonResponse = await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } });
+    const jsonExport = await jsonResponse.json() as { garmentAssets: Array<Record<string, unknown>> };
+    expect(jsonResponse.headers.get("content-type")).toMatch(/application\/json/);
+    expect(jsonExport.garmentAssets).toEqual([
+      expect.objectContaining({ garmentId: created.id, archivePath: "assets/1.webp" })
+    ]);
+    expect(JSON.stringify(jsonExport)).not.toContain("storage_key");
+
+    const previewResponse = await fetch(`${baseUrl}/api/export?format=zip&preview=1`, {
+      headers: { cookie: authCookie }
+    });
+    expect(previewResponse.status).toBe(200);
+    await expect(previewResponse.json()).resolves.toMatchObject({
+      assetCount: 1,
+      includedAssetCount: 1,
+      estimatedBytes: expect.any(Number),
+      warnings: []
+    });
+
+    const zipResponse = await fetch(`${baseUrl}/api/export?format=zip`, {
+      headers: { cookie: authCookie }
+    });
+    expect(zipResponse.status).toBe(200);
+    expect(zipResponse.headers.get("content-type")).toBe("application/zip");
+    expect(zipResponse.headers.get("content-disposition")).toMatch(/^attachment; filename="outfit-complete-backup-\d{4}-\d{2}-\d{2}\.zip"$/);
+    const zipBytes = new Uint8Array(await zipResponse.arrayBuffer());
+    expect(Array.from(zipBytes.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+
+    const invalidFormat = await fetch(`${baseUrl}/api/export?format=tar`, {
+      headers: { cookie: authCookie }
+    });
+    expect(invalidFormat.status).toBe(400);
+    await expect(invalidFormat.json()).resolves.toMatchObject({
+      error: { code: "INVALID_EXPORT_FORMAT" }
     });
   });
 

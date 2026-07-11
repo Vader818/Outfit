@@ -11,8 +11,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AUTH_REQUIRED_EVENT,
   analyzeGarmentVisionTags,
+  archiveGarment,
+  commitTaobaoImport,
+  createGarment,
   createGarmentCutout,
-  deleteGarment,
+  downloadCompleteBackup,
   downloadVisionModel,
   exportLocalData,
   getAuthStatus,
@@ -26,18 +29,20 @@ import {
   getVisionModels,
   getWearLogs,
   getWeather,
-  importTaobaoBatch,
   login,
   logout,
   previewTaobaoImport,
+  previewCompleteBackup,
   readLatestTaobaoCapture,
   recordWearLog,
   refreshGarmentThumbnails,
   register as registerAccount,
+  restoreGarment,
   savePersonalProfile,
   selectGarmentThumbnail,
   startCaptureJob,
   updateGarment,
+  uploadGarmentImage,
   verifyVisionModel,
   type CaptureStartResult,
   type ImportSummary
@@ -50,10 +55,11 @@ import { ImportView } from "../features/import/ImportView";
 import { RecommendationView } from "../features/recommendations/RecommendationView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { ThumbnailPicker } from "../features/wardrobe/ThumbnailDialog";
+import { ManualGarmentDialog } from "../features/wardrobe/ManualGarmentDialog";
 import { WardrobeView } from "../features/wardrobe/WardrobeView";
-import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, buildRecommendationWearLogInput, downloadJson, exportBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
+import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, buildRecommendationWearLogInput, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
+import { prepareGarmentImageForUpload } from "../lib/imageSanitization";
 import { applyGarmentPatch, isRecommendationEligibleGarment, isRecommendationPendingGarment, isWardrobeReviewPendingGarment } from "../lib/garments";
-import { deleteGarmentForView, refreshGarmentsForView } from "../lib/view-actions";
 import {
   DEFAULT_LATITUDE,
   DEFAULT_LONGITUDE,
@@ -72,11 +78,15 @@ import type {
   CaptureEngine,
   CaptureJob,
   Garment,
+  ImportDecision,
+  ManualGarmentCreate,
   OutfitRecommendation,
   PersonalProfile,
   RecommendationResult,
   RecommendationRunEntry,
+  Season,
   TaobaoImportPreview,
+  TaobaoImportCommitResult,
   TaobaoWardrobeFilterSummary,
   ThumbnailCandidate,
   VisionModelId,
@@ -189,13 +199,15 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [tab, setTab] = useState<AppTab>("recommend");
   const [bootstrapping, setBootstrapping] = useState(() => typeof window !== "undefined");
   const [garments, setGarments] = useState<Garment[]>([]);
+  const [archivedGarments, setArchivedGarments] = useState<Garment[]>([]);
   const garmentUpdateVersions = useRef(new Map<number, number>());
   const garmentUpdateQueues = useRef(new Map<number, Promise<Garment>>());
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [wardrobeFilters, setWardrobeFilters] = useState<WardrobeFilters>(DEFAULT_WARDROBE_FILTERS);
   const [importText, setImportText] = useState("");
-  const [importResult, setImportResult] = useState<ImportSummary | null>(null);
+  const [importResult, setImportResult] = useState<ImportSummary | TaobaoImportCommitResult | null>(null);
   const [importPreview, setImportPreview] = useState<TaobaoImportPreview | null>(null);
+  const [importDecisions, setImportDecisions] = useState<Record<string, ImportDecision>>({});
   const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
   const [captureEngine, setCaptureEngine] = useState<CaptureEngine>("selenium");
@@ -218,6 +230,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
   const [thumbnailPicker, setThumbnailPicker] = useState<ThumbnailPickerState>(null);
+  const [manualGarmentOpen, setManualGarmentOpen] = useState(false);
+  const [manualGarmentBusy, setManualGarmentBusy] = useState(false);
+  const [manualGarmentError, setManualGarmentError] = useState("");
+  const [manualSavedGarment, setManualSavedGarment] = useState<Garment | null>(null);
   const thumbnailPickerRequestId = useRef(0);
   const [occasion, setOccasion] = useState("casual");
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
@@ -272,7 +288,17 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }, [statusMessage]);
 
   async function refreshGarments() {
-    await refreshGarmentsForView(getGarments, setGarments, setError);
+    setError("");
+    try {
+      const [active, archived] = await Promise.all([
+        getGarments(),
+        getGarments({ archived: true })
+      ]);
+      setGarments(active);
+      setArchivedGarments(archived);
+    } catch (garmentError) {
+      setError(garmentError instanceof Error ? garmentError.message : "衣橱读取失败");
+    }
   }
 
   async function refreshProfile() {
@@ -306,16 +332,28 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function runImport() {
+    if (!importPreview) {
+      setError("请先预览并逐项确认导入内容");
+      return;
+    }
     setBusyAction("import");
     setError("");
     try {
-      const result = await importTaobaoBatch(JSON.parse(importText));
+      const result = await commitTaobaoImport({
+        batch: JSON.parse(importText),
+        decisions: importPreview.candidates.map((candidate) => importDecisions[candidate.sourceItemKey] ?? {
+          sourceItemKey: candidate.sourceItemKey,
+          include: false
+        })
+      });
       setImportResult(result);
       setImportPreview(null);
+      setImportDecisions({});
       setImportText("");
       setCaptureFilterSummary(null);
       await refreshGarments();
-      setStatusMessage(`已导入 ${result.summary.createdGarments} 件衣物`);
+      await refreshHistoryData();
+      setStatusMessage(`新增 ${result.summary.created} 件，更新 ${result.summary.updated} 件，退款同步 ${result.summary.refundSynced} 件`);
       navigateTo("wardrobe");
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入失败");
@@ -374,10 +412,11 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setError("");
     try {
       const latest = captureJob
-        ? await getCaptureJobArtifact(captureJob.id, { wardrobeOnly: true })
-        : await readLatestTaobaoCapture({ wardrobeOnly: true });
+        ? await getCaptureJobArtifact(captureJob.id)
+        : await readLatestTaobaoCapture();
       setImportResult(null);
       setImportPreview(null);
+      setImportDecisions({});
       setCaptureFilterSummary(latest.filterSummary ?? null);
       setImportText(latest.jsonText || JSON.stringify(latest.payload, null, 2));
       setStatusMessage("采集产物已读取，可以先预览再导入");
@@ -392,19 +431,32 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setImportText(value);
     setCaptureFilterSummary(null);
     setImportPreview(null);
+    setImportDecisions({});
   }
 
   async function previewImport() {
     setBusyAction("preview-import");
     setError("");
     try {
-      setImportPreview(await previewTaobaoImport(JSON.parse(importText)));
+      const preview = await previewTaobaoImport(JSON.parse(importText));
+      setImportPreview(preview);
+      setImportDecisions(Object.fromEntries(preview.candidates.map((candidate) => [
+        candidate.sourceItemKey,
+        {
+          sourceItemKey: candidate.sourceItemKey,
+          include: candidate.disposition === "create" || candidate.disposition === "update" || candidate.disposition === "refund-sync"
+        }
+      ])));
       setImportResult(null);
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "预览失败");
     } finally {
       setBusyAction(null);
     }
+  }
+
+  function updateImportDecision(sourceItemKey: string, decision: ImportDecision) {
+    setImportDecisions((current) => ({ ...current, [sourceItemKey]: decision }));
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
@@ -436,8 +488,31 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
-  async function deleteOne(id: number) {
-    await deleteGarmentForView(deleteGarment, id, setGarments, setSelectedIds, setError);
+  async function archiveOne(id: number) {
+    setError("");
+    try {
+      const archived = await archiveGarment(id);
+      setGarments((items) => items.filter((item) => item.id !== id));
+      setArchivedGarments((items) => [archived, ...items.filter((item) => item.id !== id)]);
+      setSelectedIds((ids) => ids.filter((selectedId) => selectedId !== id));
+      setStatusMessage("衣物已归档，可在衣服库底部恢复");
+      await refreshHistoryData();
+    } catch (archiveError) {
+      setError(archiveError instanceof Error ? archiveError.message : "衣物归档失败");
+    }
+  }
+
+  async function restoreOne(id: number) {
+    setError("");
+    try {
+      const restored = await restoreGarment(id);
+      setArchivedGarments((items) => items.filter((item) => item.id !== id));
+      setGarments((items) => [restored, ...items.filter((item) => item.id !== id)]);
+      setStatusMessage("衣物已恢复到衣橱");
+      await refreshHistoryData();
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : "衣物恢复失败");
+    }
   }
 
   async function bulkConfirm() {
@@ -452,6 +527,87 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(bulkError instanceof Error ? bulkError.message : "批量确认失败");
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function bulkUpdate(
+    label: string,
+    buildUpdate: (garment: Garment) => Partial<Garment>
+  ) {
+    setBusyAction("bulk-update");
+    setError("");
+    try {
+      const selected = garments.filter((garment) => selectedIds.includes(garment.id));
+      await Promise.all(selected.map((garment) => updateGarment(garment.id, buildUpdate(garment))));
+      setSelectedIds([]);
+      await refreshGarments();
+      setStatusMessage(label);
+    } catch (bulkError) {
+      await refreshGarments();
+      setError(bulkError instanceof Error ? bulkError.message : "批量更新失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function bulkSeasons(seasons: Season[]) {
+    void bulkUpdate("所选衣物季节已更新", () => ({ seasons }));
+  }
+
+  function bulkTags(tags: string[]) {
+    void bulkUpdate("标签已添加到所选衣物", (garment) => ({
+      tags: Array.from(new Set([...(garment.tags ?? []), ...tags]))
+    }));
+  }
+
+  function bulkExcluded(excluded: boolean) {
+    void bulkUpdate(excluded ? "所选衣物已排除推荐" : "所选衣物已恢复推荐", () => ({ excluded }));
+  }
+
+  function openManualGarmentDialog() {
+    setManualGarmentError("");
+    setManualSavedGarment(null);
+    setManualGarmentOpen(true);
+  }
+
+  function closeManualGarmentDialog() {
+    if (manualGarmentBusy) return;
+    setManualGarmentOpen(false);
+    setManualGarmentError("");
+    setManualSavedGarment(null);
+  }
+
+  async function submitManualGarment(input: ManualGarmentCreate, imageFile?: File) {
+    setManualGarmentBusy(true);
+    setManualGarmentError("");
+    let saved = manualSavedGarment;
+    try {
+      if (!saved) {
+        saved = await createGarment(input);
+        setManualSavedGarment(saved);
+        setGarments((items) => [saved as Garment, ...items.filter((item) => item.id !== saved?.id)]);
+      }
+      if (imageFile) {
+        const prepared = await prepareGarmentImageForUpload(imageFile);
+        saved = await uploadGarmentImage(saved.id, prepared);
+        setGarments((items) => items.map((item) => item.id === saved?.id ? saved as Garment : item));
+      }
+      setManualGarmentOpen(false);
+      setManualSavedGarment(null);
+      setStatusMessage(imageFile ? "衣物与本地照片已保存" : "衣物已保存，可立即用于推荐");
+      await refreshGarments();
+      await refreshHistoryData();
+    } catch (manualError) {
+      const message = manualError instanceof Error ? manualError.message : "手工建档失败";
+      if (saved) {
+        setManualSavedGarment(saved);
+        setManualGarmentError(`衣物已保存，但照片处理失败：${message}`);
+        await refreshGarments();
+      } else {
+        setManualGarmentError(message);
+      }
+    } finally {
+      setManualGarmentBusy(false);
     }
   }
 
@@ -739,6 +895,24 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  async function exportCompleteBackup() {
+    setBusyAction("export-complete");
+    setError("");
+    try {
+      const exported = await exportCompleteBackupWithConfirmation(
+        (message) => globalThis.confirm(message),
+        previewCompleteBackup,
+        downloadCompleteBackup,
+        downloadBlob
+      );
+      if (exported) setStatusMessage("含本地图片的完整备份已生成");
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "完整备份导出失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   return (
     <div className="app-layout">
       <a className="skip-link" href="#main-content">跳到主要内容</a>
@@ -803,6 +977,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             {tab === "wardrobe" ? (
               <WardrobeView
                 garments={garments}
+                archivedGarments={archivedGarments}
                 selectedIds={selectedIds}
                 busy={Boolean(busyAction)}
                 busyAction={busyAction}
@@ -811,8 +986,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onRefresh={refreshGarments}
                 onSelect={setSelectedIds}
                 onUpdate={updateOne}
-                onDelete={deleteOne}
+                onDelete={archiveOne}
+                onRestore={restoreOne}
+                onAddGarment={openManualGarmentDialog}
                 onBulkConfirm={bulkConfirm}
+                onBulkSeasons={bulkSeasons}
+                onBulkTags={bulkTags}
+                onBulkExcluded={bulkExcluded}
                 onRefreshThumbnails={refreshThumbnails}
                 onOpenThumbnailPicker={openThumbnailPicker}
                 onCutoutGarment={cutoutGarment}
@@ -832,6 +1012,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 busyAction={busyAction}
                 onRefresh={refreshHistory}
                 onExport={exportBackup}
+                onExportComplete={exportCompleteBackup}
               />
             ) : null}
             {tab === "import" ? (
@@ -840,6 +1021,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 importText={importText}
                 importResult={importResult}
                 importPreview={importPreview}
+                importDecisions={importDecisions}
                 filterSummary={captureFilterSummary}
                 captureUrl={captureUrl}
                 captureEngine={captureEngine}
@@ -849,6 +1031,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onCopyBookmarklet={copyBookmarklet}
                 onImportText={updateImportText}
                 onImport={runImport}
+                onImportDecision={updateImportDecision}
                 onCaptureUrl={setCaptureUrl}
                 onCaptureEngine={setCaptureEngine}
                 onStartOrdersCapture={startOrdersCapture}
@@ -909,6 +1092,15 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           onClose={closeThumbnailPicker}
         />
       ) : null}
+
+      <ManualGarmentDialog
+        open={manualGarmentOpen}
+        busy={manualGarmentBusy}
+        error={manualGarmentError}
+        savedGarment={manualSavedGarment}
+        onClose={closeManualGarmentDialog}
+        onSubmit={submitManualGarment}
+      />
     </div>
   );
 }

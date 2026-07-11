@@ -3,11 +3,11 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Formality, Garment, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentThumbnailCandidatesResponse, ImportDecision, ImportDisposition, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoImportPreviewItem, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
-import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
+import { buildGarmentDisplayInfo, computeLegacyTaobaoSourceItemKey, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type NormalizedTaobaoBatch, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
-import { ApiError } from "./validation";
+import { ApiError, ValidationError } from "./validation";
 import { runMigrations, type Migration } from "./db/migrations";
 
 const require = createRequire(import.meta.url);
@@ -44,6 +44,68 @@ const NUMBERED_MIGRATIONS: readonly Migration[] = [
 
         CREATE INDEX idx_recommendation_candidates_signature
         ON recommendation_candidates(signature);
+      `);
+    }
+  },
+  {
+    version: 2,
+    name: "trusted-ingestion",
+    up(db) {
+      db.exec(`
+        ALTER TABLE garments
+        ADD COLUMN origin TEXT NOT NULL DEFAULT 'taobao'
+          CHECK (origin IN ('taobao', 'manual', 'backup'));
+
+        ALTER TABLE garments
+        ADD COLUMN archived_at TEXT;
+
+        ALTER TABLE garments
+        ADD COLUMN acquired_at TEXT;
+
+        ALTER TABLE garments
+        ADD COLUMN purchase_price_cents INTEGER
+          CHECK (
+            purchase_price_cents IS NULL OR
+            (typeof(purchase_price_cents) = 'integer' AND purchase_price_cents >= 0)
+          );
+
+        ALTER TABLE garments
+        ADD COLUMN currency TEXT
+          CHECK (currency IS NULL OR currency = 'CNY');
+
+        UPDATE garments
+        SET origin = 'manual'
+        WHERE source_order_item_id IS NULL;
+
+        CREATE TABLE garment_assets (
+          id INTEGER PRIMARY KEY,
+          garment_id INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK (length(trim(kind)) > 0),
+          storage_key TEXT NOT NULL UNIQUE CHECK (
+            length(trim(storage_key)) > 0 AND
+            instr(storage_key, '/') = 0 AND
+            instr(storage_key, char(92)) = 0 AND
+            instr(storage_key, '..') = 0
+          ),
+          mime_type TEXT NOT NULL CHECK (mime_type = 'image/webp'),
+          byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+          width INTEGER NOT NULL CHECK (width > 0),
+          height INTEGER NOT NULL CHECK (height > 0),
+          sha256 TEXT NOT NULL CHECK (
+            length(sha256) = 64 AND
+            sha256 NOT GLOB '*[^0-9a-f]*'
+          ),
+          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (garment_id) REFERENCES garments(id) ON DELETE RESTRICT
+        ) STRICT;
+
+        CREATE INDEX idx_garment_assets_garment_id
+        ON garment_assets(garment_id);
+
+        CREATE UNIQUE INDEX idx_garment_assets_active_kind
+        ON garment_assets(garment_id, kind)
+        WHERE active = 1;
       `);
     }
   }
@@ -95,6 +157,10 @@ export interface EnsureGarmentThumbnailOptions extends ThumbnailRefreshOptions {
 }
 
 export interface ThumbnailSelectionOptions extends ThumbnailRefreshOptions {}
+
+export interface ListGarmentsOptions {
+  scope?: "active" | "archived" | "all";
+}
 
 interface PurchasedSourceRow {
   id: number;
@@ -570,11 +636,516 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
   };
 }
 
-export function listGarments(db: AppDatabase): Garment[] {
+interface TrustedImportSourceRow {
+  id: number;
+  external_key: string;
+  source: string;
+  page_type: string | null;
+  item_id: string | null;
+  order_id: string | null;
+  order_time: string | null;
+  title: string;
+  sku: string | null;
+  quantity: number;
+  payment: number | null;
+  status: string | null;
+  refund_text: string | null;
+  item_url: string | null;
+  image_url: string | null;
+  raw_text: string | null;
+  detail_url: string | null;
+  detail_title: string | null;
+  detail_props: string | null;
+  detail_description: string | null;
+  detail_images: string | null;
+  detail_raw_text: string | null;
+  is_refunded: number;
+  is_apparel: number;
+  garment_id: number | null;
+}
+
+interface TrustedImportReviewContext {
+  item: SourceOrderItemDraft;
+  candidate: TaobaoImportPreviewItem;
+  target?: TrustedImportSourceRow;
+  existing?: Garment;
+  ambiguous: boolean;
+  sourceChanged: boolean;
+  classifiable: boolean;
+}
+
+const TRUSTED_IMPORT_SOURCE_SELECT = `
+  SELECT source_order_items.*, garments.id AS garment_id
+  FROM source_order_items
+  LEFT JOIN garments ON garments.source_order_item_id = source_order_items.id
+`;
+
+export function previewTaobaoImportForDb(db: AppDatabase, payload: unknown): TaobaoImportPreview {
+  const normalized = normalizeTaobaoBatch(payload);
+  const { contexts, skipped } = buildTrustedImportReviewContexts(db, normalized);
+  return {
+    batchId: normalized.batchId,
+    summary: normalized.summary,
+    duplicateCount: Math.max(0, normalized.summary.totalItems - normalized.summary.uniqueItems),
+    candidates: contexts.map((context) => context.candidate),
+    skipped
+  };
+}
+
+export function commitTaobaoImport(
+  db: AppDatabase,
+  request: TaobaoImportCommitRequest
+): TaobaoImportCommitResult {
+  if (db.isTransaction) {
+    throw new ApiError("TRANSACTION_CONFLICT", "导入提交不能在其他事务中运行", 409);
+  }
+  const normalized = normalizeTaobaoBatch(request.batch);
+  if (!Array.isArray(request.decisions)) {
+    throw new ValidationError("decisions 必须是数组");
+  }
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const { contexts } = buildTrustedImportReviewContexts(db, normalized);
+    const decisions = validateTrustedImportDecisionCoverage(contexts, request.decisions);
+    const summary: TaobaoImportCommitResult["summary"] = {
+      totalDecisions: request.decisions.length,
+      included: 0,
+      created: 0,
+      updated: 0,
+      refundSynced: 0,
+      unchanged: 0,
+      skipped: 0
+    };
+    const items: TaobaoImportCommitResult["items"] = [];
+
+    for (const context of contexts) {
+      const decision = decisions.get(context.item.externalKey)!;
+      if (!decision.include) {
+        summary.skipped += 1;
+        items.push({ sourceItemKey: context.item.externalKey, disposition: "skip" });
+        continue;
+      }
+      summary.included += 1;
+      if (context.item.isRefunded && decision.overrides && Object.keys(decision.overrides).length) {
+        throw new ValidationError("退款同步项不能修改衣物字段");
+      }
+
+      const candidate = applyTrustedImportOverrides(context.candidate, decision.overrides);
+      const disposition = trustedImportDisposition(context, candidate);
+      if (disposition === "skip") {
+        summary.skipped += 1;
+        items.push({ sourceItemKey: context.item.externalKey, disposition });
+        continue;
+      }
+      if (disposition === "unchanged") {
+        summary.unchanged += 1;
+        items.push({
+          sourceItemKey: context.item.externalKey,
+          disposition,
+          garmentId: context.existing?.id
+        });
+        continue;
+      }
+
+      const sourceId = persistTrustedImportSource(db, context);
+      if (disposition === "refund-sync") {
+        if (!context.existing) {
+          throw new ValidationError("退款同步项没有可更新的衣物");
+        }
+        db.prepare(`
+          UPDATE garments
+          SET owned = 0, excluded = 1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(context.existing.id);
+        summary.refundSynced += 1;
+        items.push({
+          sourceItemKey: context.item.externalKey,
+          disposition,
+          garmentId: context.existing.id
+        });
+        continue;
+      }
+
+      const garmentId = persistTrustedImportGarment(db, context, candidate, sourceId);
+      if (disposition === "create") summary.created += 1;
+      else summary.updated += 1;
+      items.push({ sourceItemKey: context.item.externalKey, disposition, garmentId });
+    }
+
+    db.exec("COMMIT");
+    return { batchId: normalized.batchId, summary, items };
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function buildTrustedImportReviewContexts(
+  db: AppDatabase,
+  normalized: NormalizedTaobaoBatch
+): { contexts: TrustedImportReviewContext[]; skipped: TaobaoImportPreview["skipped"] } {
+  const contexts: TrustedImportReviewContext[] = [];
+  const skipped: TaobaoImportPreview["skipped"] = [];
+  for (const item of normalized.sourceItems) {
+    const match = findTrustedImportSource(db, item);
+    const existing = match.row?.garment_id ? getGarmentById(db, match.row.garment_id) : undefined;
+    const displayInfo = buildGarmentDisplayInfo(item);
+    const classification = classifyGarment(displayInfo.rawName, [
+      item.sku,
+      item.detailProps.map((property) => `${property.name} ${property.value}`).join(" "),
+      item.detailDescription,
+      item.detailRawText,
+      item.rawText
+    ].filter(Boolean).join(" "));
+    const classifiable = Boolean(classification && isWardrobeImportCategory(classification.category));
+
+    if (!classifiable && !existing && !item.isRefunded) {
+      skipped.push({
+        title: displayInfo.rawName || item.title || item.detailTitle,
+        reason: "non-apparel"
+      });
+      continue;
+    }
+
+    const notes = item.detailProps.length || item.detailDescription
+      ? [
+          item.detailProps.map((property) => `${property.name}: ${property.value}`).join("; "),
+          item.detailDescription
+        ].filter(Boolean).join("\n")
+      : existing?.notes ?? "";
+    const importedImage = classifiable
+      ? preferredImage(item, classification!.category)
+      : existing?.imageUrl ?? "";
+    const proposedName = displayInfo.name || existing?.name || displayInfo.rawName || "待识别衣物";
+    const candidate: TaobaoImportPreviewItem = {
+      sourceItemKey: item.externalKey,
+      brand: displayInfo.brand || existing?.brand || "",
+      name: existing && shouldPreserveConfirmedName(existing.name, displayInfo, existing.confirmed)
+        ? existing.name
+        : proposedName,
+      rawName: displayInfo.rawName || existing?.rawName || proposedName,
+      category: classification?.category ?? existing?.category ?? "top",
+      color: classification?.color ?? existing?.color ?? "unknown",
+      warmth: classification?.warmth ?? existing?.warmth ?? "medium",
+      seasons: classification?.seasons ?? existing?.seasons ?? [],
+      styles: classification?.styles ?? existing?.styles ?? [],
+      formality: classification?.formality ?? existing?.formality ?? "casual",
+      size: existing?.size,
+      materials: existing?.materials ?? [],
+      patterns: existing?.patterns ?? [],
+      tags: existing?.tags ?? [],
+      notes,
+      confidence: classification?.confidence ?? existing?.confidence ?? 0,
+      imageUrl: existing
+        ? chooseImageForUpdate(existing.imageUrl, importedImage, existing.confirmed)
+        : importedImage,
+      disposition: "skip",
+      existingGarmentId: existing?.id,
+      restoreRequired: Boolean(existing?.archivedAt),
+      message: match.ambiguous ? "存在多个可能的历史来源，需要人工处理" : undefined
+    };
+    const context: TrustedImportReviewContext = {
+      item,
+      candidate,
+      target: match.row,
+      existing,
+      ambiguous: match.ambiguous,
+      sourceChanged: sourceImportChanged(match.row, item),
+      classifiable
+    };
+    candidate.disposition = trustedImportDisposition(context, candidate);
+    if (candidate.disposition === "update" && candidate.restoreRequired) {
+      candidate.message = "将恢复已归档衣物并更新来源信息";
+    } else if (candidate.disposition === "refund-sync") {
+      candidate.message = "将同步退款状态并停止用于默认衣橱与推荐";
+    } else if (candidate.disposition === "skip" && item.isRefunded && !existing) {
+      candidate.message = "未找到可同步的已有衣物";
+    }
+    contexts.push(context);
+  }
+  return { contexts, skipped };
+}
+
+function trustedImportDisposition(
+  context: TrustedImportReviewContext,
+  candidate: TaobaoImportPreviewItem
+): ImportDisposition {
+  if (context.ambiguous) return "skip";
+  if (context.item.isRefunded) {
+    if (!context.existing) return "skip";
+    return context.sourceChanged || context.existing.owned || !context.existing.excluded
+      ? "refund-sync"
+      : "unchanged";
+  }
+  if (!context.classifiable && !context.existing) return "skip";
+  if (!context.existing) return "create";
+  return context.sourceChanged || trustedImportGarmentChanged(context.existing, candidate)
+    ? "update"
+    : "unchanged";
+}
+
+function trustedImportGarmentChanged(existing: Garment, candidate: TaobaoImportPreviewItem): boolean {
+  return (
+    !existing.owned ||
+    Boolean(existing.archivedAt) ||
+    existing.origin !== "taobao" ||
+    existing.brand !== candidate.brand ||
+    existing.name !== candidate.name ||
+    existing.rawName !== candidate.rawName ||
+    existing.category !== candidate.category ||
+    existing.color !== candidate.color ||
+    existing.warmth !== candidate.warmth ||
+    !sameStringArray(existing.seasons, candidate.seasons) ||
+    !sameStringArray(existing.styles, candidate.styles) ||
+    existing.formality !== candidate.formality ||
+    (existing.size ?? "") !== (candidate.size ?? "") ||
+    !sameStringArray(existing.materials ?? [], candidate.materials) ||
+    !sameStringArray(existing.patterns ?? [], candidate.patterns) ||
+    !sameStringArray(existing.tags ?? [], candidate.tags) ||
+    (existing.notes ?? "") !== candidate.notes ||
+    existing.imageUrl !== candidate.imageUrl ||
+    existing.confidence !== candidate.confidence
+  );
+}
+
+function applyTrustedImportOverrides(
+  candidate: TaobaoImportPreviewItem,
+  overrides: ImportGarmentOverrides | undefined
+): TaobaoImportPreviewItem {
+  if (!overrides) return candidate;
+  return {
+    ...candidate,
+    ...overrides,
+    seasons: overrides.seasons ?? candidate.seasons,
+    styles: overrides.styles ?? candidate.styles,
+    materials: overrides.materials ?? candidate.materials,
+    patterns: overrides.patterns ?? candidate.patterns,
+    tags: overrides.tags ?? candidate.tags
+  };
+}
+
+function validateTrustedImportDecisionCoverage(
+  contexts: TrustedImportReviewContext[],
+  decisions: ImportDecision[]
+): Map<string, ImportDecision> {
+  const expected = new Set(contexts.map((context) => context.item.externalKey));
+  const mapped = new Map<string, ImportDecision>();
+  for (const decision of decisions) {
+    if (!decision || typeof decision.sourceItemKey !== "string" || typeof decision.include !== "boolean") {
+      throw new ValidationError("每个 decision 都必须包含 sourceItemKey 与 include");
+    }
+    if (!expected.has(decision.sourceItemKey)) {
+      throw new ValidationError(`decision 不存在于重新归一化的批次：${decision.sourceItemKey}`);
+    }
+    if (mapped.has(decision.sourceItemKey)) {
+      throw new ValidationError(`decision 重复：${decision.sourceItemKey}`);
+    }
+    if (!decision.include && decision.overrides && Object.keys(decision.overrides).length) {
+      throw new ValidationError("未选择的导入项不能携带 overrides");
+    }
+    mapped.set(decision.sourceItemKey, decision);
+  }
+  const missing = Array.from(expected).filter((key) => !mapped.has(key));
+  if (missing.length) {
+    throw new ValidationError(`缺少 ${missing.length} 个导入 decision`);
+  }
+  return mapped;
+}
+
+function findTrustedImportSource(
+  db: AppDatabase,
+  item: SourceOrderItemDraft
+): { row?: TrustedImportSourceRow; ambiguous: boolean } {
+  const exactKeys = Array.from(new Set([
+    item.externalKey,
+    computeLegacyTaobaoSourceItemKey({
+      ...item,
+      payment: item.payment ?? undefined
+    })
+  ])).filter(Boolean);
+  for (const key of exactKeys) {
+    const row = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT} WHERE source_order_items.external_key = ?`)
+      .get(key) as unknown as TrustedImportSourceRow | undefined;
+    if (row) return { row, ambiguous: false };
+  }
+
+  let rows: TrustedImportSourceRow[] = [];
+  if (item.orderId) {
+    rows = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT}
+      WHERE source_order_items.order_id = ?
+        AND (? = '' OR source_order_items.item_id = ?)
+      ORDER BY source_order_items.id ASC
+    `).all(item.orderId, item.itemId, item.itemId) as unknown as TrustedImportSourceRow[];
+  } else if (item.itemId) {
+    rows = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT}
+      WHERE source_order_items.item_id = ?
+      ORDER BY source_order_items.id ASC
+    `).all(item.itemId) as unknown as TrustedImportSourceRow[];
+  }
+  const sku = normalizeTrustedImportSku(item.sku);
+  const matching = rows.filter((row) => normalizeTrustedImportSku(row.sku ?? "") === sku);
+  if (matching.length === 1) return { row: matching[0], ambiguous: false };
+  return { ambiguous: matching.length > 1 };
+}
+
+function normalizeTrustedImportSku(value: string): string {
+  return value.normalize("NFKC")
+    .replace(/[：]/g, ":")
+    .replace(/[；]/g, ";")
+    .split(";")
+    .map((part) => part.replace(/\s*:\s*/g, ":").replace(/\s+/g, " ").trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(";");
+}
+
+function sourceImportChanged(
+  current: TrustedImportSourceRow | undefined,
+  item: SourceOrderItemDraft
+): boolean {
+  if (!current) return true;
+  const preserveText = (incoming: string, stored: string | null) => incoming || stored || "";
+  const preserveJson = (incoming: unknown[], stored: string | null) => incoming.length
+    ? JSON.stringify(incoming)
+    : stored || "[]";
+  return (
+    current.source !== item.source ||
+    (current.page_type ?? "") !== item.pageType ||
+    (current.item_id ?? "") !== preserveText(item.itemId, current.item_id) ||
+    (current.order_id ?? "") !== item.orderId ||
+    (current.order_time ?? "") !== item.orderTime ||
+    current.title !== item.title ||
+    (current.sku ?? "") !== item.sku ||
+    current.quantity !== item.quantity ||
+    current.payment !== item.payment ||
+    (current.status ?? "") !== item.status ||
+    (current.refund_text ?? "") !== item.refundText ||
+    (current.item_url ?? "") !== item.itemUrl ||
+    (current.image_url ?? "") !== item.imageUrl ||
+    (current.raw_text ?? "") !== item.rawText ||
+    (current.detail_url ?? "") !== preserveText(item.detailUrl, current.detail_url) ||
+    (current.detail_title ?? "") !== preserveText(item.detailTitle, current.detail_title) ||
+    (current.detail_props ?? "[]") !== preserveJson(item.detailProps, current.detail_props) ||
+    (current.detail_description ?? "") !== preserveText(item.detailDescription, current.detail_description) ||
+    (current.detail_images ?? "[]") !== preserveJson(item.detailImages, current.detail_images) ||
+    (current.detail_raw_text ?? "") !== preserveText(item.detailRawText, current.detail_raw_text) ||
+    Boolean(current.is_refunded) !== item.isRefunded ||
+    Boolean(current.is_apparel) !== item.isApparel
+  );
+}
+
+function persistTrustedImportSource(db: AppDatabase, context: TrustedImportReviewContext): number {
+  const item = context.item;
+  if (context.target) {
+    if (context.sourceChanged) {
+      db.prepare(`
+        UPDATE source_order_items
+        SET source = ?, page_type = ?,
+          item_id = COALESCE(NULLIF(?, ''), item_id), order_id = ?, order_time = ?,
+          title = ?, sku = ?, quantity = ?, payment = ?, status = ?, refund_text = ?,
+          item_url = ?, image_url = ?, raw_text = ?,
+          detail_url = COALESCE(NULLIF(?, ''), detail_url),
+          detail_title = COALESCE(NULLIF(?, ''), detail_title),
+          detail_props = COALESCE(NULLIF(?, '[]'), detail_props),
+          detail_description = COALESCE(NULLIF(?, ''), detail_description),
+          detail_images = COALESCE(NULLIF(?, '[]'), detail_images),
+          detail_raw_text = COALESCE(NULLIF(?, ''), detail_raw_text),
+          is_refunded = ?, is_apparel = ?, imported_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(
+        item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
+        item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
+        item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
+        JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
+        item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0, context.target.id
+      );
+    }
+    return context.target.id;
+  }
+
+  const inserted = db.prepare(`
+    INSERT INTO source_order_items (
+      external_key, source, page_type, item_id, order_id, order_time, title, sku,
+      quantity, payment, status, refund_text, item_url, image_url, raw_text,
+      detail_url, detail_title, detail_props, detail_description, detail_images,
+      detail_raw_text, is_refunded, is_apparel
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    item.externalKey, item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
+    item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
+    item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
+    JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
+    item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0
+  );
+  const id = Number(inserted.lastInsertRowid);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("SQLite returned an invalid source item id");
+  }
+  return id;
+}
+
+function persistTrustedImportGarment(
+  db: AppDatabase,
+  context: TrustedImportReviewContext,
+  candidate: TaobaoImportPreviewItem,
+  sourceId: number
+): number {
+  if (context.existing) {
+    db.prepare(`
+      UPDATE garments
+      SET source_order_item_id = ?, brand = ?, name = ?, raw_name = ?, category = ?,
+        color = ?, warmth = ?, seasons = ?, styles = ?, formality = ?, size = ?,
+        materials = ?, patterns = ?, tags = ?, image_url = ?, owned = 1,
+        archived_at = NULL, origin = 'taobao', confidence = ?, notes = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      sourceId, candidate.brand, candidate.name, candidate.rawName, candidate.category,
+      candidate.color, candidate.warmth, JSON.stringify(candidate.seasons),
+      JSON.stringify(candidate.styles), candidate.formality, candidate.size ?? "",
+      JSON.stringify(candidate.materials), JSON.stringify(candidate.patterns),
+      JSON.stringify(candidate.tags), candidate.imageUrl, candidate.confidence,
+      candidate.notes, context.existing.id
+    );
+    return context.existing.id;
+  }
+
+  const inserted = db.prepare(`
+    INSERT INTO garments (
+      source_order_item_id, brand, name, raw_name, category, color, warmth, seasons,
+      styles, formality, size, materials, patterns, tags, image_url, owned, confirmed,
+      excluded, confidence, notes, origin
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, 'taobao')
+  `).run(
+    sourceId, candidate.brand, candidate.name, candidate.rawName, candidate.category,
+    candidate.color, candidate.warmth, JSON.stringify(candidate.seasons),
+    JSON.stringify(candidate.styles), candidate.formality, candidate.size ?? "",
+    JSON.stringify(candidate.materials), JSON.stringify(candidate.patterns),
+    JSON.stringify(candidate.tags), candidate.imageUrl, candidate.confidence, candidate.notes
+  );
+  const id = Number(inserted.lastInsertRowid);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("SQLite returned an invalid imported garment id");
+  }
+  return id;
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export function listGarments(db: AppDatabase, options: ListGarmentsOptions = {}): Garment[] {
+  const where = options.scope === "all"
+    ? "1 = 1"
+    : options.scope === "archived"
+      ? "garments.archived_at IS NOT NULL"
+      : "garments.owned = 1 AND garments.archived_at IS NULL";
   const rows = db.prepare(`
     SELECT garments.*, source_order_items.item_url, source_order_items.detail_url
     FROM garments
     LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    WHERE ${where}
     ORDER BY garments.excluded ASC, garments.owned DESC, garments.id DESC
   `).all() as unknown as GarmentRow[];
   return rows.map(rowToGarment);
@@ -585,8 +1156,9 @@ export function createManualGarment(db: AppDatabase, input: ManualGarmentCreate)
     INSERT INTO garments (
       source_order_item_id, brand, name, raw_name, category, color, warmth,
       seasons, styles, formality, size, materials, patterns, tags, image_url,
-      owned, confirmed, excluded, confidence, notes
-    ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?)
+      owned, confirmed, excluded, confidence, notes, origin, acquired_at,
+      purchase_price_cents, currency
+    ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?, 'manual', ?, ?, ?)
   `).run(
     input.brand ?? "",
     input.name,
@@ -601,7 +1173,10 @@ export function createManualGarment(db: AppDatabase, input: ManualGarmentCreate)
     JSON.stringify(input.materials ?? []),
     JSON.stringify(input.patterns ?? []),
     JSON.stringify(input.tags ?? []),
-    input.notes ?? ""
+    input.notes ?? "",
+    input.acquiredAt ?? null,
+    input.purchasePriceCents ?? null,
+    input.currency ?? null
   );
   const id = Number(insert.lastInsertRowid);
   if (!Number.isSafeInteger(id) || id <= 0) {
@@ -733,7 +1308,7 @@ export async function refreshGarmentThumbnails(db: AppDatabase, options: Thumbna
       source_order_items.detail_images
     FROM garments
     LEFT JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
-    WHERE garments.excluded = 0
+    WHERE garments.owned = 1 AND garments.archived_at IS NULL
     ORDER BY garments.id ASC
   `).all() as unknown as ThumbnailRefreshRow[];
   const updateImage = db.prepare("UPDATE garments SET image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
@@ -879,11 +1454,33 @@ export async function selectGarmentThumbnail(db: AppDatabase, id: number, imageU
   return getGarmentById(db, id);
 }
 
-export function deleteGarment(db: AppDatabase, id: number): void {
-  const result = db.prepare("DELETE FROM garments WHERE id = ?").run(id);
+export function archiveGarment(db: AppDatabase, id: number): Garment {
+  const result = db.prepare(`
+    UPDATE garments
+    SET archived_at = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND archived_at IS NULL
+  `).run(new Date().toISOString(), id);
   if (Number(result.changes) === 0) {
-    throw garmentNotFoundError();
+    return getGarmentById(db, id);
   }
+  return getGarmentById(db, id);
+}
+
+export function restoreGarment(db: AppDatabase, id: number): Garment {
+  const result = db.prepare(`
+    UPDATE garments
+    SET archived_at = NULL, owned = 1, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND archived_at IS NOT NULL
+  `).run(id);
+  if (Number(result.changes) === 0) {
+    return getGarmentById(db, id);
+  }
+  return getGarmentById(db, id);
+}
+
+/** @deprecated Use archiveGarment(). Kept for the legacy DELETE route. */
+export function deleteGarment(db: AppDatabase, id: number): void {
+  archiveGarment(db, id);
 }
 
 function garmentNotFoundError(): ApiError {
@@ -983,7 +1580,7 @@ export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
       wornCounts.set(id, (wornCounts.get(id) ?? 0) + 1);
     }
   }
-  const activeGarments = garments.filter((garment) => garment.owned && !garment.excluded);
+  const activeGarments = garments;
   const categoryDistribution: WardrobeInsights["categoryDistribution"] = {};
   const colorDistribution: WardrobeInsights["colorDistribution"] = {};
   for (const garment of garments) {
@@ -1322,6 +1919,8 @@ function weatherCacheKey(latitude: number, longitude: number): string {
 interface GarmentRow {
   id: number;
   source_order_item_id: number | null;
+  origin: Garment["origin"];
+  archived_at: string | null;
   brand: string | null;
   name: string;
   raw_name: string | null;
@@ -1337,6 +1936,9 @@ interface GarmentRow {
   excluded: number;
   confidence: number;
   notes: string | null;
+  acquired_at: string | null;
+  purchase_price_cents: number | null;
+  currency: "CNY" | null;
   size: string | null;
   materials: string | null;
   patterns: string | null;
@@ -1352,6 +1954,8 @@ function rowToGarment(row: GarmentRow): Garment {
   return {
     id: row.id,
     sourceOrderItemId: row.source_order_item_id ?? undefined,
+    origin: row.origin,
+    archivedAt: row.archived_at ?? undefined,
     brand: row.brand ?? "",
     name: row.name,
     rawName: row.raw_name ?? row.name,
@@ -1371,6 +1975,9 @@ function rowToGarment(row: GarmentRow): Garment {
     excluded: Boolean(row.excluded),
     confidence: row.confidence,
     notes: row.notes ?? "",
+    acquiredAt: row.acquired_at ?? undefined,
+    purchasePriceCents: row.purchase_price_cents ?? undefined,
+    currency: row.currency ?? undefined,
     itemUrl: row.item_url ?? undefined,
     detailUrl: row.detail_url ?? undefined,
     cutoutImageUrl: row.cutout_image_url ?? undefined,
@@ -1520,7 +2127,7 @@ function chooseImageForUpdate(currentImage: string, candidateImage: string, isCo
 }
 
 function isLocalThumbnailImage(value: string): boolean {
-  return value.startsWith("/api/garment-thumbnails/");
+  return value.startsWith("/api/garment-thumbnails/") || value.startsWith("/api/garment-assets/");
 }
 
 async function buildGarmentThumbnailCandidateContext(db: AppDatabase, id: number, options: ThumbnailSelectionOptions): Promise<GarmentThumbnailCandidateContext> {

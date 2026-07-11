@@ -10,15 +10,19 @@ import {
 import type {
   CaptureEngine,
   CaptureJob,
+  ImportDecision,
+  TaobaoImportCommitResult,
   TaobaoImportPreview,
   TaobaoWardrobeFilterSummary
 } from "../../shared/types";
+import { ImportReviewTable } from "./ImportReviewTable";
 
 export interface ImportViewProps {
   bookmarklet: string;
   importText: string;
-  importResult: ImportSummary | null;
+  importResult: ImportSummary | TaobaoImportCommitResult | null;
   importPreview?: TaobaoImportPreview | null;
+  importDecisions?: Readonly<Record<string, ImportDecision | undefined>>;
   filterSummary: TaobaoWardrobeFilterSummary | null;
   captureUrl: string;
   captureEngine: CaptureEngine;
@@ -28,6 +32,7 @@ export interface ImportViewProps {
   onCopyBookmarklet: () => void;
   onImportText: (value: string) => void;
   onImport: () => void;
+  onImportDecision?: (sourceItemKey: string, decision: ImportDecision) => void;
   onPreviewImport?: () => void;
   onCaptureUrl: (value: string) => void;
   onCaptureEngine: (value: CaptureEngine) => void;
@@ -47,6 +52,15 @@ export function ImportView(props: ImportViewProps) {
         ? "success"
         : "info"
     : "info";
+  const importDecisions = props.importDecisions ?? {};
+  const hasIncludedDecision = Boolean(props.importPreview?.candidates.some((item) => {
+    const decision = importDecisions[item.sourceItemKey];
+    if (decision) return decision.include;
+    return item.disposition === "create" || item.disposition === "update" || item.disposition === "refund-sync";
+  }));
+  const reviewedResult = props.importResult && "totalDecisions" in props.importResult.summary
+    ? props.importResult as TaobaoImportCommitResult
+    : null;
 
   return (
     <section className="view import-view" aria-busy={props.busy}>
@@ -174,19 +188,19 @@ export function ImportView(props: ImportViewProps) {
               {props.busyAction === "preview-import" ? "预览中" : "预览"}
             </Button>
             <Button
-              disabled={props.busyAction === "import" || !props.importText.trim() || props.importPreview?.candidates.length === 0}
+              disabled={props.busyAction === "import" || !props.importText.trim() || !props.importPreview || !hasIncludedDecision}
               onClick={props.onImport}
               variant="primary"
             >
               <Upload aria-hidden="true" size={18} />
-              {props.busyAction === "import" ? "导入中" : "导入"}
+              {props.busyAction === "import" ? "提交中" : "提交选择"}
             </Button>
           </div>
         </div>
 
         {props.filterSummary ? (
           <Notice tone="success" role="status" title="候选已筛选">
-            已从 {props.filterSummary.originalItems} 条订单中保留 {props.filterSummary.keptItems} 条衣服/鞋候选，退款过滤 {props.filterSummary.skippedRefunded} 条，非服饰过滤 {props.filterSummary.skippedNonApparel} 条。
+            已从 {props.filterSummary.originalItems} 条订单中保留 {props.filterSummary.keptItems} 条可审阅记录，退款事件保留 {props.filterSummary.skippedRefunded === 0 ? "完整" : "可能不完整"}，非服饰过滤 {props.filterSummary.skippedNonApparel} 条。
           </Notice>
         ) : null}
 
@@ -228,13 +242,24 @@ export function ImportView(props: ImportViewProps) {
             <h2>导入完成</h2>
             <Badge tone="success">已写入本地衣橱</Badge>
           </div>
-          <div className="stat-grid import-stat-grid">
-            <Stat label="订单项" value={props.importResult.summary.totalItems} />
-            <Stat label="唯一项" value={props.importResult.summary.uniqueItems} />
-            <Stat label="退款过滤" value={props.importResult.summary.skippedRefunded} />
-            <Stat label="非服饰过滤" value={props.importResult.summary.skippedNonApparel} />
-            <Stat label="新衣服" value={props.importResult.summary.createdGarments} />
-          </div>
+          {reviewedResult ? (
+            <div className="stat-grid import-stat-grid">
+              <Stat label="已选择" value={reviewedResult.summary.included} />
+              <Stat label="新增" value={reviewedResult.summary.created} />
+              <Stat label="更新" value={reviewedResult.summary.updated} />
+              <Stat label="退款同步" value={reviewedResult.summary.refundSynced} />
+              <Stat label="无变化" value={reviewedResult.summary.unchanged} />
+              <Stat label="跳过" value={reviewedResult.summary.skipped} />
+            </div>
+          ) : (
+            <div className="stat-grid import-stat-grid">
+              <Stat label="订单项" value={(props.importResult as ImportSummary).summary.totalItems} />
+              <Stat label="唯一项" value={(props.importResult as ImportSummary).summary.uniqueItems} />
+              <Stat label="退款过滤" value={(props.importResult as ImportSummary).summary.skippedRefunded} />
+              <Stat label="非服饰过滤" value={(props.importResult as ImportSummary).summary.skippedNonApparel} />
+              <Stat label="新衣服" value={(props.importResult as ImportSummary).summary.createdGarments} />
+            </div>
+          )}
         </Surface>
       ) : null}
 
@@ -250,20 +275,17 @@ export function ImportView(props: ImportViewProps) {
           <div className="stat-grid preview-stat-grid">
             <Stat label="候选" value={props.importPreview.candidates.length} />
             <Stat label="重复" value={props.importPreview.duplicateCount} />
-            <Stat label="退款过滤" value={props.importPreview.summary.skippedRefunded} />
+            <Stat label="退款事件" value={props.importPreview.summary.skippedRefunded} />
             <Stat label="非服饰过滤" value={props.importPreview.summary.skippedNonApparel} />
             <Stat label="唯一项" value={props.importPreview.summary.uniqueItems} />
           </div>
           {props.importPreview.candidates.length > 0 ? (
-            <div className="preview-list">
-              {props.importPreview.candidates.slice(0, 6).map((item) => (
-                <article key={item.sourceItemKey} className="preview-item">
-                  <strong>{item.name}</strong>
-                  <span>{CATEGORY_LABELS[item.category]}</span>
-                  <small>置信度 {Math.round(item.confidence * 100)}%</small>
-                </article>
-              ))}
-            </div>
+            <ImportReviewTable
+              preview={props.importPreview}
+              decisions={importDecisions}
+              disabled={props.busyAction === "import"}
+              onDecision={(sourceItemKey, decision) => props.onImportDecision?.(sourceItemKey, decision)}
+            />
           ) : (
             <EmptyState
               compact

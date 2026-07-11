@@ -30,6 +30,7 @@ export type HistoryInsightsViewProps = {
   busyAction?: BusyAction | null;
   onRefresh: () => void;
   onExport: () => void;
+  onExportComplete?: () => void;
 };
 
 const PRIORITY_ORDER: Record<WardrobeSuggestion["priority"], number> = {
@@ -71,6 +72,7 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
   const insights = props.insights;
   const refreshing = props.busyAction === "history";
   const exporting = props.busyAction === "export";
+  const exportingComplete = props.busyAction === "export-complete";
 
   return (
     <section className="history-insights-view view-shell" aria-labelledby="history-insights-title" aria-busy={props.busy || undefined}>
@@ -83,10 +85,21 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
               <RefreshCw aria-hidden="true" />
               {refreshing ? "刷新中" : "刷新"}
             </Button>
-            <Button variant="primary" disabled={exporting} aria-busy={exporting || undefined} onClick={props.onExport}>
+            <Button variant="secondary" disabled={exporting || exportingComplete} aria-busy={exporting || undefined} onClick={props.onExport}>
               <Download aria-hidden="true" />
-              {exporting ? "导出中" : "导出备份"}
+              {exporting ? "导出中" : "导出 JSON"}
             </Button>
+            {props.onExportComplete ? (
+              <Button
+                variant="primary"
+                disabled={exporting || exportingComplete}
+                aria-busy={exportingComplete || undefined}
+                onClick={props.onExportComplete}
+              >
+                <Download aria-hidden="true" />
+                {exportingComplete ? "生成中" : "完整备份（含图片）"}
+              </Button>
+            ) : null}
           </>
         )}
       />

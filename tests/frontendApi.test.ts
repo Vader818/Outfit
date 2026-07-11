@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, createGarment, createGarmentCutout, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewTaobaoImport, readLatestTaobaoCapture, register, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, verifyVisionModel } from "../src/api";
+import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, archiveGarment, commitTaobaoImport, createGarment, createGarmentCutout, downloadCompleteBackup, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewCompleteBackup, previewTaobaoImport, readLatestTaobaoCapture, register, restoreGarment, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, uploadGarmentImage, verifyVisionModel } from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -444,6 +444,60 @@ describe("frontend API client", () => {
     }));
   });
 
+  it("uses reviewed ingestion, archive, restore, archived listing, and raw image endpoints", async () => {
+    const garment = {
+      id: 77,
+      origin: "manual",
+      brand: "",
+      name: "手工衬衫",
+      rawName: "手工衬衫",
+      category: "top",
+      color: "blue",
+      warmth: "light",
+      seasons: ["spring"],
+      styles: ["casual"],
+      formality: "casual",
+      imageUrl: "/api/garment-assets/9/content",
+      owned: true,
+      confirmed: true,
+      excluded: false,
+      confidence: 1
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ ...garment, archivedAt: "2026-07-11T00:00:00.000Z" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...garment, archivedAt: "2026-07-11T00:00:00.000Z" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(garment), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(garment), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        batchId: "batch-1",
+        summary: { totalDecisions: 1, included: 1, created: 1, updated: 0, refundSynced: 0, unchanged: 0, skipped: 0 },
+        items: [{ sourceItemKey: "v2:key", disposition: "create", garmentId: 77 }]
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const blob = new Blob(["safe-image"], { type: "image/webp" });
+    const batch = { source: "taobao-bookmarklet", items: [{ title: "白色衬衫" }] };
+    const decisions = [{ sourceItemKey: "v2:key", include: true }];
+
+    await expect(getGarments({ archived: true })).resolves.toHaveLength(1);
+    await expect(archiveGarment(77)).resolves.toMatchObject({ archivedAt: expect.any(String) });
+    await expect(restoreGarment(77)).resolves.toMatchObject({ id: 77 });
+    await expect(uploadGarmentImage(77, blob)).resolves.toMatchObject({ imageUrl: expect.stringContaining("garment-assets") });
+    await expect(commitTaobaoImport({ batch, decisions })).resolves.toMatchObject({ summary: { created: 1 } });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/garments?archived=1", expect.objectContaining({ credentials: "same-origin" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/garments/77/archive", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/garments/77/restore", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/garments/77/image", expect.objectContaining({
+      method: "PUT",
+      body: blob,
+      headers: expect.objectContaining({ "content-type": "image/webp" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/import/taobao-commit", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ batch, decisions })
+    }));
+  });
+
   it("uses profile, history, insights, and export endpoints", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -495,5 +549,43 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/recommendation-runs", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/insights", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/export", expect.objectContaining({ method: "GET" }));
+  });
+
+  it("previews a complete backup before downloading the ZIP blob", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        assetCount: 3,
+        includedAssetCount: 2,
+        assetBytes: 4096,
+        includedAssetBytes: 3072,
+        estimatedBytes: 8192,
+        warnings: [{ code: "ASSET_UNAVAILABLE", assetId: 9, message: "asset unavailable" }]
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(new Blob(["PK-safe-backup"], { type: "application/zip" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="outfit-complete-backup-2026-07-11.zip"'
+        }
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(previewCompleteBackup()).resolves.toMatchObject({
+      assetCount: 3,
+      includedAssetCount: 2,
+      estimatedBytes: 8192,
+      warnings: [{ assetId: 9 }]
+    });
+    const downloaded = await downloadCompleteBackup();
+    expect(downloaded.fileName).toBe("outfit-complete-backup-2026-07-11.zip");
+    expect(downloaded.blob.type).toBe("application/zip");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/export?format=zip&preview=1", expect.objectContaining({
+      method: "GET",
+      credentials: "same-origin"
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/export?format=zip", expect.objectContaining({
+      method: "GET",
+      credentials: "same-origin"
+    }));
   });
 });

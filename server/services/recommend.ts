@@ -161,7 +161,7 @@ export function generateCandidates(
 }
 
 function eligibleGarments(garments: Garment[]): Garment[] {
-  return garments.filter((item) => item.owned && item.confirmed && !item.excluded);
+  return garments.filter((item) => item.owned && !item.archivedAt && item.confirmed && !item.excluded);
 }
 
 function missingCoreSlots(garments: Garment[]): GarmentCategory[] {

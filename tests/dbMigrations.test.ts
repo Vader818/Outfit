@@ -26,7 +26,8 @@ describe("versioned database migrations", () => {
     `).all() as Array<{ version: number; name: string }>;
     expect(rows).toEqual([
       { version: 0, name: "legacy-baseline" },
-      { version: 1, name: "recommendation-candidates" }
+      { version: 1, name: "recommendation-candidates" },
+      { version: 2, name: "trusted-ingestion" }
     ]);
   });
 
@@ -53,7 +54,8 @@ describe("versioned database migrations", () => {
     ]));
     expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 0 },
-      { version: 1 }
+      { version: 1 },
+      { version: 2 }
     ]);
   });
 
@@ -245,7 +247,8 @@ describe("versioned database migrations", () => {
     `).all() as Array<{ name: string }>;
     expect(migrations).toEqual([
       { version: 0, name: "legacy-baseline" },
-      { version: 1, name: "recommendation-candidates" }
+      { version: 1, name: "recommendation-candidates" },
+      { version: 2, name: "trusted-ingestion" }
     ]);
     expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
       "idx_recommendation_candidates_run_id",
@@ -270,5 +273,78 @@ describe("versioned database migrations", () => {
     expect(() => insert.run("candidate-4", runId + 999, "signature-4", 2, "[]", "{}")).toThrow();
     expect(() => insert.run("candidate-5", runId, "signature-5", 2, "not-json", "{}")).toThrow();
     expect(() => insert.run("candidate-6", runId, "signature-6", 3, "[]", "not-json")).toThrow();
+  });
+
+  it("adds trusted garment provenance, soft archive fields, and protected asset metadata in migration 2", () => {
+    const db = createDatabase(":memory:");
+
+    const garmentColumns = db.prepare("PRAGMA table_info(garments)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    expect(garmentColumns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "origin", type: "TEXT", notnull: 1, dflt_value: "'taobao'" }),
+      expect.objectContaining({ name: "archived_at", type: "TEXT" }),
+      expect.objectContaining({ name: "acquired_at", type: "TEXT" }),
+      expect.objectContaining({ name: "purchase_price_cents", type: "INTEGER" }),
+      expect.objectContaining({ name: "currency", type: "TEXT" })
+    ]));
+
+    const assetColumns = db.prepare("PRAGMA table_info(garment_assets)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(assetColumns.map((column) => column.name)).toEqual([
+      "id",
+      "garment_id",
+      "kind",
+      "storage_key",
+      "mime_type",
+      "byte_size",
+      "width",
+      "height",
+      "sha256",
+      "active",
+      "created_at"
+    ]);
+    expect(assetColumns.find((column) => column.name === "id")).toMatchObject({ type: "INTEGER", pk: 1 });
+
+    expect(db.prepare("PRAGMA foreign_key_list(garment_assets)").all()).toEqual([
+      expect.objectContaining({ table: "garments", from: "garment_id", to: "id", on_delete: "RESTRICT" })
+    ]);
+    const assetIndexes = db.prepare("PRAGMA index_list(garment_assets)").all() as Array<{
+      name: string;
+      unique: number;
+      partial: number;
+    }>;
+    expect(assetIndexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "idx_garment_assets_garment_id", unique: 0 }),
+      expect.objectContaining({ name: "idx_garment_assets_active_kind", unique: 1, partial: 1 })
+    ]));
+
+    const garment = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality
+      ) VALUES ('手工外套', 'outerwear', 'black', 'warm', '[]', '[]', 'casual')
+    `).run();
+    const garmentId = Number(garment.lastInsertRowid);
+    const insertAsset = db.prepare(`
+      INSERT INTO garment_assets (
+        garment_id, kind, storage_key, mime_type, byte_size, width, height, sha256, active
+      ) VALUES (?, 'primary', ?, 'image/webp', 10, 1, 1, ?, 1)
+    `);
+    insertAsset.run(garmentId, "11111111-1111-4111-8111-111111111111.webp", "a".repeat(64));
+    expect(() => insertAsset.run(garmentId, "22222222-2222-4222-8222-222222222222.webp", "b".repeat(64))).toThrow();
+    expect(() => db.prepare(`
+      INSERT INTO garment_assets (
+        garment_id, kind, storage_key, mime_type, byte_size, width, height, sha256, active
+      ) VALUES (?, 'secondary', '../escape.webp', 'image/webp', 10, 1, 1, ?, 0)
+    `).run(garmentId, "c".repeat(64))).toThrow();
+    expect(() => db.prepare("UPDATE garments SET purchase_price_cents = 1.5 WHERE id = ?").run(garmentId)).toThrow();
+    expect(() => db.prepare("DELETE FROM garments WHERE id = ?").run(garmentId)).toThrow();
   });
 });

@@ -72,11 +72,11 @@ export function isTrustedTaobaoImageUrl(value: string): boolean {
 }
 
 export function isRecommendationEligibleGarment(item: Garment): boolean {
-  return item.owned && item.confirmed && !item.excluded;
+  return item.owned && !item.archivedAt && item.confirmed && !item.excluded;
 }
 
 export function isWardrobeReviewPendingGarment(item: Garment): boolean {
-  return !item.confirmed && !item.excluded;
+  return !item.archivedAt && !item.confirmed && !item.excluded;
 }
 
 export function isRecommendationPendingGarment(item: Garment): boolean {

@@ -1,7 +1,163 @@
-import { describe, expect, it } from "vitest";
-import { filterTaobaoBatchForWardrobe, isTrustedProductImage, normalizeTaobaoBatch } from "../server/services/importTaobao";
+import { describe, expect, it, vi } from "vitest";
+import {
+  computeLegacyTaobaoSourceItemKey,
+  computeTaobaoSourceItemKey,
+  filterTaobaoBatchForWardrobe,
+  isTrustedProductImage,
+  normalizeTaobaoBatch
+} from "../server/services/importTaobao";
 
 describe("normalizeTaobaoBatch", () => {
+  it("uses a versioned order identity while exposing the legacy key for database compatibility", () => {
+    const sharedItem = {
+      pageType: "order-list" as const,
+      itemId: "303",
+      title: "纯棉短袖T恤",
+      sku: "颜色分类: 黑色; 尺码: M",
+      status: "交易成功",
+      itemUrl: "https://item.taobao.com/item.htm?id=303"
+    };
+    const first = { ...sharedItem, orderId: "order-001" };
+    const second = { ...sharedItem, orderId: "order-002" };
+
+    expect(computeTaobaoSourceItemKey(first)).toMatch(/^v2:[a-f0-9]{64}$/);
+    expect(computeTaobaoSourceItemKey(first)).not.toBe(computeTaobaoSourceItemKey(second));
+    expect(computeLegacyTaobaoSourceItemKey(first)).toBe(computeLegacyTaobaoSourceItemKey(second));
+
+    const normalized = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [first, second]
+    });
+    expect(normalized.sourceItems).toHaveLength(2);
+    expect(new Set(normalized.sourceItems.map((item) => item.externalKey)).size).toBe(2);
+  });
+
+  it("canonicalizes SKU punctuation, whitespace, case, and property order for source identities", () => {
+    const first = computeTaobaoSourceItemKey({
+      pageType: "order-list",
+      orderId: "ORDER-001",
+      itemId: "303",
+      sku: "颜色分类： 黑色； 尺码： M"
+    });
+    const second = computeTaobaoSourceItemKey({
+      pageType: "order-list",
+      orderId: "order-001",
+      itemId: "303",
+      sku: " 尺码: m ; 颜色分类:黑色 "
+    });
+
+    expect(first).toBe(second);
+  });
+
+  it("builds a deterministic order-independent batch id without a capturedAt value", () => {
+    const items = [
+      {
+        pageType: "order-list" as const,
+        orderId: "order-001",
+        itemId: "401",
+        title: "白色纯棉短袖T恤",
+        sku: "颜色分类: 白色; 尺码: M",
+        status: "交易成功"
+      },
+      {
+        pageType: "order-list" as const,
+        orderId: "order-002",
+        itemId: "402",
+        title: "黑色直筒牛仔裤",
+        sku: "颜色分类: 黑色; 尺码: 30",
+        status: "交易成功"
+      }
+    ];
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-11T01:00:00.000Z"));
+      const first = normalizeTaobaoBatch({ source: "taobao-selenium-order-list", items });
+      vi.setSystemTime(new Date("2026-07-12T01:00:00.000Z"));
+      const reordered = normalizeTaobaoBatch({ source: "taobao-selenium-order-list", items: [...items].reverse() });
+      const changed = normalizeTaobaoBatch({
+        source: "taobao-selenium-order-list",
+        items: [{ ...items[0], status: "卖家已发货" }, items[1]]
+      });
+
+      expect(first.batchId).toBe(reordered.batchId);
+      expect(first.batchId).not.toBe(changed.batchId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("merges a detail capture into every purchased SKU regardless of input order", () => {
+    const black = {
+      pageType: "order-list" as const,
+      orderId: "order-black",
+      itemId: "505",
+      title: "纯棉短袖T恤",
+      sku: "颜色分类: 黑色; 尺码: M",
+      status: "交易成功"
+    };
+    const white = {
+      pageType: "order-list" as const,
+      orderId: "order-white",
+      itemId: "505",
+      title: "纯棉短袖T恤",
+      sku: "颜色分类: 白色; 尺码: M",
+      status: "交易成功"
+    };
+    const detail = {
+      pageType: "item-detail" as const,
+      itemId: "505",
+      detailTitle: "UTIMUS/液氨纯棉短袖T恤夏季透气上衣",
+      detailProps: [{ name: "品牌", value: "UTIMUS" }],
+      detailImages: ["https://img.alicdn.com/detail-tee.jpg"]
+    };
+
+    for (const items of [[detail, black, white], [black, white, detail]]) {
+      const normalized = normalizeTaobaoBatch({ source: "taobao-selenium", items });
+      expect(normalized.sourceItems).toHaveLength(2);
+      expect(normalized.sourceItems.every((item) => item.detailTitle === detail.detailTitle)).toBe(true);
+      expect(normalized.sourceItems.every((item) => item.detailImages[0] === detail.detailImages[0])).toBe(true);
+    }
+  });
+
+  it("keeps refunded events in wardrobe-filtered artifacts for database-aware preview", () => {
+    const result = filterTaobaoBatchForWardrobe({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          orderId: "order-active",
+          itemId: "601",
+          title: "白色纯棉短袖T恤",
+          status: "交易成功"
+        },
+        {
+          orderId: "order-refunded",
+          itemId: "602",
+          title: "黑色直筒牛仔裤",
+          status: "退款成功",
+          refundText: "退款成功"
+        },
+        {
+          orderId: "order-non-apparel",
+          itemId: "603",
+          title: "手机壳保护套",
+          status: "交易成功"
+        }
+      ]
+    });
+
+    expect(result.payload.items).toHaveLength(2);
+    expect(result.payload.items?.some((item) => item.orderId === "order-refunded" && item.refundText === "退款成功")).toBe(true);
+    expect(result.filterSummary).toEqual({
+      originalItems: 3,
+      keptItems: 2,
+      skippedRefunded: 0,
+      skippedNonApparel: 1
+    });
+  });
+
   it("rejects import batches with too many items", () => {
     expect(() => normalizeTaobaoBatch({
       source: "taobao-bookmarklet",

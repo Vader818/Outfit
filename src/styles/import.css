@@ -324,6 +324,205 @@
   font-size: 0.72rem;
 }
 
+.import-review-table {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.import-review-table__summary {
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+  font-weight: 680;
+}
+
+.import-review-table__scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  scrollbar-gutter: stable;
+}
+
+.import-review-table__scroll:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.import-review-table table {
+  width: 100%;
+  min-width: 68rem;
+  border-spacing: 0;
+  border-collapse: separate;
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.import-review-table th,
+.import-review-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.import-review-table thead th {
+  color: var(--color-muted);
+  background: var(--color-surface-muted);
+  font-size: 0.7rem;
+  font-weight: 730;
+  letter-spacing: 0.04em;
+}
+
+.import-review-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.import-review-table__row--skip {
+  opacity: 0.62;
+}
+
+.import-review-table__row--refund-sync > * {
+  background: color-mix(in srgb, var(--color-warning-soft) 55%, transparent);
+}
+
+.import-review-table__include {
+  width: 3.5rem;
+  text-align: center !important;
+}
+
+.import-review-table__include input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0.1rem 0 0;
+  accent-color: var(--color-accent);
+}
+
+.import-review-table__identity {
+  width: 15rem;
+  max-width: 18rem;
+}
+
+.import-review-table__identity strong,
+.import-review-table__identity span,
+.import-review-table__identity small,
+.import-review-table__disposition small {
+  display: block;
+}
+
+.import-review-table__identity strong {
+  color: var(--color-ink);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.import-review-table__identity span,
+.import-review-table__identity small,
+.import-review-table__disposition small {
+  margin-top: 0.25rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.import-review-table__disposition {
+  width: 8rem;
+}
+
+.import-review-table__confidence {
+  width: 5.5rem;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.import-review-table__editor-cell {
+  width: 31rem;
+}
+
+.import-review-table__empty {
+  padding: var(--space-6) !important;
+  color: var(--color-muted);
+  text-align: center !important;
+}
+
+.import-review-row-editor > summary {
+  color: var(--color-accent-strong);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.import-review-row-editor > summary[aria-disabled="true"] {
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
+.import-review-row-editor__fields {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.import-review-row-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.import-review-row-editor__grid .ui-field__label,
+.import-review-row-editor__seasons legend {
+  font-size: 0.7rem;
+}
+
+.import-review-row-editor__grid .ui-input,
+.import-review-row-editor__grid .ui-select {
+  min-height: 2.35rem;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.import-review-row-editor__seasons {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.import-review-row-editor__seasons legend {
+  padding: 0;
+  color: var(--color-ink-soft);
+  font-weight: 680;
+}
+
+.import-review-row-editor__season-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.import-review-row-editor__season-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+.import-review-row-editor__season-options input {
+  accent-color: var(--color-accent);
+}
+
+.import-review-row-editor__notes textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
 @media (max-width: 820px) {
   .capture-choice-grid,
   .advanced-import__grid {
@@ -353,5 +552,9 @@
   .technical-details dl > div {
     grid-template-columns: 1fr;
     gap: 0.1rem;
+  }
+
+  .import-review-table table {
+    min-width: 60rem;
   }
 }

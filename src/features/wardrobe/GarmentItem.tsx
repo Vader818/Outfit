@@ -1,11 +1,11 @@
 import {
+  Archive,
   Check,
   ChevronDown,
   ExternalLink,
   Image as ImageIcon,
   Scissors,
   Tags,
-  Trash2
 } from "lucide-react";
 import { GarmentImage } from "../../components/garments/GarmentImage";
 import { Badge, Button, cx } from "../../components/ui";
@@ -126,6 +126,14 @@ export function GarmentItem({
           >
             {item.owned ? "拥有" : "不在衣橱"}
           </Button>
+          <Button
+            variant={item.excluded ? "danger" : "secondary"}
+            size="sm"
+            aria-pressed={item.excluded}
+            onClick={() => onUpdate(item.id, { excluded: !item.excluded })}
+          >
+            {item.excluded ? "已排除推荐" : "排除推荐"}
+          </Button>
         </div>
 
         <details className="garment-library-item__details" open={presentation === "review"}>
@@ -178,9 +186,9 @@ export function GarmentItem({
                 {visionBusy && busyAction === "vision-tags" ? "分析中" : "分析图片"}
               </Button>
             ) : null}
-            <Button variant="danger" size="sm" onClick={() => confirmGarmentDelete(item, onDelete)}>
-              <Trash2 aria-hidden="true" size={16} />
-              删除
+            <Button variant="secondary" size="sm" onClick={() => confirmGarmentArchive(item, onDelete)}>
+              <Archive aria-hidden="true" size={16} />
+              归档
             </Button>
           </div>
         </details>
@@ -198,9 +206,9 @@ function garmentStatus(item: Garment): {
   return { label: "待确认", tone: "warning" };
 }
 
-function confirmGarmentDelete(item: Garment, onDelete: (id: number) => void) {
+function confirmGarmentArchive(item: Garment, onArchive: (id: number) => void) {
   const name = displayGarmentName(item) || item.name;
-  if (globalThis.confirm(`确定删除「${name}」吗？此操作会从本地衣橱数据库移除这件衣服。`)) {
-    onDelete(item.id);
+  if (globalThis.confirm(`确定归档「${name}」吗？归档后可随时恢复，不会删除来源记录或本地图片。`)) {
+    onArchive(item.id);
   }
 }

@@ -1,18 +1,18 @@
-import express, { type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
-import type { AppDatabase, GarmentUpdate, ThumbnailRefreshOptions } from "./db";
+import type { AppDatabase, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { createManualGarment, deleteGarment, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail, updateGarment } from "./db";
-import { buildOutfitExportV2 } from "./services/export";
-import { previewTaobaoImport } from "./services/importTaobao";
+import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail } from "./db";
+import { buildOutfitExportV2, previewOutfitExportZip, writeOutfitExportZip } from "./services/export";
 import { recommendOutfits } from "./services/recommend";
 import { persistRecommendationSnapshot } from "./services/recommendationCandidates";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validateGarmentUpdate, validateManualGarmentCreate, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateTaobaoImportCommitRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { registerGarmentRoutes } from "./routes/garments";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -20,6 +20,7 @@ export interface ApiAppOptions {
   thumbnailMaxDownloads?: number;
   thumbnailMaxDownloadsPerGarment?: number;
   thumbnailDelayMs?: number;
+  garmentAssetRoot?: string;
   visionModelRoot?: string;
   visionDevice?: VisionServiceOptions["visionDevice"];
   rembgProvider?: VisionServiceOptions["rembgProvider"];
@@ -100,13 +101,18 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
+  registerGarmentRoutes(app, db, { assetRoot: options.garmentAssetRoot });
 
   app.post("/api/import/taobao-batch", (request, response) => {
     handle(response, () => importTaobaoBatchIntoDb(db, request.body));
   });
 
   app.post("/api/import/taobao-preview", (request, response) => {
-    handle(response, () => previewTaobaoImport(request.body));
+    handle(response, () => previewTaobaoImportForDb(db, request.body));
+  });
+
+  app.post("/api/import/taobao-commit", (request, response) => {
+    handle(response, () => commitTaobaoImport(db, validateTaobaoImportCommitRequest(request.body)));
   });
 
   app.post("/api/capture/taobao-orders", (request, response) => {
@@ -143,18 +149,6 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     handle(response, () => readLatestTaobaoCapture(undefined, undefined, {
       wardrobeOnly: isTruthyQueryFlag(request.query.wardrobeOnly)
     }));
-  });
-
-  app.get("/api/garments", (_request, response) => {
-    handle(response, () => listGarments(db));
-  });
-
-  app.post("/api/garments", (request, response) => {
-    try {
-      response.status(201).json(createManualGarment(db, validateManualGarmentCreate(request.body)));
-    } catch (error) {
-      sendError(response, error);
-    }
   });
 
   app.get("/api/vision/models", (_request, response) => {
@@ -200,19 +194,6 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     handle(response, () => savePersonalProfile(db, validatePersonalProfile(request.body)));
   });
 
-  app.put("/api/garments/:id", (request, response) => {
-    handle(response, () => updateGarment(db, validatePositiveIntegerParam(request.params.id), validateGarmentUpdate(request.body) as GarmentUpdate));
-  });
-
-  app.delete("/api/garments/:id", (request, response) => {
-    try {
-      deleteGarment(db, validatePositiveIntegerParam(request.params.id));
-      response.status(204).end();
-    } catch (error) {
-      sendError(response, error);
-    }
-  });
-
   app.post("/api/wear-logs", (request, response) => {
     handle(response, () => {
       const wearLog = validateWearLogRequest(request.body);
@@ -233,8 +214,45 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
     handle(response, () => getWardrobeInsights(db));
   });
 
-  app.get("/api/export", (_request, response) => {
-    handle(response, () => buildOutfitExportV2(db));
+  app.get("/api/export", (request, response) => {
+    const format = request.query.format;
+    if (format === undefined || format === "json") {
+      handle(response, () => buildOutfitExportV2(db));
+      return;
+    }
+    if (format !== "zip") {
+      sendError(response, new ApiError(
+        "INVALID_EXPORT_FORMAT",
+        "导出格式只支持 json 或 zip",
+        400
+      ));
+      return;
+    }
+    if (isTruthyQueryFlag(request.query.preview)) {
+      void handleAsync(response, () => previewOutfitExportZip(db, {
+        assetRoot: options.garmentAssetRoot
+      }));
+      return;
+    }
+
+    const exportDate = new Date().toISOString().slice(0, 10);
+    response.status(200);
+    response.setHeader("Content-Type", "application/zip");
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="outfit-complete-backup-${exportDate}.zip"`
+    );
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    void writeOutfitExportZip(db, response, {
+      assetRoot: options.garmentAssetRoot
+    }).catch((error: unknown) => {
+      if (!response.headersSent) {
+        sendError(response, error);
+        return;
+      }
+      response.destroy(error instanceof Error ? error : new Error("ZIP 导出失败"));
+    });
   });
 
   app.get("/api/weather", async (request, response) => {
@@ -285,6 +303,30 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
         result
       );
     });
+  });
+
+  app.use((error: unknown, request: Request, response: Response, next: NextFunction) => {
+    if (response.headersSent) {
+      next(error);
+      return;
+    }
+    const parserError = error && typeof error === "object"
+      ? error as { type?: unknown; status?: unknown }
+      : {};
+    if (parserError.type === "entity.too.large" || parserError.status === 413) {
+      const imageUpload = request.method === "PUT" && /^\/api\/garments\/[^/]+\/image$/.test(request.path);
+      sendError(response, new ApiError(
+        imageUpload ? "IMAGE_TOO_LARGE" : "PAYLOAD_TOO_LARGE",
+        imageUpload ? "图片不能超过 5 MB" : "请求内容过大",
+        413
+      ));
+      return;
+    }
+    if (parserError.type === "entity.parse.failed") {
+      sendError(response, new ApiError("INVALID_JSON", "请求 JSON 无法解析", 400));
+      return;
+    }
+    sendError(response, error);
   });
 
   return app;

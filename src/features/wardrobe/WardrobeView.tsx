@@ -1,4 +1,5 @@
-import { Check, Images, ListChecks, RefreshCw, SearchX, Shirt, X } from "lucide-react";
+import { ArchiveRestore, Check, Images, ListChecks, Plus, RefreshCw, SearchX, Shirt, Tags, X } from "lucide-react";
+import { useState } from "react";
 import {
   Badge,
   Button,
@@ -23,11 +24,12 @@ import {
   type WardrobeOwnedFilter,
   type WardrobeStatusFilter
 } from "../../shared/presentation";
-import type { Garment } from "../../shared/types";
+import type { Garment, Season } from "../../shared/types";
 import { GarmentItem } from "./GarmentItem";
 
 export interface WardrobeViewProps {
   garments: Garment[];
+  archivedGarments?: Garment[];
   selectedIds: number[];
   busy: boolean;
   busyAction?: BusyAction | null;
@@ -38,6 +40,11 @@ export interface WardrobeViewProps {
   onUpdate: (id: number, update: Partial<Garment>) => void;
   onDelete: (id: number) => void;
   onBulkConfirm: () => void;
+  onAddGarment?: () => void;
+  onRestore?: (id: number) => void;
+  onBulkSeasons?: (seasons: Season[]) => void;
+  onBulkTags?: (tags: string[]) => void;
+  onBulkExcluded?: (excluded: boolean) => void;
   onRefreshThumbnails?: () => void;
   onOpenThumbnailPicker?: (garment: Garment) => void;
   onCutoutGarment?: (id: number) => void;
@@ -85,6 +92,12 @@ export function WardrobeView(props: WardrobeViewProps) {
         )}
         actions={(
           <div className="wardrobe-page__actions">
+            {props.onAddGarment ? (
+              <Button variant="primary" onClick={props.onAddGarment}>
+                <Plus aria-hidden="true" size={18} />
+                添加衣物
+              </Button>
+            ) : null}
             <Button variant="secondary" onClick={props.onRefresh}>
               <RefreshCw aria-hidden="true" size={18} />
               刷新衣橱
@@ -181,6 +194,14 @@ export function WardrobeView(props: WardrobeViewProps) {
               {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
             </Button>
           </div>
+          {props.onBulkSeasons || props.onBulkTags || props.onBulkExcluded ? (
+            <WardrobeBatchControls
+              disabled={props.busyAction === "bulk-update"}
+              onSeasons={props.onBulkSeasons}
+              onTags={props.onBulkTags}
+              onExcluded={props.onBulkExcluded}
+            />
+          ) : null}
         </Surface>
       ) : null}
 
@@ -263,6 +284,77 @@ export function WardrobeView(props: WardrobeViewProps) {
           ) : null}
         </div>
       )}
+
+      {props.archivedGarments?.length ? (
+        <Surface as="section" className="wardrobe-archive" aria-labelledby="wardrobe-archive-title">
+          <div className="wardrobe-collection__heading">
+            <div>
+              <h2 id="wardrobe-archive-title">已归档</h2>
+              <p>归档衣物不会进入默认衣橱、洞察或推荐，恢复后沿用原记录与图片。</p>
+            </div>
+            <Badge tone="neutral">{props.archivedGarments.length} 件</Badge>
+          </div>
+          <div className="wardrobe-archive__list">
+            {props.archivedGarments.map((item) => (
+              <article key={item.id} className="wardrobe-archive__item">
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{CATEGORY_FILTER_OPTIONS.find((option) => option.value === item.category)?.label ?? item.category}</span>
+                </div>
+                <Button variant="secondary" size="sm" disabled={!props.onRestore} onClick={() => props.onRestore?.(item.id)}>
+                  <ArchiveRestore aria-hidden="true" size={16} />
+                  恢复
+                </Button>
+              </article>
+            ))}
+          </div>
+        </Surface>
+      ) : null}
     </section>
+  );
+}
+
+function WardrobeBatchControls({
+  disabled,
+  onSeasons,
+  onTags,
+  onExcluded
+}: {
+  disabled: boolean;
+  onSeasons?: (seasons: Season[]) => void;
+  onTags?: (tags: string[]) => void;
+  onExcluded?: (excluded: boolean) => void;
+}) {
+  const [season, setSeason] = useState<Season | "all">("all");
+  const [tags, setTags] = useState("");
+  const parsedTags = tags.split(/[，,]/).map((value) => value.trim()).filter(Boolean);
+  return (
+    <div className="wardrobe-batch-controls">
+      {onSeasons ? (
+        <div className="wardrobe-batch-controls__group">
+          <label htmlFor="wardrobe-bulk-season">批量季节</label>
+          <select id="wardrobe-bulk-season" className="ui-select" value={season} disabled={disabled} onChange={(event) => setSeason(event.target.value as Season | "all")}>
+            <option value="all">全年</option>
+            {SEASON_FILTER_OPTIONS.filter((option) => option.value !== "all").map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <Button size="sm" variant="secondary" disabled={disabled} onClick={() => onSeasons(season === "all" ? ["spring", "summer", "autumn", "winter"] : [season])}>应用</Button>
+        </div>
+      ) : null}
+      {onTags ? (
+        <div className="wardrobe-batch-controls__group">
+          <label htmlFor="wardrobe-bulk-tags">批量添加标签</label>
+          <input id="wardrobe-bulk-tags" className="ui-input" value={tags} disabled={disabled} onChange={(event) => setTags(event.target.value)} />
+          <Button size="sm" variant="secondary" disabled={disabled || !parsedTags.length} onClick={() => onTags(parsedTags)}>
+            <Tags aria-hidden="true" size={15} />应用
+          </Button>
+        </div>
+      ) : null}
+      {onExcluded ? (
+        <div className="wardrobe-batch-controls__group wardrobe-batch-controls__group--actions">
+          <Button size="sm" variant="secondary" disabled={disabled} onClick={() => onExcluded(true)}>批量排除推荐</Button>
+          <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExcluded(false)}>取消批量排除</Button>
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -10,6 +10,7 @@ import type { Garment, RecommendationScoreBreakdown, WeatherSnapshot } from "../
 function garment(id: number, category: Garment["category"], name = `${category}-${id}`): Garment {
   return {
     id,
+    origin: "manual",
     brand: "",
     name,
     rawName: name,

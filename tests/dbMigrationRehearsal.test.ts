@@ -292,9 +292,14 @@ function indexContracts(db: DatabaseSyncType, table: string): IndexContract[] {
   }).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function assertLegacySchemaContract(db: DatabaseSyncType): void {
+function assertLegacySchemaContract(db: DatabaseSyncType, allowAdditionalColumns = false): void {
   for (const table of LEGACY_TABLES) {
-    expect(tableColumns(db, table)).toEqual(LEGACY_COLUMN_CONTRACTS[table]);
+    const columns = tableColumns(db, table);
+    expect(
+      allowAdditionalColumns
+        ? columns.filter((column) => LEGACY_COLUMN_CONTRACTS[table].some(([name]) => name === column[0]))
+        : columns
+    ).toEqual(LEGACY_COLUMN_CONTRACTS[table]);
     expect(foreignKeyContracts(db, table)).toEqual(LEGACY_FOREIGN_KEY_CONTRACTS[table]);
     expect(indexContracts(db, table)).toEqual(LEGACY_INDEX_CONTRACTS[table]);
   }
@@ -308,15 +313,26 @@ function assertLegacyDatabase(db: DatabaseSyncType): void {
 
 function legacySnapshot(db: DatabaseSyncType): LegacySnapshot {
   return {
-    sourceOrderItems: db.prepare("SELECT * FROM source_order_items ORDER BY id ASC").all(),
-    garments: db.prepare("SELECT * FROM garments ORDER BY id ASC").all(),
-    weatherCache: db.prepare("SELECT * FROM weather_cache ORDER BY cache_key ASC").all(),
-    wearLogs: db.prepare("SELECT * FROM wear_logs ORDER BY id ASC").all(),
-    recommendationRuns: db.prepare("SELECT * FROM recommendation_runs ORDER BY id ASC").all(),
-    appSettings: db.prepare("SELECT * FROM app_settings ORDER BY key ASC").all(),
-    users: db.prepare("SELECT * FROM users ORDER BY id ASC").all(),
-    sessions: db.prepare("SELECT * FROM sessions ORDER BY token_hash ASC").all()
+    sourceOrderItems: selectLegacyRows(db, "source_order_items", "id ASC"),
+    garments: selectLegacyRows(db, "garments", "id ASC"),
+    weatherCache: selectLegacyRows(db, "weather_cache", "cache_key ASC"),
+    wearLogs: selectLegacyRows(db, "wear_logs", "id ASC"),
+    recommendationRuns: selectLegacyRows(db, "recommendation_runs", "id ASC"),
+    appSettings: selectLegacyRows(db, "app_settings", "key ASC"),
+    users: selectLegacyRows(db, "users", "id ASC"),
+    sessions: selectLegacyRows(db, "sessions", "token_hash ASC")
   };
+}
+
+function selectLegacyRows(
+  db: DatabaseSyncType,
+  table: LegacyTableName,
+  orderBy: string
+): unknown[] {
+  const columns = LEGACY_COLUMN_CONTRACTS[table]
+    .map(([name]) => `"${name}"`)
+    .join(", ");
+  return db.prepare(`SELECT ${columns} FROM "${table}" ORDER BY ${orderBy}`).all();
 }
 
 function readOnlySnapshot(path: string): LegacySnapshot {
@@ -351,15 +367,32 @@ function assertProductionMigration(
   assertExactUserTables(db, [
     ...LEGACY_TABLES,
     "schema_migrations",
-    "recommendation_candidates"
+    "recommendation_candidates",
+    "garment_assets"
   ]);
-  assertLegacySchemaContract(db);
+  assertLegacySchemaContract(db, true);
 
   const migrations = appliedMigrations(db);
   expect(migrations.map(({ version, name }) => ({ version, name }))).toEqual([
     { version: 0, name: "legacy-baseline" },
-    { version: 1, name: "recommendation-candidates" }
+    { version: 1, name: "recommendation-candidates" },
+    { version: 2, name: "trusted-ingestion" }
   ]);
+
+  expect(db.prepare(`
+    SELECT origin, archived_at, acquired_at, purchase_price_cents, currency
+    FROM garments
+    ORDER BY id ASC
+  `).all()).toEqual([
+    {
+      origin: "taobao",
+      archived_at: null,
+      acquired_at: null,
+      purchase_price_cents: null,
+      currency: null
+    }
+  ]);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM garment_assets").get()).toEqual({ count: 0 });
 
   expect(foreignKeyContracts(db, "recommendation_candidates")).toEqual([
     [0, 0, "recommendation_runs", "run_id", "id", "NO ACTION", "CASCADE", "NONE"]

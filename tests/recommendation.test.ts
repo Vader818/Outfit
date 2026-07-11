@@ -4,6 +4,7 @@ import type { Garment, GarmentCategory, GarmentWarmth, PersonalProfile, WeatherS
 
 function garment(overrides: Partial<Garment> & Pick<Garment, "id" | "name" | "category">): Garment {
   return {
+    origin: "manual",
     brand: "",
     color: "black",
     warmth: "medium",

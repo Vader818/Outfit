@@ -73,11 +73,13 @@ const MAX_URL_LENGTH = 2048;
 
 export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   const batch = assertBatch(payload);
-  const capturedAt = batch.capturedAt || new Date().toISOString();
+  const providedCapturedAt = cleanText(batch.capturedAt || "");
+  const capturedAt = providedCapturedAt || new Date().toISOString();
   const source = batch.source || "taobao-bookmarklet";
   const pageType = batch.pageType || guessPageType(batch.pageUrl || "");
   const pageUrl = batch.pageUrl || "";
   const merged = new Map<string, SourceOrderItemDraft>();
+  const standaloneDetails = new Map<string, SourceOrderItemDraft>();
   const sourceItems: SourceOrderItemDraft[] = [];
   const garmentDrafts: Omit<Garment, "id">[] = [];
   let skippedRefunded = 0;
@@ -86,24 +88,26 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   for (const item of batch.items || []) {
     const sourceItem = normalizeItem(item, source, pageType, pageUrl);
     if (shouldSkipSourceItem(sourceItem)) continue;
-    if (sourceItem.pageType === "item-detail" && sourceItem.itemId && !sourceItem.sku) {
-      const matches = Array.from(merged.entries()).filter(([, existing]) => existing.itemId === sourceItem.itemId);
-      if (matches.length) {
-        for (const [key, existing] of matches) {
-          merged.set(key, mergeSourceItems(existing, sourceItem));
-        }
-        continue;
-      }
-    }
-    const pendingDetailKey = sourceItem.itemId && sourceItem.sku ? stableKey({ itemId: sourceItem.itemId }) : "";
-    const pendingDetail = pendingDetailKey ? merged.get(pendingDetailKey) : undefined;
-    if (pendingDetail?.pageType === "item-detail") {
-      merged.delete(pendingDetailKey);
-      merged.set(sourceItem.externalKey, mergeSourceItems(sourceItem, pendingDetail));
+    if (isStandaloneDetailSource(sourceItem)) {
+      const previousDetail = standaloneDetails.get(sourceItem.itemId);
+      standaloneDetails.set(sourceItem.itemId, previousDetail ? mergeSourceItems(previousDetail, sourceItem) : sourceItem);
       continue;
     }
     const previous = merged.get(sourceItem.externalKey);
     merged.set(sourceItem.externalKey, previous ? mergeSourceItems(previous, sourceItem) : sourceItem);
+  }
+
+  for (const [itemId, detailItem] of standaloneDetails) {
+    let mergedIntoPurchase = false;
+    for (const [key, sourceItem] of merged) {
+      if (sourceItem.itemId !== itemId) continue;
+      merged.set(key, mergeSourceItems(sourceItem, detailItem));
+      mergedIntoPurchase = true;
+    }
+    if (!mergedIntoPurchase) {
+      const previous = merged.get(detailItem.externalKey);
+      merged.set(detailItem.externalKey, previous ? mergeSourceItems(previous, detailItem) : detailItem);
+    }
   }
 
   for (const sourceItem of merged.values()) {
@@ -124,6 +128,7 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
     const displayInfo = buildGarmentDisplayInfo(sourceItem);
     garmentDrafts.push({
       sourceOrderItemId: undefined,
+      origin: "taobao",
       brand: displayInfo.brand,
       name: displayInfo.name,
       rawName: displayInfo.rawName,
@@ -143,7 +148,7 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   }
 
   return {
-    batchId: hash(`${source}|${capturedAt}|${pageUrl}|${sourceItems.map((item) => item.externalKey).join(",")}`),
+    batchId: computeTaobaoBatchId(source, providedCapturedAt, pageUrl, sourceItems),
     capturedAt,
     pageUrl,
     sourceItems,
@@ -162,7 +167,7 @@ export function filterTaobaoBatchForWardrobe(payload: unknown): TaobaoWardrobeFi
   const batch = assertBatch(payload);
   const normalized = normalizeTaobaoBatch(batch);
   const keptItems = normalized.sourceItems
-    .filter((item) => item.isApparel && !item.isRefunded)
+    .filter((item) => item.isApparel || item.isRefunded)
     .map(sourceItemToCapturedItem);
 
   return {
@@ -176,7 +181,7 @@ export function filterTaobaoBatchForWardrobe(payload: unknown): TaobaoWardrobeFi
     filterSummary: {
       originalItems: batch.items?.length || 0,
       keptItems: keptItems.length,
-      skippedRefunded: normalized.summary.skippedRefunded,
+      skippedRefunded: 0,
       skippedNonApparel: normalized.summary.skippedNonApparel
     }
   };
@@ -215,8 +220,20 @@ export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
       color: classification.color,
       warmth: classification.warmth,
       seasons: classification.seasons,
+      styles: classification.styles,
+      formality: classification.formality,
+      materials: [],
+      patterns: [],
+      tags: [],
+      notes: item.detailProps.length || item.detailDescription
+        ? [
+            item.detailProps.map((prop) => `${prop.name}: ${prop.value}`).join("; "),
+            item.detailDescription
+          ].filter(Boolean).join("\n")
+        : "",
       confidence: classification.confidence,
-      imageUrl: preferredImage(item, classification.category)
+      imageUrl: preferredImage(item, classification.category),
+      disposition: "create"
     });
   }
 
@@ -282,12 +299,39 @@ function optionalText(value: string): string | undefined {
   return cleaned || undefined;
 }
 
-function stableKey(item: TaobaoCapturedItem): string {
+export function computeLegacyTaobaoSourceItemKey(item: TaobaoCapturedItem): string {
   const itemId = cleanText(item.itemId || extractItemId(item.itemUrl) || extractItemId(item.detailUrl) || "");
   const sku = cleanText(item.sku || "");
   if (itemId && sku) return hash(`item:${itemId}|sku:${sku}`);
   if (itemId) return hash(`item:${itemId}`);
   return hash([item.orderId || "", item.orderTime || "", item.itemUrl || item.detailUrl || "", item.title || item.detailTitle || "", item.sku || ""].join("|"));
+}
+
+export function computeTaobaoSourceItemKey(item: TaobaoCapturedItem, pageTypeHint?: TaobaoPageType): string {
+  const itemId = normalizeIdentityText(item.itemId || extractItemId(item.itemUrl) || extractItemId(item.detailUrl) || "");
+  const orderId = normalizeIdentityText(item.orderId || "").toLowerCase();
+  const sku = normalizeSkuIdentity(item.sku || "");
+  const pageType = item.pageType || pageTypeHint || guessPageType(item.itemUrl || item.detailUrl || "");
+  const productUrl = canonicalProductIdentityUrl(item.itemUrl || item.detailUrl || "");
+  const productIdentity = itemId ? `item:${itemId}` : productUrl ? `url:${productUrl}` : "";
+  let identity: string;
+
+  if (orderId) {
+    identity = `order|${orderId}|${productIdentity}|sku:${sku}`;
+  } else if (pageType === "item-detail" && itemId && !sku) {
+    identity = `detail|item:${itemId}`;
+  } else if (productIdentity) {
+    identity = `product|${productIdentity}|sku:${sku}`;
+  } else {
+    identity = [
+      "fallback",
+      normalizeIdentityText(item.orderTime || ""),
+      normalizeIdentityText(item.title || item.detailTitle || "").toLowerCase(),
+      `sku:${sku}`
+    ].join("|");
+  }
+
+  return `v2:${hash(`taobao-source-item|v2|${identity}`)}`;
 }
 
 function hash(value: string): string {
@@ -296,6 +340,35 @@ function hash(value: string): string {
 
 function cleanText(value: string): string {
   return String(value).replace(/\s+/g, " ").trim();
+}
+
+function normalizeIdentityText(value: unknown): string {
+  return cleanText(String(value ?? "").normalize("NFKC"));
+}
+
+function normalizeSkuIdentity(value: unknown): string {
+  return normalizeIdentityText(value)
+    .replace(/[：]/g, ":")
+    .replace(/[；]/g, ";")
+    .split(";")
+    .map((part) => part.replace(/\s*:\s*/g, ":").trim().toLowerCase())
+    .filter(Boolean)
+    .sort(compareIdentityText)
+    .join(";");
+}
+
+function canonicalProductIdentityUrl(value: unknown): string {
+  const url = normalizeIdentityText(value);
+  if (!url) return "";
+  try {
+    const parsed = new URL(url, "https://item.taobao.com");
+    const itemId = normalizeIdentityText(parsed.searchParams.get("id") || "");
+    if (itemId) return `item:${itemId}`;
+    const pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.hostname.toLowerCase()}${pathname}`;
+  } catch {
+    return url.toLowerCase();
+  }
 }
 
 function normalizeItem(item: TaobaoCapturedItem, source: string, batchPageType: TaobaoPageType, pageUrl: string): SourceOrderItemDraft {
@@ -307,16 +380,19 @@ function normalizeItem(item: TaobaoCapturedItem, source: string, batchPageType: 
   const title = limitedText(item.title || detailTitle, "title", 300);
   const detailImages = normalizeStringList(item.detailImages, "detailImages", MAX_DETAIL_IMAGES, MAX_URL_LENGTH);
   const imageUrl = limitedText(item.imageUrl || "", "imageUrl", MAX_URL_LENGTH);
+  const orderId = limitedText(item.orderId || "", "orderId", 120);
+  const orderTime = limitedText(item.orderTime || "", "orderTime", 120);
+  const sku = limitedText(item.sku || "", "sku", 500);
 
   return {
-    externalKey: stableKey({ ...item, itemId, itemUrl, detailUrl, title }),
+    externalKey: computeTaobaoSourceItemKey({ ...item, pageType, itemId, orderId, orderTime, itemUrl, detailUrl, title, sku }, pageType),
     source,
     pageType,
     itemId,
-    orderId: limitedText(item.orderId || "", "orderId", 120),
-    orderTime: limitedText(item.orderTime || "", "orderTime", 120),
+    orderId,
+    orderTime,
     title,
-    sku: limitedText(item.sku || "", "sku", 500),
+    sku,
     quantity: toInteger(item.quantity, 1),
     payment: toMoney(item.payment),
     status: limitedText(item.status || "", "status", 120),
@@ -341,6 +417,51 @@ function shouldSkipSourceItem(item: SourceOrderItemDraft): boolean {
   if (item.itemId) return false;
   if (item.detailTitle || item.detailProps.length || item.detailDescription || item.detailImages.length || item.detailRawText) return false;
   return true;
+}
+
+function isStandaloneDetailSource(item: SourceOrderItemDraft): boolean {
+  return item.pageType === "item-detail" && Boolean(item.itemId) && !item.orderId && !item.sku;
+}
+
+function computeTaobaoBatchId(source: string, providedCapturedAt: string, pageUrl: string, sourceItems: SourceOrderItemDraft[]): string {
+  const items = sourceItems
+    .map((item) => ({
+      sourceItemKey: item.externalKey,
+      source: item.source,
+      pageType: item.pageType,
+      itemId: item.itemId,
+      orderId: item.orderId,
+      orderTime: item.orderTime,
+      title: item.title,
+      sku: item.sku,
+      quantity: item.quantity,
+      payment: item.payment,
+      status: item.status,
+      refundText: item.refundText,
+      itemUrl: item.itemUrl,
+      imageUrl: item.imageUrl,
+      rawText: item.rawText,
+      detailUrl: item.detailUrl,
+      detailTitle: item.detailTitle,
+      detailProps: item.detailProps,
+      detailDescription: item.detailDescription,
+      detailImages: item.detailImages,
+      detailRawText: item.detailRawText,
+      isRefunded: item.isRefunded,
+      isApparel: item.isApparel
+    }))
+    .sort((left, right) => compareIdentityText(left.sourceItemKey, right.sourceItemKey));
+  return hash(JSON.stringify({
+    version: 2,
+    source: cleanText(source),
+    capturedAt: providedCapturedAt,
+    pageUrl: cleanText(pageUrl),
+    items
+  }));
+}
+
+function compareIdentityText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function mergeSourceItems(current: SourceOrderItemDraft, incoming: SourceOrderItemDraft): SourceOrderItemDraft {

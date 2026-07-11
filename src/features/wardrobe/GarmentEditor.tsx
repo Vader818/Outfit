@@ -6,12 +6,16 @@ import {
   CATEGORY_OPTIONS,
   COLOR_OPTIONS,
   formatList,
+  OCCASIONS,
+  OCCASION_LABELS,
   parseList,
   SEASON_OPTIONS,
   withCurrentOption,
   WARMTH_OPTIONS
 } from "../../shared/presentation";
 import type { Garment, VisionTagSuggestion } from "../../shared/types";
+
+const FORMALITY_OPTIONS = OCCASIONS.map((value) => ({ value, label: OCCASION_LABELS[value] }));
 
 export function GarmentEditor({
   item,
@@ -30,11 +34,23 @@ export function GarmentEditor({
           title={item.rawName || item.name}
           onBlur={(event) => onUpdate({ name: event.target.value })}
         />
+        <Field
+          key={`brand-${item.brand}`}
+          label="品牌"
+          defaultValue={item.brand}
+          onBlur={(event) => onUpdate({ brand: event.target.value })}
+        />
         <SelectField
           label="类别"
           value={item.category}
           options={CATEGORY_OPTIONS}
           onChange={(event) => onUpdate({ category: event.target.value as Garment["category"] })}
+        />
+        <SelectField
+          label="正式度"
+          value={item.formality}
+          options={FORMALITY_OPTIONS}
+          onChange={(event) => onUpdate({ formality: event.target.value as Garment["formality"] })}
         />
         <SelectField
           label="颜色"
@@ -75,9 +91,26 @@ export function GarmentEditor({
           hint="使用逗号分隔多个标签"
           onBlur={(event) => onUpdate({ tags: parseList(event.target.value) })}
         />
+        <Field
+          key={`styles-${formatList(item.styles)}`}
+          label="风格"
+          defaultValue={formatList(item.styles)}
+          hint="使用逗号分隔多个风格"
+          onBlur={(event) => onUpdate({ styles: parseList(event.target.value) })}
+        />
       </div>
 
       <SeasonPicker seasons={item.seasons} onChange={(seasons) => onUpdate({ seasons })} />
+      <label className="ui-field garment-notes-field">
+        <span className="ui-field__label">备注</span>
+        <textarea
+          key={`notes-${item.notes ?? ""}`}
+          className="ui-input"
+          defaultValue={item.notes ?? ""}
+          rows={3}
+          onBlur={(event) => onUpdate({ notes: event.target.value })}
+        />
+      </label>
       <VisionSuggestion item={item} onApply={onUpdate} />
     </div>
   );

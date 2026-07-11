@@ -1,4 +1,8 @@
+import type { Writable } from "node:stream";
+import { finished } from "node:stream/promises";
+import archiver, { type Archiver } from "archiver";
 import type {
+  GarmentAssetMetadata,
   OutfitExport,
   OutfitExportV2,
   RecommendationCandidateExport,
@@ -11,11 +15,19 @@ import {
   type AppDatabase
 } from "../db";
 import { currentSchemaVersion } from "../db/migrations";
+import {
+  DEFAULT_GARMENT_ASSET_ROOT,
+  readGarmentAssetForBackup
+} from "./garmentAssets";
 
 export const OUTFIT_EXPORT_V2_FEATURES = [
   "versioned-migrations",
-  "recommendation-candidates"
+  "recommendation-candidates",
+  "garment-assets"
 ] as const;
+
+export const OUTFIT_EXPORT_JSON_ENTRY = "outfit-export-v2.json";
+export const OUTFIT_EXPORT_MANIFEST_ENTRY = "manifest.json";
 
 const GARMENT_CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"] as const;
 const GARMENT_WARMTH = ["light", "medium", "warm", "heavy"] as const;
@@ -28,6 +40,39 @@ const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as const;
 
 export interface BuildOutfitExportOptions {
   now?: () => Date;
+}
+
+export interface OutfitExportZipOptions extends BuildOutfitExportOptions {
+  assetRoot?: string;
+}
+
+export interface OutfitExportWarning {
+  code: "ASSET_UNAVAILABLE";
+  assetId: number;
+  message: string;
+}
+
+export interface OutfitExportZipPreview {
+  assetCount: number;
+  includedAssetCount: number;
+  assetBytes: number;
+  includedAssetBytes: number;
+  estimatedBytes: number;
+  warnings: OutfitExportWarning[];
+}
+
+export interface OutfitExportManifestAsset {
+  id: number;
+  archivePath: string;
+  byteSize: number;
+  sha256: string;
+}
+
+export interface OutfitExportZipManifest extends OutfitExportZipPreview {
+  version: 1;
+  exportedAt: string;
+  entries: string[];
+  includedAssets: OutfitExportManifestAsset[];
 }
 
 export class OutfitExportError extends Error {
@@ -57,11 +102,12 @@ export function buildOutfitExportV2(
       exportedAt: (options.now ?? (() => new Date()))().toISOString(),
       features: [...OUTFIT_EXPORT_V2_FEATURES],
       profile: getPersonalProfile(db),
-      garments: listGarments(db),
+      garments: listGarments(db, { scope: "all" }),
       sourceOrderItems: listSourceOrderItems(db),
       wearLogs: listAllWearLogs(db),
       recommendationRuns: listAllRecommendationRuns(db),
-      recommendationCandidates: listRecommendationCandidates(db)
+      recommendationCandidates: listRecommendationCandidates(db),
+      garmentAssets: listGarmentAssets(db)
     };
     validateOutfitExport(exported);
     db.exec("COMMIT");
@@ -123,8 +169,132 @@ export function validateOutfitExport(value: unknown): OutfitExport {
         "Invalid export envelope: recommendationCandidates contains an invalid entry"
       );
     }
+    if (
+      value.garmentAssets !== undefined &&
+      (!Array.isArray(value.garmentAssets) || !value.garmentAssets.every(isGarmentAssetMetadataShape))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: garmentAssets contains an invalid entry"
+      );
+    }
   }
   return value as unknown as OutfitExport;
+}
+
+/**
+ * Inspect the explicit complete-backup payload without creating an archive.
+ * Warnings contain only numeric asset IDs and never local paths/storage keys.
+ */
+export async function previewOutfitExportZip(
+  db: AppDatabase,
+  options: OutfitExportZipOptions = {}
+): Promise<OutfitExportZipPreview> {
+  const exported = buildOutfitExportV2(db, options);
+  const assetRoot = options.assetRoot ?? DEFAULT_GARMENT_ASSET_ROOT;
+  const warnings: OutfitExportWarning[] = [];
+  let includedAssetCount = 0;
+  let includedAssetBytes = 0;
+
+  for (const metadata of exported.garmentAssets ?? []) {
+    const content = await readBackupAssetOrWarn(db, metadata, assetRoot, warnings);
+    if (!content) continue;
+    includedAssetCount += 1;
+    includedAssetBytes += content.byteLength;
+  }
+
+  const assetCount = exported.garmentAssets?.length ?? 0;
+  const assetBytes = sumSafeBytes((exported.garmentAssets ?? []).map((asset) => asset.byteSize));
+  const previewBase = {
+    assetCount,
+    includedAssetCount,
+    assetBytes,
+    includedAssetBytes,
+    warnings
+  };
+  const manifest = buildZipManifest(exported, previewBase, []);
+  return {
+    ...previewBase,
+    estimatedBytes: estimateArchiveBytes(
+      serializeJson(exported).byteLength,
+      includedAssetBytes,
+      serializeJson(manifest).byteLength,
+      includedAssetCount + 2
+    )
+  };
+}
+
+/**
+ * Stream a complete backup directly to the caller-provided Writable. No ZIP
+ * file or other temporary archive is created on disk, and source assets are
+ * never removed. Each asset is integrity-checked before its safe numeric entry
+ * is appended.
+ */
+export async function writeOutfitExportZip(
+  db: AppDatabase,
+  destination: Writable,
+  options: OutfitExportZipOptions = {}
+): Promise<OutfitExportZipManifest> {
+  const exported = buildOutfitExportV2(db, options);
+  const assetRoot = options.assetRoot ?? DEFAULT_GARMENT_ASSET_ROOT;
+  const archiveDate = validArchiveDate(exported.exportedAt);
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  const streamFailure = archiveFailure(archive, destination);
+  archive.pipe(destination);
+  const destinationFinished = finished(destination, { readable: false });
+
+  await Promise.race([
+    appendArchiveEntry(archive, serializeJson(exported), OUTFIT_EXPORT_JSON_ENTRY, archiveDate),
+    streamFailure
+  ]);
+
+  const warnings: OutfitExportWarning[] = [];
+  const includedAssets: OutfitExportManifestAsset[] = [];
+  let includedAssetBytes = 0;
+  for (const metadata of exported.garmentAssets ?? []) {
+    const bytes = await readBackupAssetOrWarn(db, metadata, assetRoot, warnings);
+    if (!bytes) continue;
+    await Promise.race([
+      appendArchiveEntry(archive, bytes, metadata.archivePath, archiveDate, true),
+      streamFailure
+    ]);
+    includedAssetBytes += bytes.byteLength;
+    includedAssets.push({
+      id: metadata.id,
+      archivePath: metadata.archivePath,
+      byteSize: bytes.byteLength,
+      sha256: metadata.sha256
+    });
+  }
+
+  const assetCount = exported.garmentAssets?.length ?? 0;
+  const assetBytes = sumSafeBytes((exported.garmentAssets ?? []).map((asset) => asset.byteSize));
+  const previewBase = {
+    assetCount,
+    includedAssetCount: includedAssets.length,
+    assetBytes,
+    includedAssetBytes,
+    warnings
+  };
+  const manifestWithoutEstimate = buildZipManifest(exported, previewBase, includedAssets);
+  const estimatedBytes = estimateArchiveBytes(
+    serializeJson(exported).byteLength,
+    includedAssetBytes,
+    serializeJson(manifestWithoutEstimate).byteLength,
+    includedAssets.length + 2
+  );
+  const manifest: OutfitExportZipManifest = {
+    ...manifestWithoutEstimate,
+    estimatedBytes
+  };
+  await Promise.race([
+    appendArchiveEntry(archive, serializeJson(manifest), OUTFIT_EXPORT_MANIFEST_ENTRY, archiveDate),
+    streamFailure
+  ]);
+  await Promise.race([
+    archive.finalize().then(() => destinationFinished),
+    streamFailure
+  ]);
+  return manifest;
 }
 
 function assertStoredProfileJson(db: AppDatabase): void {
@@ -314,6 +484,217 @@ function listRecommendationCandidates(db: AppDatabase): RecommendationCandidateE
       createdAt: row.created_at
     };
   });
+}
+
+function listGarmentAssets(db: AppDatabase): GarmentAssetMetadata[] {
+  const rows = db.prepare(`
+    SELECT id, garment_id, kind, mime_type, byte_size, width, height, sha256,
+      active, created_at
+    FROM garment_assets
+    ORDER BY id ASC
+  `).all() as Array<{
+    id: number;
+    garment_id: number;
+    kind: string;
+    mime_type: string;
+    byte_size: number;
+    width: number;
+    height: number;
+    sha256: string;
+    active: number;
+    created_at: string;
+  }>;
+  return rows.map((row) => {
+    const metadata: GarmentAssetMetadata = {
+      id: row.id,
+      garmentId: row.garment_id,
+      kind: row.kind,
+      mimeType: row.mime_type as GarmentAssetMetadata["mimeType"],
+      byteSize: row.byte_size,
+      width: row.width,
+      height: row.height,
+      sha256: row.sha256,
+      active: Boolean(row.active),
+      createdAt: row.created_at,
+      archivePath: assetArchivePath(row.id)
+    };
+    if (!isGarmentAssetMetadataShape(metadata)) {
+      throw new OutfitExportError(`Cannot export garment_assets row ${row.id}: invalid metadata`);
+    }
+    return metadata;
+  });
+}
+
+async function readBackupAssetOrWarn(
+  db: AppDatabase,
+  metadata: GarmentAssetMetadata,
+  assetRoot: string,
+  warnings: OutfitExportWarning[]
+): Promise<Buffer | undefined> {
+  try {
+    const content = await readGarmentAssetForBackup(db, metadata.id, { assetRoot });
+    if (!matchesExportedAssetMetadata(content.asset, metadata)) {
+      throw new Error("Asset metadata changed while preparing backup");
+    }
+    return content.bytes;
+  } catch {
+    warnings.push(assetUnavailableWarning(metadata.id));
+    return undefined;
+  }
+}
+
+function matchesExportedAssetMetadata(
+  actual: Awaited<ReturnType<typeof readGarmentAssetForBackup>>["asset"],
+  expected: GarmentAssetMetadata
+): boolean {
+  return (
+    actual.id === expected.id &&
+    actual.garmentId === expected.garmentId &&
+    actual.kind === expected.kind &&
+    actual.mimeType === expected.mimeType &&
+    actual.byteSize === expected.byteSize &&
+    actual.width === expected.width &&
+    actual.height === expected.height &&
+    actual.sha256 === expected.sha256 &&
+    actual.active === expected.active &&
+    actual.createdAt === expected.createdAt &&
+    expected.archivePath === assetArchivePath(expected.id)
+  );
+}
+
+function assetUnavailableWarning(assetId: number): OutfitExportWarning {
+  return {
+    code: "ASSET_UNAVAILABLE",
+    assetId,
+    message: `资产 ${assetId} 的文件缺失、损坏或不安全，已跳过。`
+  };
+}
+
+type ManifestWithoutEstimate = Omit<OutfitExportZipManifest, "estimatedBytes">;
+
+function buildZipManifest(
+  exported: OutfitExportV2,
+  preview: Omit<OutfitExportZipPreview, "estimatedBytes">,
+  includedAssets: OutfitExportManifestAsset[]
+): ManifestWithoutEstimate {
+  return {
+    version: 1,
+    exportedAt: exported.exportedAt,
+    ...preview,
+    entries: [
+      OUTFIT_EXPORT_JSON_ENTRY,
+      ...includedAssets.map((asset) => asset.archivePath),
+      OUTFIT_EXPORT_MANIFEST_ENTRY
+    ],
+    includedAssets
+  };
+}
+
+function assetArchivePath(assetId: number): string {
+  if (!Number.isSafeInteger(assetId) || assetId <= 0) {
+    throw new OutfitExportError("Cannot build an archive path for an invalid asset ID");
+  }
+  return `assets/${assetId}.webp`;
+}
+
+function serializeJson(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function estimateArchiveBytes(
+  exportJsonBytes: number,
+  includedAssetBytes: number,
+  manifestBytes: number,
+  entryCount: number
+): number {
+  // ZIP headers are small but compression is data-dependent. This is a safe
+  // display estimate, not a byte-exact Content-Length promise.
+  return sumSafeBytes([
+    exportJsonBytes,
+    includedAssetBytes,
+    manifestBytes,
+    entryCount * 160,
+    64
+  ]);
+}
+
+function sumSafeBytes(values: number[]): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0 || total > Number.MAX_SAFE_INTEGER - value) {
+      throw new OutfitExportError("Backup size exceeds the supported safe integer range");
+    }
+    total += value;
+  }
+  return total;
+}
+
+function validArchiveDate(value: string): Date {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new OutfitExportError("Cannot create ZIP with an invalid export timestamp");
+  }
+  return date;
+}
+
+function archiveFailure(archive: Archiver, destination: Writable): Promise<never> {
+  return new Promise((_, reject) => {
+    archive.once("warning", reject);
+    archive.once("error", reject);
+    destination.once("error", reject);
+  });
+}
+
+function appendArchiveEntry(
+  archive: Archiver,
+  content: Buffer,
+  name: string,
+  date: Date,
+  store = false
+): Promise<void> {
+  assertSafeArchiveEntry(name);
+  return new Promise((resolveEntry, rejectEntry) => {
+    const onEntry = (entry: { name: string }) => {
+      if (entry.name !== name) return;
+      cleanup();
+      resolveEntry();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      rejectEntry(error);
+    };
+    const cleanup = () => {
+      archive.off("entry", onEntry);
+      archive.off("warning", onError);
+      archive.off("error", onError);
+    };
+    archive.on("entry", onEntry);
+    archive.once("warning", onError);
+    archive.once("error", onError);
+    archive.append(content, {
+      name,
+      date,
+      mode: 0o600,
+      store
+    });
+  });
+}
+
+function assertSafeArchiveEntry(name: string): void {
+  if (
+    !name ||
+    name.includes("\\") ||
+    name.startsWith("/") ||
+    /^[A-Za-z]:/.test(name) ||
+    name.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
+    !(
+      name === OUTFIT_EXPORT_JSON_ENTRY ||
+      name === OUTFIT_EXPORT_MANIFEST_ENTRY ||
+      /^assets\/[1-9][0-9]*\.webp$/.test(name)
+    )
+  ) {
+    throw new OutfitExportError("Refusing an unsafe ZIP entry name");
+  }
 }
 
 function parseJsonColumn<T = unknown>(
@@ -625,6 +1006,32 @@ function isRecommendationCandidateShape(value: unknown): boolean {
     value.itemIds.every(isSafeInteger) &&
     hasOwn(value, "scoreSnapshot") &&
     typeof value.createdAt === "string"
+  );
+}
+
+function isGarmentAssetMetadataShape(value: unknown): value is GarmentAssetMetadata {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isSafeInteger(value.id) &&
+    value.id > 0 &&
+    isSafeInteger(value.garmentId) &&
+    value.garmentId > 0 &&
+    typeof value.kind === "string" &&
+    value.kind.trim().length > 0 &&
+    value.mimeType === "image/webp" &&
+    isSafeInteger(value.byteSize) &&
+    value.byteSize > 0 &&
+    isSafeInteger(value.width) &&
+    value.width > 0 &&
+    isSafeInteger(value.height) &&
+    value.height > 0 &&
+    typeof value.sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(value.sha256) &&
+    typeof value.active === "boolean" &&
+    typeof value.createdAt === "string" &&
+    value.createdAt.length > 0 &&
+    typeof value.archivePath === "string" &&
+    value.archivePath === `assets/${value.id}.webp`
   );
 }
 
