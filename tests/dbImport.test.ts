@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createDatabase, importTaobaoBatchIntoDb, listGarments, migrate, updateGarment } from "../server/db";
+import { createDatabase, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, updateGarment } from "../server/db";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -425,7 +425,7 @@ describe("database import", () => {
       imageUrl: "https://gw.alicdn.com/tfs/TB1platform_80x36.png"
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "BOSIE",
@@ -454,7 +454,7 @@ describe("database import", () => {
       imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
@@ -481,7 +481,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "BOSIE",
@@ -517,7 +517,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "UTIMUS",
@@ -554,7 +554,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "UTIMUS",
@@ -590,7 +590,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "Gnomes lab",

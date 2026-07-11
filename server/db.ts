@@ -8,6 +8,7 @@ import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
 import { ApiError } from "./validation";
+import { runMigrations, type Migration } from "./db/migrations";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -17,6 +18,8 @@ const INSIGHT_FORMALITIES: Formality[] = ["casual", "smart-casual", "formal", "s
 const INSIGHT_BASIC_COLORS = new Set(["black", "white", "gray", "beige", "brown"]);
 
 export type AppDatabase = DatabaseSyncType;
+
+const NUMBERED_MIGRATIONS: readonly Migration[] = [];
 
 export interface DbImportResult {
   batchId: string;
@@ -152,6 +155,14 @@ export function createDatabase(databasePath = defaultDatabasePath()): AppDatabas
 }
 
 export function migrate(db: AppDatabase): void {
+  runMigrations(db, legacyBaseline0, NUMBERED_MIGRATIONS);
+}
+
+/**
+ * Frozen schema baseline from before versioned migrations were introduced.
+ * New tables and columns belong in NUMBERED_MIGRATIONS, never in this function.
+ */
+export function legacyBaseline0(db: AppDatabase): void {
   db.exec(`
     PRAGMA foreign_keys = ON;
 

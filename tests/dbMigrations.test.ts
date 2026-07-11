@@ -1,0 +1,222 @@
+import { createRequire } from "node:module";
+import { describe, expect, it } from "vitest";
+import { migrate } from "../server/db";
+import {
+  runMigrations,
+  type Migration
+} from "../server/db/migrations";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+
+function migration(version: number, name: string, up: Migration["up"]): Migration {
+  return { version, name, up };
+}
+
+describe("versioned database migrations", () => {
+  it("registers the frozen legacy schema as baseline version 0", () => {
+    const db = new DatabaseSync(":memory:");
+
+    migrate(db);
+
+    const rows = db.prepare(`
+      SELECT version, name
+      FROM schema_migrations
+      ORDER BY version ASC
+    `).all() as Array<{ version: number; name: string }>;
+    expect(rows).toEqual([{ version: 0, name: "legacy-baseline" }]);
+  });
+
+  it("upgrades an older legacy schema before registering baseline 0", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      CREATE TABLE source_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        external_key TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    migrate(db);
+
+    const columns = db.prepare("PRAGMA table_info(source_order_items)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "item_id",
+      "detail_title",
+      "detail_props",
+      "detail_images"
+    ]));
+    expect(db.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: 0 }]);
+  });
+
+  it("applies each numbered migration only once", () => {
+    const db = new DatabaseSync(":memory:");
+    let baselineRuns = 0;
+    const legacyBaseline = (database: Parameters<Migration["up"]>[0]) => {
+      baselineRuns += 1;
+      database.exec("CREATE TABLE legacy_probe (id INTEGER PRIMARY KEY)");
+    };
+    const migrations = [migration(1, "create-probe", (database) => {
+      database.exec(`
+        CREATE TABLE migration_probe (value TEXT NOT NULL);
+        INSERT INTO migration_probe (value) VALUES ('once');
+      `);
+    })];
+
+    runMigrations(db, legacyBaseline, migrations);
+    runMigrations(db, legacyBaseline, migrations);
+
+    expect(baselineRuns).toBe(1);
+    expect(db.prepare("SELECT value FROM migration_probe").all()).toEqual([{ value: "once" }]);
+    expect(db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
+      { version: 0, name: "legacy-baseline" },
+      { version: 1, name: "create-probe" }
+    ]);
+  });
+
+  it("rejects duplicate or non-increasing migration versions before changing schema", () => {
+    const db = new DatabaseSync(":memory:");
+    const createProbe = (name: string) => (database: Parameters<Migration["up"]>[0]) => {
+      database.exec(`CREATE TABLE ${name} (id INTEGER PRIMARY KEY)`);
+    };
+    const legacyBaseline = (database: Parameters<Migration["up"]>[0]) => {
+      database.exec("CREATE TABLE legacy_probe (id INTEGER PRIMARY KEY)");
+    };
+
+    expect(() => runMigrations(db, legacyBaseline, [
+      migration(2, "second", createProbe("probe_two")),
+      migration(1, "first", createProbe("probe_one"))
+    ])).toThrow(/strictly increasing/i);
+    expect(() => runMigrations(db, legacyBaseline, [
+      migration(1, "first", createProbe("probe_one")),
+      migration(1, "duplicate", createProbe("probe_duplicate"))
+    ])).toThrow(/strictly increasing/i);
+    expect(db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name LIKE 'probe_%'
+    `).all()).toEqual([]);
+  });
+
+  it("rolls back a failed migration without recording its version", () => {
+    const db = new DatabaseSync(":memory:");
+    const failing = migration(1, "failing", (database) => {
+      database.exec(`
+        CREATE TABLE should_rollback (value TEXT NOT NULL);
+        INSERT INTO should_rollback (value) VALUES ('temporary');
+      `);
+      throw new Error("planned migration failure");
+    });
+
+    expect(() => runMigrations(db, () => undefined, [failing])).toThrow("planned migration failure");
+
+    expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
+      { version: 0 }
+    ]);
+    expect(db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'should_rollback'
+    `).all()).toEqual([]);
+  });
+
+  it("rolls back the legacy baseline and version registry together", () => {
+    const db = new DatabaseSync(":memory:");
+
+    expect(() => runMigrations(db, (database) => {
+      database.exec("CREATE TABLE partial_legacy_schema (id INTEGER PRIMARY KEY)");
+      throw new Error("legacy baseline failed");
+    }, [])).toThrow("legacy baseline failed");
+
+    expect(db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name IN ('partial_legacy_schema', 'schema_migrations')
+    `).all()).toEqual([]);
+  });
+
+  it("preserves the original migration error when rollback also fails", () => {
+    const db = new DatabaseSync(":memory:");
+    const originalError = new Error("original migration failure");
+    const proxiedDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "exec") {
+          return (sql: string) => {
+            if (sql.trim().toUpperCase() === "ROLLBACK") {
+              throw new Error("rollback failure");
+            }
+            return target.exec(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    }) as Parameters<typeof runMigrations>[0];
+
+    let caught: unknown;
+    try {
+      runMigrations(proxiedDb, () => {
+        throw originalError;
+      }, []);
+    } catch (error) {
+      caught = error;
+    } finally {
+      if (db.isTransaction) db.exec("ROLLBACK");
+    }
+
+    expect(caught).toBe(originalError);
+  });
+
+  it("enables foreign keys before starting the baseline transaction", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("PRAGMA foreign_keys = OFF");
+
+    runMigrations(db, (database) => {
+      database.exec(`
+        CREATE TABLE migration_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE migration_child (
+          id INTEGER PRIMARY KEY,
+          parent_id INTEGER NOT NULL REFERENCES migration_parent(id)
+        );
+      `);
+    }, []);
+
+    expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+  });
+
+  it("rejects applied migrations that are not an exact prefix of the current code", () => {
+    const db = new DatabaseSync(":memory:");
+    const migrations = [
+      migration(1, "first", () => undefined),
+      migration(2, "second", () => undefined)
+    ];
+    runMigrations(db, () => undefined, migrations);
+    db.prepare("DELETE FROM schema_migrations WHERE version = 1").run();
+
+    expect(() => runMigrations(db, () => undefined, migrations)).toThrow(/prefix/i);
+  });
+
+  it("rejects a database migrated by newer code or a renamed applied migration", () => {
+    const newerDb = new DatabaseSync(":memory:");
+    runMigrations(newerDb, () => undefined, [migration(1, "first", () => undefined)]);
+    newerDb.prepare(`
+      INSERT INTO schema_migrations (version, name, applied_at)
+      VALUES (2, 'future', ?)
+    `).run(new Date().toISOString());
+    expect(() => runMigrations(
+      newerDb,
+      () => undefined,
+      [migration(1, "first", () => undefined)]
+    )).toThrow(/newer/i);
+
+    const renamedDb = new DatabaseSync(":memory:");
+    runMigrations(renamedDb, () => undefined, [migration(1, "original-name", () => undefined)]);
+    expect(() => runMigrations(
+      renamedDb,
+      () => undefined,
+      [migration(1, "renamed", () => undefined)]
+    )).toThrow(/name/i);
+  });
+});
