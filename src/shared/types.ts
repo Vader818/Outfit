@@ -2,6 +2,7 @@ export type GarmentCategory = "top" | "bottom" | "dress" | "outerwear" | "shoes"
 export type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 export type Season = "spring" | "summer" | "autumn" | "winter";
 export type Formality = "casual" | "smart-casual" | "formal" | "sport";
+export type GarmentOrigin = "taobao" | "manual" | "backup";
 export type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
 export type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
 export type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
@@ -19,6 +20,8 @@ export interface AuthStatus {
 export interface Garment {
   id: number;
   sourceOrderItemId?: number;
+  origin: GarmentOrigin;
+  archivedAt?: string;
   brand: string;
   name: string;
   rawName: string;
@@ -38,6 +41,9 @@ export interface Garment {
   excluded: boolean;
   confidence: number;
   notes?: string;
+  acquiredAt?: string;
+  purchasePriceCents?: number;
+  currency?: "CNY";
   itemUrl?: string;
   detailUrl?: string;
   lastWornAt?: string;
@@ -45,6 +51,25 @@ export interface Garment {
   cutoutImageUrl?: string;
   visionTags?: VisionTagSuggestion;
   visionUpdatedAt?: string;
+}
+
+export interface ManualGarmentCreate {
+  name: string;
+  category: GarmentCategory;
+  color: string;
+  warmth: GarmentWarmth;
+  seasons: Season[];
+  styles: string[];
+  formality: Formality;
+  brand?: string;
+  size?: string;
+  materials?: string[];
+  patterns?: string[];
+  tags?: string[];
+  notes?: string;
+  acquiredAt?: string;
+  purchasePriceCents?: number;
+  currency?: "CNY";
 }
 
 export interface WeatherSnapshot {
@@ -59,6 +84,8 @@ export interface WeatherSnapshot {
 
 export interface OutfitRecommendation {
   id: string;
+  candidateId: string;
+  outfitSignature: string;
   score: number;
   matchPercent?: number;
   scoreBreakdown?: RecommendationScoreBreakdown;
@@ -68,11 +95,19 @@ export interface OutfitRecommendation {
 }
 
 export interface RecommendationResult {
+  runId: number;
   weather: WeatherSnapshot;
   weatherScenario?: WeatherScenario;
   occasion: string;
   outfits: OutfitRecommendation[];
+  missingSlots: GarmentCategory[];
 }
+
+export type RecommendationDraftResult = Omit<RecommendationResult, "runId">;
+export type RecommendationOutfitDraft = Omit<
+  OutfitRecommendation,
+  "id" | "candidateId" | "outfitSignature"
+>;
 
 export type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";
 
@@ -186,8 +221,7 @@ export interface WardrobeInsights {
   neverWorn: WornGarmentInsight[];
 }
 
-export interface OutfitExport {
-  version: 1;
+export interface OutfitExportBase {
   exportedAt: string;
   profile: PersonalProfile;
   garments: Garment[];
@@ -195,6 +229,44 @@ export interface OutfitExport {
   wearLogs: WearLogEntry[];
   recommendationRuns: RecommendationRunEntry[];
 }
+
+export interface OutfitExportV1 extends OutfitExportBase {
+  version: 1;
+}
+
+export interface RecommendationCandidateExport {
+  candidateId: string;
+  runId: number;
+  outfitSignature: string;
+  rank: number;
+  itemIds: number[];
+  scoreSnapshot: unknown;
+  createdAt: string;
+}
+
+export interface GarmentAssetMetadata {
+  id: number;
+  garmentId: number;
+  kind: string;
+  mimeType: "image/webp";
+  byteSize: number;
+  width: number;
+  height: number;
+  sha256: string;
+  active: boolean;
+  createdAt: string;
+  archivePath: string;
+}
+
+export interface OutfitExportV2 extends OutfitExportBase {
+  version: 2;
+  schemaVersion: number;
+  features: string[];
+  recommendationCandidates: RecommendationCandidateExport[];
+  garmentAssets?: GarmentAssetMetadata[];
+}
+
+export type OutfitExport = OutfitExportV1 | OutfitExportV2;
 
 export type VisionModelId = "rembg-isnet" | "clip-vit-base-patch32";
 export type VisionModelKind = "background-removal" | "tagging";
@@ -346,8 +418,58 @@ export interface TaobaoImportPreviewItem {
   color: string;
   warmth: GarmentWarmth;
   seasons: Season[];
+  styles: string[];
+  formality: Formality;
+  size?: string;
+  materials: string[];
+  patterns: string[];
+  tags: string[];
+  notes: string;
   confidence: number;
   imageUrl: string;
+  disposition: ImportDisposition;
+  existingGarmentId?: number;
+  restoreRequired?: boolean;
+  message?: string;
+}
+
+export type ImportDisposition = "create" | "update" | "refund-sync" | "unchanged" | "skip";
+
+export type ImportGarmentOverrides = Partial<Pick<Garment,
+  "brand" | "name" | "category" | "color" | "warmth" |
+  "seasons" | "styles" | "formality" | "size" |
+  "materials" | "patterns" | "tags" | "notes"
+>>;
+
+export interface ImportDecision {
+  sourceItemKey: string;
+  include: boolean;
+  overrides?: ImportGarmentOverrides;
+}
+
+export interface TaobaoImportCommitRequest {
+  batch: TaobaoCapturedBatch;
+  decisions: ImportDecision[];
+}
+
+export interface TaobaoImportCommitItem {
+  sourceItemKey: string;
+  disposition: ImportDisposition;
+  garmentId?: number;
+}
+
+export interface TaobaoImportCommitResult {
+  batchId: string;
+  summary: {
+    totalDecisions: number;
+    included: number;
+    created: number;
+    updated: number;
+    refundSynced: number;
+    unchanged: number;
+    skipped: number;
+  };
+  items: TaobaoImportCommitItem[];
 }
 
 export interface TaobaoImportSkippedItem {

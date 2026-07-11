@@ -19,12 +19,14 @@ export type BusyAction =
   | "read-capture"
   | "refresh-thumbnails"
   | "bulk-confirm"
+  | "bulk-update"
   | "download-vision-model"
   | "verify-vision-model"
   | "locate"
   | "save-settings"
   | "history"
   | "export"
+  | "export-complete"
   | "weather"
   | "cutout-garment"
   | "vision-tags"
@@ -127,20 +129,10 @@ export const SUGGESTION_PRIORITY_LABELS: Record<WardrobeSuggestion["priority"], 
 };
 
 export const TAOBAO_BOUGHT_ITEMS_URL = "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm";
-export const DEFAULT_LATITUDE = "39.9042";
-export const DEFAULT_LONGITUDE = "116.4074";
+export const DEFAULT_LATITUDE = "";
+export const DEFAULT_LONGITUDE = "";
 
-export const DEFAULT_PROFILE: PersonalProfile = {
-  heightCm: 176,
-  weightKg: 57,
-  bodyType: "slim-tall",
-  skinTone: "dark-yellow",
-  colorDisposition: "cool-clean",
-  temperatureSensitivity: "neutral",
-  preferredColors: ["white", "blue", "gray"],
-  avoidedColors: ["yellow", "brown"],
-  preferredStyles: ["smart-casual"]
-};
+export const DEFAULT_PROFILE: PersonalProfile = {};
 
 export const DEFAULT_WARDROBE_FILTERS: WardrobeFilters = {
   status: "all",
@@ -159,10 +151,11 @@ export const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
 export const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
 export const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
 export const SEASON_OPTIONS = toOptions(SEASON_LABELS);
-export const BODY_TYPE_OPTIONS = toOptions(BODY_TYPE_LABELS);
-export const SKIN_TONE_OPTIONS = toOptions(SKIN_TONE_LABELS);
-export const COLOR_DISPOSITION_OPTIONS = toOptions(COLOR_DISPOSITION_LABELS);
-export const TEMPERATURE_OPTIONS = toOptions(TEMPERATURE_LABELS);
+const UNSET_OPTION: SelectOption = { value: "", label: "未设置" };
+export const BODY_TYPE_OPTIONS = [UNSET_OPTION, ...toOptions(BODY_TYPE_LABELS)];
+export const SKIN_TONE_OPTIONS = [UNSET_OPTION, ...toOptions(SKIN_TONE_LABELS)];
+export const COLOR_DISPOSITION_OPTIONS = [UNSET_OPTION, ...toOptions(COLOR_DISPOSITION_LABELS)];
+export const TEMPERATURE_OPTIONS = [UNSET_OPTION, ...toOptions(TEMPERATURE_LABELS)];
 export const STATUS_FILTER_OPTIONS: SelectOption[] = [
   { value: "all", label: "全部状态" },
   { value: "pending", label: "待确认" },
@@ -211,6 +204,26 @@ export function numberOrUndefined(value: string): number | undefined {
   if (!value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function parseLocationCoordinates(
+  latitudeValue: string,
+  longitudeValue: string
+): { latitude: number; longitude: number } | null {
+  if (!latitudeValue.trim() || !longitudeValue.trim()) return null;
+  const latitude = Number(latitudeValue);
+  const longitude = Number(longitudeValue);
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return null;
+  }
+  return { latitude, longitude };
 }
 
 export function labelDistribution<T extends string>(

@@ -12,11 +12,41 @@ export function displayGarmentName(item: Garment): string {
   return [meta.brand, item.name].filter(Boolean).join(" ");
 }
 
-export function displayThumbnailUrl(value: string): string {
+export function displayThumbnailUrl(value: string, allowRemoteTaobaoImages = false): string {
   const cleaned = value.trim();
-  if (cleaned.startsWith("/api/garment-thumbnails/")) return cleaned;
-  if (isTrustedTaobaoImageUrl(cleaned)) return cleaned;
+  if (isLocalGarmentImageUrl(cleaned)) return cleaned;
+  if (allowRemoteTaobaoImages && isTrustedTaobaoImageUrl(cleaned)) return cleaned;
   return "";
+}
+
+export interface ResolvedGarmentImageSource {
+  url: string;
+  cutout: boolean;
+  remote: boolean;
+}
+
+export function resolveGarmentImageSource(
+  item: Garment,
+  allowRemoteTaobaoImages = false
+): ResolvedGarmentImageSource | null {
+  if (item.cutoutImageUrl && isLocalGarmentImageUrl(item.cutoutImageUrl)) {
+    return { url: item.cutoutImageUrl.trim(), cutout: true, remote: false };
+  }
+  if (isLocalGarmentImageUrl(item.imageUrl)) {
+    return { url: item.imageUrl.trim(), cutout: false, remote: false };
+  }
+  if (allowRemoteTaobaoImages && isTrustedTaobaoImageUrl(item.imageUrl)) {
+    return { url: item.imageUrl.trim(), cutout: false, remote: true };
+  }
+  return null;
+}
+
+export function isLocalGarmentImageUrl(value: string): boolean {
+  const cleaned = value.trim();
+  return (
+    cleaned.startsWith("/api/garment-thumbnails/") ||
+    cleaned.startsWith("/api/garment-assets/")
+  );
 }
 
 export function isTrustedTaobaoImageUrl(value: string): boolean {
@@ -27,6 +57,7 @@ export function isTrustedTaobaoImageUrl(value: string): boolean {
     return false;
   }
   if (parsed.protocol !== "https:") return false;
+  if (parsed.username || parsed.password) return false;
   const hostname = parsed.hostname.toLowerCase();
   if (!hostname.endsWith(".alicdn.com") && !hostname.endsWith(".taobaocdn.com")) return false;
   let pathname = parsed.pathname.toLowerCase();
@@ -38,6 +69,18 @@ export function isTrustedTaobaoImageUrl(value: string): boolean {
   if (!/\.(?:jpe?g|png|webp)(?:$|[._-])/.test(pathname)) return false;
   if (/logo|sprite|icon|avatar|placeholder|transparent|loading|wangwang|shop[_-]?card|store[_-]?card/.test(pathname)) return false;
   return true;
+}
+
+export function isRecommendationEligibleGarment(item: Garment): boolean {
+  return item.owned && !item.archivedAt && item.confirmed && !item.excluded;
+}
+
+export function isWardrobeReviewPendingGarment(item: Garment): boolean {
+  return !item.archivedAt && !item.confirmed && !item.excluded;
+}
+
+export function isRecommendationPendingGarment(item: Garment): boolean {
+  return item.owned && isWardrobeReviewPendingGarment(item);
 }
 
 export function matchesWardrobeFilters(item: Garment, filters: WardrobeFilters): boolean {

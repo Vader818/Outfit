@@ -1,26 +1,28 @@
 import { Shirt } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cx } from "../ui";
-import { displayThumbnailUrl, garmentMeta } from "../../lib/garments";
+import { garmentMeta, resolveGarmentImageSource } from "../../lib/garments";
 import type { Garment } from "../../shared/types";
 
 export function GarmentImage({
   item,
   variant = "thumbnail",
   className,
-  eager = false
+  eager = false,
+  allowRemoteTaobaoImages = false
 }: {
   item: Garment;
   variant?: "thumbnail" | "card" | "stage";
   className?: string;
   eager?: boolean;
+  allowRemoteTaobaoImages?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const meta = garmentMeta(item);
   const alt = [meta.brand, item.name].filter(Boolean).join(" ") || item.name;
-  const source = item.cutoutImageUrl || item.imageUrl;
-  const imageUrl = displayThumbnailUrl(source);
-  const cutout = Boolean(item.cutoutImageUrl && imageUrl);
+  const source = resolveGarmentImageSource(item, allowRemoteTaobaoImages);
+  const imageUrl = source?.url ?? "";
+  const cutout = source?.cutout ?? false;
 
   useEffect(() => {
     setFailed(false);

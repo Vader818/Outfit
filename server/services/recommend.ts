@@ -1,4 +1,5 @@
-import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import type { Formality, Garment, GarmentCategory, GarmentWarmth, PersonalProfile, RecommendationDraftResult, RecommendationOutfitDraft, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import { attachCandidateIdentities, type CandidateIdFactory } from "./recommendationCandidates";
 
 export interface RecommendInput {
   garments: Garment[];
@@ -8,12 +9,30 @@ export interface RecommendInput {
   userProfile?: PersonalProfile;
 }
 
-interface Candidate {
+export interface RecommendationIdentityOptions {
+  candidateIdFactory?: CandidateIdFactory;
+}
+
+export interface GeneratedRecommendationCandidate {
   items: Garment[];
   score: number;
   reasons: string[];
   scoreBreakdown: RecommendationScoreBreakdown;
+  sequence: number;
 }
+
+export interface CandidateGenerationOptions {
+  maxEvaluatedCandidates?: number;
+  beamWidth?: number;
+}
+
+export interface CandidateGenerationResult {
+  candidates: GeneratedRecommendationCandidate[];
+  evaluatedCandidates: number;
+  truncated: boolean;
+}
+
+type Candidate = GeneratedRecommendationCandidate;
 
 const NEUTRALS = new Set(["black", "white", "gray", "beige", "brown", "blue", "unknown"]);
 const CORE_CATEGORIES = new Set<GarmentCategory>(["top", "bottom", "dress", "shoes"]);
@@ -39,37 +58,18 @@ const CATEGORY_PAIR_WEIGHTS: Partial<Record<GarmentCategory, Partial<Record<Garm
 };
 
 const CLASHING_ACCENTS = new Set(["green:red", "green:yellow", "purple:yellow", "red:green", "yellow:green", "yellow:purple"]);
+const DEFAULT_MAX_EVALUATED_CANDIDATES = 20_000;
+const DEFAULT_BEAM_WIDTH = 120;
 
-export function recommendOutfits(input: RecommendInput): RecommendationResult {
-  const available = input.garments.filter((item) => item.owned && !item.excluded);
-  const tops = available.filter((item) => item.category === "top");
-  const dresses = available.filter((item) => item.category === "dress");
-  const bottoms = available.filter((item) => item.category === "bottom");
-  const outerwear = available.filter((item) => item.category === "outerwear");
-  const shoes = available.filter((item) => item.category === "shoes");
-  const accessories = available.filter((item) => item.category === "accessory");
-  const candidates: Candidate[] = [];
-
-  for (const top of [...tops, ...dresses]) {
-    const bases = top.category === "dress" ? [[top]] : bottoms.map((bottom) => [top, bottom]);
-    for (const base of bases) {
-      const outerOptions = outerwearOptions(outerwear, input.weather);
-      const shoeOptions = shoes.length ? shoes : [undefined];
-      const accessoryOptions = [undefined, ...accessories.slice(0, 3)];
-      for (const coat of outerOptions) {
-        for (const shoe of shoeOptions) {
-          for (const accessory of accessoryOptions) {
-            const items = [...base, coat, shoe, accessory].filter(Boolean) as Garment[];
-            candidates.push(scoreCandidate(items, input));
-          }
-        }
-      }
-    }
-  }
-
-  const sorted = candidates.sort((left, right) => right.score - left.score);
-  const outfits = selectDiverseCandidates(sorted).map((candidate, index) => ({
-    id: `outfit-${index + 1}`,
+export function recommendOutfits(
+  input: RecommendInput,
+  identityOptions: RecommendationIdentityOptions = {}
+): RecommendationDraftResult {
+  const available = eligibleGarments(input.garments);
+  const generated = generateCandidates({ ...input, garments: available });
+  const candidates = generated.candidates;
+  const sorted = candidates.sort(compareCandidates);
+  const outfitDrafts: RecommendationOutfitDraft[] = selectDiverseCandidates(sorted).map((candidate) => ({
     score: Number(candidate.score.toFixed(1)),
     matchPercent: normalizeMatchPercent(candidate.score),
     scoreBreakdown: normalizeBreakdown(candidate.scoreBreakdown),
@@ -77,13 +77,238 @@ export function recommendOutfits(input: RecommendInput): RecommendationResult {
     reasons: candidate.reasons,
     alternatives: findAlternatives(available, candidate.items, input)
   }));
+  const outfits = attachCandidateIdentities(outfitDrafts, identityOptions.candidateIdFactory);
 
   return {
     weather: input.weather,
     weatherScenario: classifyWeatherScenario(input.weather),
     occasion: input.occasion,
-    outfits
+    outfits,
+    missingSlots: missingCoreSlots(available)
   };
+}
+
+export function generateCandidates(
+  input: RecommendInput,
+  options: CandidateGenerationOptions = {}
+): CandidateGenerationResult {
+  const available = eligibleGarments(input.garments);
+  const tops = available.filter((item) => item.category === "top");
+  const dresses = available.filter((item) => item.category === "dress");
+  const bottoms = available.filter((item) => item.category === "bottom");
+  const outerwear = available.filter((item) => item.category === "outerwear");
+  const shoes = available.filter((item) => item.category === "shoes");
+  const accessories = available.filter((item) => item.category === "accessory");
+  const maxEvaluatedCandidates = normalizeCandidateLimit(options.maxEvaluatedCandidates);
+  const beamWidth = normalizeBeamWidth(options.beamWidth);
+  const layerBudgets = candidateLayerBudgets(maxEvaluatedCandidates);
+  let evaluatedCandidates = 0;
+  let nextSequence = 0;
+  let truncated = false;
+
+  const scoreLayer = (
+    combinations: Iterable<Garment[]>,
+    layerBudget: number
+  ): Candidate[] => {
+    const scored: Candidate[] = [];
+    for (const items of combinations) {
+      if (scored.length >= layerBudget || evaluatedCandidates >= maxEvaluatedCandidates) {
+        truncated = true;
+        break;
+      }
+      scored.push(scoreCandidate(items, input, nextSequence++));
+      evaluatedCandidates += 1;
+    }
+    if (scored.length > beamWidth) truncated = true;
+    return pruneCandidateBeam(scored, beamWidth);
+  };
+
+  const coreCount = dresses.length + tops.length * bottoms.length;
+  const coreCandidates = scoreLayer(
+    coreCombinations(tops, bottoms, dresses, layerBudgets.core),
+    layerBudgets.core
+  );
+  if (!coreCandidates.length) {
+    return { candidates: [], evaluatedCandidates, truncated };
+  }
+
+  const withOuterwear = scoreLayer(
+    expandCandidates(
+      coreCandidates,
+      outerwearOptions(outerwear, input.weather),
+      layerBudgets.outerwear
+    ),
+    layerBudgets.outerwear
+  );
+  const withShoes = scoreLayer(
+    expandCandidates(withOuterwear, shoes.length ? shoes : [undefined], layerBudgets.shoes),
+    layerBudgets.shoes
+  );
+  const withAccessories = scoreLayer(
+    expandCandidates(
+      withShoes,
+      [undefined, ...accessories.slice(0, 3)],
+      layerBudgets.accessories
+    ),
+    layerBudgets.accessories
+  );
+
+  return {
+    candidates: withAccessories,
+    evaluatedCandidates,
+    truncated
+  };
+}
+
+function eligibleGarments(garments: Garment[]): Garment[] {
+  return garments.filter((item) => item.owned && !item.archivedAt && item.confirmed && !item.excluded);
+}
+
+function missingCoreSlots(garments: Garment[]): GarmentCategory[] {
+  const hasTop = garments.some((item) => item.category === "top");
+  const hasBottom = garments.some((item) => item.category === "bottom");
+  const hasDress = garments.some((item) => item.category === "dress");
+  if (hasDress || (hasTop && hasBottom)) return [];
+
+  const missing: GarmentCategory[] = [];
+  if (!hasTop) missing.push("top");
+  if (!hasBottom) missing.push("bottom");
+  if (!hasDress) missing.push("dress");
+  return missing;
+}
+
+function normalizeCandidateLimit(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_MAX_EVALUATED_CANDIDATES;
+  return Math.min(
+    DEFAULT_MAX_EVALUATED_CANDIDATES,
+    Math.max(4, Math.floor(value as number))
+  );
+}
+
+function normalizeBeamWidth(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_BEAM_WIDTH;
+  return Math.min(DEFAULT_BEAM_WIDTH, Math.max(3, Math.floor(value as number)));
+}
+
+function candidateLayerBudgets(maxEvaluatedCandidates: number): {
+  core: number;
+  outerwear: number;
+  shoes: number;
+  accessories: number;
+} {
+  const core = Math.max(1, Math.floor(maxEvaluatedCandidates * 0.4));
+  const outerwear = Math.max(1, Math.floor(maxEvaluatedCandidates * 0.25));
+  const shoes = Math.max(1, Math.floor(maxEvaluatedCandidates * 0.25));
+  const accessories = Math.max(1, maxEvaluatedCandidates - core - outerwear - shoes);
+  return { core, outerwear, shoes, accessories };
+}
+
+function* coreCombinations(
+  tops: Garment[],
+  bottoms: Garment[],
+  dresses: Garment[],
+  layerBudget: number
+): Generator<Garment[]> {
+  const pairCount = tops.length * bottoms.length;
+  const totalCount = dresses.length + pairCount;
+  if (totalCount <= layerBudget) {
+    for (const top of tops) {
+      for (const bottom of bottoms) yield [top, bottom];
+    }
+    for (const dress of dresses) yield [dress];
+    return;
+  }
+
+  let dressBudget = dresses.length
+    ? Math.max(1, Math.round(layerBudget * (dresses.length / totalCount)))
+    : 0;
+  let pairBudget = pairCount ? layerBudget - dressBudget : 0;
+  if (pairCount && pairBudget === 0) {
+    pairBudget = 1;
+    dressBudget = Math.max(0, dressBudget - 1);
+  }
+  dressBudget = Math.min(dresses.length, dressBudget);
+  pairBudget = Math.min(pairCount, layerBudget - dressBudget);
+  if (pairCount && pairBudget === 0 && dressBudget > 0) {
+    dressBudget -= 1;
+    pairBudget = 1;
+  }
+
+  for (const dressIndex of evenlySpacedIndices(dresses.length, dressBudget)) {
+    yield [dresses[dressIndex]];
+  }
+  for (const pairIndex of evenlySpacedIndices(pairCount, pairBudget)) {
+    const round = Math.floor(pairIndex / tops.length);
+    const topIndex = pairIndex % tops.length;
+    yield [tops[topIndex], bottoms[(topIndex + round) % bottoms.length]];
+  }
+}
+
+function* expandCandidates(
+  parents: Candidate[],
+  options: Array<Garment | undefined>,
+  layerBudget: number
+): Generator<Garment[]> {
+  const append = (parent: Candidate, option: Garment | undefined): Garment[] =>
+    option ? [...parent.items, option] : [...parent.items];
+  if (parents.length * options.length <= layerBudget) {
+    for (const parent of parents) {
+      for (const option of options) yield append(parent, option);
+    }
+    return;
+  }
+
+  const totalCount = parents.length * options.length;
+  for (const combinationIndex of evenlySpacedIndices(totalCount, layerBudget)) {
+    const round = Math.floor(combinationIndex / parents.length);
+    const parentIndex = combinationIndex % parents.length;
+    const optionIndex = (parentIndex + round) % options.length;
+    yield append(parents[parentIndex], options[optionIndex]);
+  }
+}
+
+function evenlySpacedIndices(totalCount: number, sampleCount: number): number[] {
+  if (totalCount <= 0 || sampleCount <= 0) return [];
+  if (sampleCount >= totalCount) return Array.from({ length: totalCount }, (_, index) => index);
+  if (sampleCount === 1) return [totalCount - 1];
+  return Array.from({ length: sampleCount }, (_, index) =>
+    Math.floor((index * (totalCount - 1)) / (sampleCount - 1))
+  );
+}
+
+function pruneCandidateBeam(candidates: Candidate[], beamWidth: number): Candidate[] {
+  if (candidates.length <= beamWidth) return candidates;
+  const ranked = [...candidates].sort(compareCandidates);
+  const selected: Candidate[] = [];
+  const selectedCandidates = new Set<Candidate>();
+  const seenFoundations = new Set<string>();
+
+  for (const candidate of ranked) {
+    const signature = foundationSignature(candidate.items);
+    if (seenFoundations.has(signature)) continue;
+    seenFoundations.add(signature);
+    selected.push(candidate);
+    selectedCandidates.add(candidate);
+    if (selected.length === beamWidth) return selected;
+  }
+  for (const candidate of ranked) {
+    if (selectedCandidates.has(candidate)) continue;
+    selected.push(candidate);
+    if (selected.length === beamWidth) break;
+  }
+  return selected;
+}
+
+function compareCandidates(left: Candidate, right: Candidate): number {
+  return right.score - left.score || left.sequence - right.sequence;
+}
+
+function foundationSignature(items: Garment[]): string {
+  return items
+    .filter((item) => item.category === "top" || item.category === "bottom" || item.category === "dress")
+    .map((item) => `${item.category}:${item.id}`)
+    .sort()
+    .join("|");
 }
 
 function selectDiverseCandidates(candidates: Candidate[]): Candidate[] {
@@ -106,7 +331,7 @@ function selectDiverseCandidates(candidates: Candidate[]): Candidate[] {
   return selected.slice(0, 3);
 }
 
-function scoreCandidate(items: Garment[], input: RecommendInput): Candidate {
+function scoreCandidate(items: Garment[], input: RecommendInput, sequence = 0): Candidate {
   const reasons: string[] = [];
   const scoreBreakdown: RecommendationScoreBreakdown = {
     slotCompleteness: slotCompletenessScore(items, reasons),
@@ -123,7 +348,7 @@ function scoreCandidate(items: Garment[], input: RecommendInput): Candidate {
   };
   const score = 50 + Object.values(scoreBreakdown).reduce((total, value) => total + value, 0);
 
-  return { items, score, reasons: reasons.slice(0, 6), scoreBreakdown };
+  return { items, score, reasons: reasons.slice(0, 6), scoreBreakdown, sequence };
 }
 
 function slotCompletenessScore(items: Garment[], reasons: string[]): number {

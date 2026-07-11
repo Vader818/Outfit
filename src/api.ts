@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -45,6 +45,26 @@ export interface ImportSummary {
   };
 }
 
+export interface CompleteBackupWarning {
+  code: "ASSET_UNAVAILABLE";
+  assetId: number;
+  message: string;
+}
+
+export interface CompleteBackupPreview {
+  assetCount: number;
+  includedAssetCount: number;
+  assetBytes: number;
+  includedAssetBytes: number;
+  estimatedBytes: number;
+  warnings: CompleteBackupWarning[];
+}
+
+export interface DownloadedBackup {
+  blob: Blob;
+  fileName: string;
+}
+
 export async function getAuthStatus(): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/status", {
     method: "GET"
@@ -82,6 +102,13 @@ export async function importTaobaoBatch(payload: unknown): Promise<ImportSummary
   return request<ImportSummary>("/api/import/taobao-batch", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function commitTaobaoImport(input: TaobaoImportCommitRequest): Promise<TaobaoImportCommitResult> {
+  return request<TaobaoImportCommitResult>("/api/import/taobao-commit", {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }
 
@@ -138,8 +165,15 @@ export async function readLatestTaobaoCapture(options: { wardrobeOnly?: boolean 
   });
 }
 
-export async function getGarments(): Promise<Garment[]> {
-  return request<Garment[]>("/api/garments");
+export async function getGarments(options: { archived?: boolean } = {}): Promise<Garment[]> {
+  return request<Garment[]>(options.archived ? "/api/garments?archived=1" : "/api/garments");
+}
+
+export async function createGarment(input: ManualGarmentCreate): Promise<Garment> {
+  return request<Garment>("/api/garments", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
 export async function getPersonalProfile(): Promise<PersonalProfile> {
@@ -165,6 +199,26 @@ export async function updateGarment(id: number, update: Partial<Garment>): Promi
 export async function deleteGarment(id: number): Promise<void> {
   await request<void>(`/api/garments/${id}`, {
     method: "DELETE"
+  });
+}
+
+export async function archiveGarment(id: number): Promise<Garment> {
+  return request<Garment>(`/api/garments/${id}/archive`, {
+    method: "POST"
+  });
+}
+
+export async function restoreGarment(id: number): Promise<Garment> {
+  return request<Garment>(`/api/garments/${id}/restore`, {
+    method: "POST"
+  });
+}
+
+export async function uploadGarmentImage(id: number, image: Blob): Promise<Garment> {
+  return request<Garment>(`/api/garments/${id}/image`, {
+    method: "PUT",
+    headers: { "content-type": image.type },
+    body: image
   });
 }
 
@@ -268,6 +322,29 @@ export async function exportLocalData(): Promise<OutfitExport> {
   });
 }
 
+export async function previewCompleteBackup(): Promise<CompleteBackupPreview> {
+  return request<CompleteBackupPreview>("/api/export?format=zip&preview=1", {
+    method: "GET"
+  });
+}
+
+export async function downloadCompleteBackup(): Promise<DownloadedBackup> {
+  const response = await fetch("/api/export?format=zip", {
+    method: "GET",
+    credentials: "same-origin"
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throwApiResponseError(response, data);
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const serverName = /filename="([^"]+)"/.exec(disposition)?.[1];
+  const fileName = serverName && /^outfit-complete-backup-\d{4}-\d{2}-\d{2}\.zip$/.test(serverName)
+    ? serverName
+    : `outfit-complete-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+  return { blob: await response.blob(), fileName };
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -279,23 +356,27 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const payload = data && typeof data === "object" ? data as {
-      error?: string | { message?: unknown; code?: unknown; details?: unknown };
-    } : {};
-    const errorPayload = payload.error;
-    const message = typeof errorPayload === "string"
-      ? errorPayload
-      : typeof errorPayload?.message === "string"
-        ? errorPayload.message
-        : "请求失败";
-    const code = typeof errorPayload === "object" && typeof errorPayload?.code === "string"
-      ? errorPayload.code
-      : undefined;
-    const details = typeof errorPayload === "object" ? errorPayload?.details : undefined;
-    if (response.status === 401 && code === "UNAUTHENTICATED" && typeof window !== "undefined") {
-      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
-    }
-    throw new ApiClientError(message, { status: response.status, code, details });
+    throwApiResponseError(response, data);
   }
   return data as T;
+}
+
+function throwApiResponseError(response: Response, data: unknown): never {
+  const payload = data && typeof data === "object" ? data as {
+    error?: string | { message?: unknown; code?: unknown; details?: unknown };
+  } : {};
+  const errorPayload = payload.error;
+  const message = typeof errorPayload === "string"
+    ? errorPayload
+    : typeof errorPayload?.message === "string"
+      ? errorPayload.message
+      : "请求失败";
+  const code = typeof errorPayload === "object" && typeof errorPayload?.code === "string"
+    ? errorPayload.code
+    : undefined;
+  const details = typeof errorPayload === "object" ? errorPayload?.details : undefined;
+  if (response.status === 401 && code === "UNAUTHENTICATED" && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  }
+  throw new ApiClientError(message, { status: response.status, code, details });
 }

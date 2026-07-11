@@ -258,3 +258,65 @@
 - `ApiClientError` 保留 `status/code/details`，会话过期会清理已登录应用壳并返回认证界面。
 - PWA 离线回退只用于导航请求；图片白名单、lazy/async/no-referrer 与 `/api` 不缓存约束继续保留。
 - 最终产物为 15 个测试文件、200 项测试全过；生产构建 1586 个模块，JS gzip 75.41 kB、CSS gzip 12.37 kB。
+
+## 2026-07-11 M1 可信建档与导入暂存区
+
+### 需求与执行边界
+- 严格执行 `docs/2026-07-10-outfit-m1-trusted-ingestion-plan.md` 的全部实施任务与验收标准，不缩减手工建档、图片安全、软归档、导入审阅、幂等提交或 ZIP 备份范围。
+- 继续保持单用户、本地优先；所有新写接口必须复用 session、来源保护、结构化错误与严格验证。
+- 图片安全以服务端字节限制、`sharp` 解码/像素限制/自动旋转/无元数据 WebP 重编码、固定资产根和受控 `storage_key` 为准；前端 canvas 不是安全边界。
+- 本轮不删除任何电脑文件；替换图片只把旧资产 `active` 置为 false，物理清理由既有 privacy-clean 的预览/确认流程承担。
+
+### 恢复发现
+- session catchup 检测到上一会话有两次未同步工具输出；已按要求查看 Git diff 并完整读取三份规划记录。
+- 开始本轮时 Git 仅显示目标计划、`task_plan.md`、`progress.md` 有改动；目标计划的既存差异只是移除文件开头 UTF-8 BOM，没有业务正文变化，必须保留。
+- 已完成的前端重构把源码拆分到 `src/app`、`src/features` 等模块；M1 必须基于新结构实现，不能按旧版单体 `src/App.tsx` 假设直接修改。
+- 当前依赖没有 `sharp` 或 ZIP 生成库；M1 需要新增并锁定服务端图片处理依赖，同时审计后选择流式 ZIP 实现。
+- 现有数据库已拆出 `server/db/migrations.ts`，导出集中于 `server/services/export.ts`；对应测试已包含 migration rehearsal、export、db import 等独立套件，可按域增量扩展。
+- M0 已提前提供基础 `ManualGarmentCreate`、`POST /api/garments`、验证器和 `createManualGarment()`；M1 需在其上补 `origin/acquiredAt/purchasePriceCents/currency`，而不是重复创建端点。
+- 当前编号迁移只有 v1 `recommendation-candidates`；M1 schema 应作为新的严格递增编号迁移追加，不能修改冻结的 `legacyBaseline0`。
+- 当前 `listGarments()` 返回全部衣物、洞察直接使用该列表、推荐也直接传该列表；`deleteGarment()` 仍执行物理 DELETE。M1 必须引入 active/archived 查询语义并系统性更新这些调用点。
+- 当前 `express.json({limit: "5mb"})` 在所有 API 路由前执行；图片原始 body 路由必须在 JSON parser 前或通过明确的 parser 条件旁路，否则无法获得原始字节。
+- 当前缩略图静态路径位于认证 middleware 之后，但 M1 资产不能继续暴露物理文件名，应由 asset ID 查询、active 校验与受控读取提供。
+- 当前导入预览 `previewTaobaoImport(request.body)` 完全不接收数据库；正式写入仍走旧 `/api/import/taobao-batch`，退款在归一化阶段被计入跳过。M1 需要新增数据库感知预览和 decisions commit，同时保留兼容边界。
+
+### 修改前基线（2026-07-11）
+- `npm run typecheck`：通过。
+- `npm test`：19 个测试文件、244 项测试全部通过。
+- `npm run build`：通过；1586 个模块，CSS 67.44 kB（gzip 12.37 kB），JS 244.43 kB（gzip 76.30 kB）。
+
+### 初始 TDD 分段
+1. migration/共享类型与手工衣物 JSON 创建。
+2. 资产净化、落盘、认证读取、替换软失活。
+3. 归档/恢复与 active/recommendable 查询语义。
+4. 手工建档、图片上传、归档/恢复及批量编辑前端。
+5. 数据库感知淘宝预览、逐项审阅、服务端重算与幂等提交。
+6. V2 JSON/ZIP 备份、文档、全量与验收测试。
+
+### 现有实现的精确兼容边界
+- 迁移测试将冻结 legacy baseline 与生产 numbered migrations 分开校验；M1 要同时更新 `tests/dbMigrations.test.ts` 的版本清单和 `tests/dbMigrationRehearsal.test.ts` 的生产迁移后表/列/索引断言，但不能改变 legacy-v0 合约。
+- 基础手工建档测试已经覆盖拒绝 forged `confirmed`、无 `sourceOrderItemId`、默认 confirmed/owned/excluded/confidence 与可参与推荐；M1 应扩展同一行为测试覆盖 origin、日期、价格、币种及非法负价。
+- 淘宝 `normalizeTaobaoBatch()` 已保留退款来源到 `sourceItems`，但不生成 `garmentDrafts`；`previewTaobaoImport()` 又把退款放进 skipped，`filterTaobaoBatchForWardrobe()` 直接删除退款。可在不破坏归一化的情况下让 M1 预览把退款建成 `refund-sync` candidate，并停止 artifact 的提前过滤。
+- `externalKey` 已是服务端基于 itemId/sku 或订单字段生成的 SHA-256，可直接作为 `sourceItemKey` 的权威基础；提交必须重新归一化后以该 key 对齐 decisions。
+- 现有 import upsert 已用事务和 `source_order_items.external_key UNIQUE`/`garments.source_order_item_id UNIQUE` 提供部分幂等，但它会自动处理全批且无法逐项 include/override；M1 应把可复用 upsert 核心参数化，而不是在路由层先删数组。
+- 前端 API 通用 `request()` 强制 JSON content-type 并总是 `response.json()`；原始图片上传和 ZIP 下载需要专用二进制请求/响应处理，不能直接复用当前 JSON 假设。
+- 新衣橱 UI 已拆为 `WardrobeView`、`GarmentItem`、`GarmentEditor`；当前只支持批量确认，编辑器缺品牌、风格、正式度、备注和排除推荐。M1 可在这些稳定边界新增手工对话框与批量动作。
+
+### 并行审计与首批实现结论
+- 淘宝来源原 key 只使用 itemId+SKU，会错误合并不同订单；原 batchId 在缺 `capturedAt` 时依赖当前时间。导入子任务已用 TDD 实现版本化稳定 key、legacy key 兼容计算、顺序无关 batchId、两阶段详情合并与退款保留，目标测试 24/24 通过。
+- 新 key 以 orderId + itemId/规范化 URL + 规范化 SKU 为主；服务端数据库匹配仍必须支持 legacy key 和语义唯一命中，防止现有衣物重复。
+- 迁移演练原先用 `SELECT *` 比较冻结 legacy 数据；新增合法列会误报。现已改为只投影 legacy 列做数据不变性比较，并独立断言 v2 新字段默认值与空资产表。
+- active garment 的统一定义已落为 `owned=true AND archived_at IS NULL`；推荐在此基础上再要求 `confirmed=true AND excluded=false`。旧 DELETE 只软归档并带弃用标头，重复归档/恢复幂等。
+- 图片审计确认旧缩略图服务只做头嗅探并写原字节，不可作为 M1 安全边界；新资产服务必须独立用 sharp 解码/像素限制/rotate/WebP/无元数据输出。
+- `sharp@0.34.5` 已作为直接精确依赖锁定；此前仅是 transformers 的传递依赖。
+- 前端现有 `WardrobeView`/`ImportView` 被测试直接当普通函数调用，因此二者不能直接新增 Hook；需要状态的对话框、审阅表和批量控件应作为子组件或由 `MainApp` 受控。
+
+### M1 最终实现与验收结论
+- migration v2 `trusted-ingestion` 已追加 `origin`、`archived_at`、购入日期/价格/币种与 STRICT `garment_assets`，冻结的 legacy baseline 未改写；迁移和演练测试覆盖空库、旧库升级、重复启动与数据保持。
+- 手工建档支持完整字段、无图先保存、浏览器 2048 边 WebP 预处理和图片失败后不重复建档的重试；真正安全边界是服务端 5 MB、40MP、格式匹配、rotate、无 metadata WebP、UUID/根路径/符号链接/哈希校验。
+- 默认 active 统一为 `owned=1 AND archived_at IS NULL`，推荐再叠加 confirmed/excluded；归档、弃用 DELETE、恢复与洞察/推荐隔离均通过 API 和真实浏览器验证，旧资产始终只软失活。
+- 淘宝 v2 key 纳入订单身份与规范化 SKU，batchId 在缺 capturedAt 时仍稳定且与数组顺序无关；preview 不写库，commit 覆盖严格、事务重算 disposition、归档来源恢复更新、退款保留与重放幂等均通过。
+- V2 JSON 导出所有 active/归档衣物和 active/inactive 资产元数据，不暴露 storage key/绝对路径/二进制；显式 ZIP 先预估再确认，流式写固定安全条目，缺失/损坏/穿越资产只产生无路径 warning。
+- 真实浏览器桌面 1280px 手工对话框双列且页面无溢出；390px 视口对话框单列，文档宽度与 clientWidth 同为 375px。导入宽表容器可聚焦并独立横向滚动，页面本身无横向溢出。
+- 真实浏览器用临时内存/临时 SQLite 完成手工建档、批量动作可见性、两候选预览（新增 + 无历史退款 skip）、只提交选中项、归档后洞察排除、恢复和 ZIP 取消确认；未触碰真实衣橱。
+- 最终生产依赖审计发现并修复 archiver 传递的 glob 公告，`npm audit --omit=dev --audit-level=high` 为 0 漏洞。

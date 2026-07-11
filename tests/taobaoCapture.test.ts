@@ -126,15 +126,19 @@ describe("Taobao Selenium capture artifacts", () => {
         expect.objectContaining({
           itemId: "3",
           title: expect.stringContaining("羊毛围巾")
+        }),
+        expect.objectContaining({
+          itemId: "4",
+          refundText: "退款成功"
         })
       ]
     });
-    expect((result.payload as { items: unknown[] }).items).toHaveLength(2);
+    expect((result.payload as { items: unknown[] }).items).toHaveLength(3);
     expect(JSON.parse(result.jsonText)).toEqual(result.payload);
     expect(result.filterSummary).toEqual({
       originalItems: 4,
-      keptItems: 2,
-      skippedRefunded: 1,
+      keptItems: 3,
+      skippedRefunded: 0,
       skippedNonApparel: 1
     });
     expect(fileSystem.readFileSync(path.join("captures", "newest.json"), "utf8")).toBe(newestText);

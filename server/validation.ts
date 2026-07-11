@@ -1,4 +1,4 @@
-import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, PersonalProfile, Season, SkinTone, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, ImportDecision, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, Season, SkinTone, TaobaoCapturedBatch, TaobaoImportCommitRequest, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -46,6 +46,41 @@ const GARMENT_STRING_LIMITS: Partial<Record<keyof GarmentUpdate, number>> = {
   size: 120,
   notes: 1000
 };
+const MANUAL_GARMENT_FIELDS = new Set([
+  "name",
+  "category",
+  "color",
+  "warmth",
+  "seasons",
+  "styles",
+  "formality",
+  "brand",
+  "size",
+  "materials",
+  "patterns",
+  "tags",
+  "notes",
+  "acquiredAt",
+  "purchasePriceCents",
+  "currency"
+]);
+const IMPORT_COMMIT_FIELDS = new Set(["batch", "decisions"]);
+const IMPORT_DECISION_FIELDS = new Set(["sourceItemKey", "include", "overrides"]);
+const IMPORT_OVERRIDE_FIELDS = new Set([
+  "brand",
+  "name",
+  "category",
+  "color",
+  "warmth",
+  "seasons",
+  "styles",
+  "formality",
+  "size",
+  "materials",
+  "patterns",
+  "tags",
+  "notes"
+]);
 
 export function assertRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -83,6 +118,101 @@ export function validateGarmentUpdate(value: unknown): GarmentUpdate {
   if ("excluded" in record) update.excluded = booleanValue(record.excluded, "excluded");
 
   return update;
+}
+
+export function validateManualGarmentCreate(value: unknown): ManualGarmentCreate {
+  const record = assertRecord(value, "手工衣物必须是 JSON 对象");
+  for (const key of Object.keys(record)) {
+    if (!MANUAL_GARMENT_FIELDS.has(key)) {
+      throw new ValidationError(`手工衣物不允许字段 ${key}`);
+    }
+  }
+  const update = validateGarmentUpdate(record);
+  const name = update.name?.trim();
+  if (!name) throw new ValidationError("name 不能为空");
+  if (!update.category) throw new ValidationError("category 为必填字段");
+  if (!update.color) throw new ValidationError("color 为必填字段");
+  if (!update.warmth) throw new ValidationError("warmth 为必填字段");
+  if (!update.seasons) throw new ValidationError("seasons 为必填字段");
+  if (!update.styles) throw new ValidationError("styles 为必填字段");
+  if (!update.formality) throw new ValidationError("formality 为必填字段");
+
+  const input: ManualGarmentCreate = {
+    name,
+    category: update.category as GarmentCategory,
+    color: update.color,
+    warmth: update.warmth as GarmentWarmth,
+    seasons: update.seasons as Season[],
+    styles: update.styles,
+    formality: update.formality as Formality
+  };
+  for (const key of ["brand", "size", "notes"] as const) {
+    if (update[key] !== undefined) input[key] = update[key];
+  }
+  for (const key of ["materials", "patterns", "tags"] as const) {
+    if (update[key] !== undefined) input[key] = update[key];
+  }
+  if ("acquiredAt" in record) {
+    input.acquiredAt = isoDateValue(record.acquiredAt, "acquiredAt");
+  }
+  if ("purchasePriceCents" in record) {
+    input.purchasePriceCents = nonNegativeSafeInteger(record.purchasePriceCents, "purchasePriceCents");
+  }
+  if ("currency" in record) {
+    input.currency = enumValue(record.currency, ["CNY"] as const, "currency");
+  }
+  return input;
+}
+
+export function validateTaobaoImportCommitRequest(value: unknown): TaobaoImportCommitRequest {
+  const record = assertRecord(value, "导入提交必须是 JSON 对象");
+  for (const key of Object.keys(record)) {
+    if (!IMPORT_COMMIT_FIELDS.has(key)) {
+      throw new ValidationError(`导入提交不允许字段 ${key}`);
+    }
+  }
+  const batch = assertRecord(record.batch, "batch 必须是原始淘宝批次") as unknown as TaobaoCapturedBatch;
+  if (!Array.isArray(record.decisions)) {
+    throw new ValidationError("decisions 必须是数组");
+  }
+  if (record.decisions.length > 1000) {
+    throw new ValidationError("decisions 最多包含 1000 项");
+  }
+  const decisions: ImportDecision[] = record.decisions.map((value, index) => {
+    const decision = assertRecord(value, `decisions[${index}] 必须是 JSON 对象`);
+    for (const key of Object.keys(decision)) {
+      if (!IMPORT_DECISION_FIELDS.has(key)) {
+        throw new ValidationError(`decisions[${index}] 不允许字段 ${key}`);
+      }
+    }
+    const sourceItemKey = stringValue(decision.sourceItemKey, `decisions[${index}].sourceItemKey`).trim();
+    if (!sourceItemKey || sourceItemKey.length > 128) {
+      throw new ValidationError(`decisions[${index}].sourceItemKey 长度无效`);
+    }
+    const include = booleanValue(decision.include, `decisions[${index}].include`);
+    let overrides: ImportGarmentOverrides | undefined;
+    if ("overrides" in decision) {
+      const overrideRecord = assertRecord(decision.overrides, `decisions[${index}].overrides 必须是 JSON 对象`);
+      for (const key of Object.keys(overrideRecord)) {
+        if (!IMPORT_OVERRIDE_FIELDS.has(key)) {
+          throw new ValidationError(`decisions[${index}].overrides 不允许字段 ${key}`);
+        }
+      }
+      if (!include && Object.keys(overrideRecord).length) {
+        throw new ValidationError(`decisions[${index}] 未选择时不能包含 overrides`);
+      }
+      overrides = validateGarmentUpdate(overrideRecord) as ImportGarmentOverrides;
+      if (overrides.name !== undefined && !overrides.name.trim()) {
+        throw new ValidationError(`decisions[${index}].overrides.name 不能为空`);
+      }
+    }
+    return {
+      sourceItemKey,
+      include,
+      ...(overrides && Object.keys(overrides).length ? { overrides } : {})
+    };
+  });
+  return { batch, decisions };
 }
 
 export function validatePersonalProfile(value: unknown): PersonalProfile {
@@ -306,6 +436,33 @@ function boundedNumber(value: unknown, name: string, min: number, max: number): 
     throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的数字`);
   }
   return parsed;
+}
+
+function nonNegativeSafeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new ValidationError(`${name} 必须是非负安全整数`);
+  }
+  return value;
+}
+
+function isoDateValue(value: unknown, name: string): string {
+  const text = stringValue(value, name);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) {
+    throw new ValidationError(`${name} 必须是 YYYY-MM-DD 日期`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    throw new ValidationError(`${name} 必须是真实日历日期`);
+  }
+  return text;
 }
 
 function isTaobaoItemUrl(value: string): boolean {

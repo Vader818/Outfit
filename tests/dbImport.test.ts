@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createDatabase, importTaobaoBatchIntoDb, listGarments, migrate, updateGarment } from "../server/db";
+import { archiveGarment, commitTaobaoImport, createDatabase, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -51,6 +51,18 @@ describe("database import", () => {
     });
   });
 
+  it("keeps a user's confirmation when the same Taobao item is imported again", () => {
+    const db = createDatabase(":memory:");
+    importTaobaoBatchIntoDb(db, payload);
+    const garment = listGarments(db)[0];
+    expect(garment.confirmed).toBe(false);
+
+    updateGarment(db, garment.id, { confirmed: true });
+    importTaobaoBatchIntoDb(db, payload);
+
+    expect(listGarments(db)[0].confirmed).toBe(true);
+  });
+
   it("marks an existing garment unavailable when a later import shows the item was refunded", () => {
     const db = createDatabase(":memory:");
 
@@ -65,7 +77,7 @@ describe("database import", () => {
       }))
     });
 
-    const garments = listGarments(db);
+    const garments = listGarments(db, { scope: "all" });
     expect(garments).toHaveLength(1);
     expect(garments[0]).toMatchObject({
       owned: false,
@@ -425,7 +437,7 @@ describe("database import", () => {
       imageUrl: "https://gw.alicdn.com/tfs/TB1platform_80x36.png"
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "BOSIE",
@@ -454,7 +466,7 @@ describe("database import", () => {
       imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       imageUrl: "/api/garment-thumbnails/garment-1-608.webp"
@@ -481,7 +493,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "BOSIE",
@@ -517,7 +529,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "UTIMUS",
@@ -554,7 +566,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "UTIMUS",
@@ -590,7 +602,7 @@ describe("database import", () => {
       confirmed: true
     });
 
-    migrate(db);
+    legacyBaseline0(db);
 
     expect(listGarments(db)[0]).toMatchObject({
       brand: "Gnomes lab",
@@ -598,5 +610,100 @@ describe("database import", () => {
       rawName: noisyName,
       confirmed: true
     });
+  });
+
+  it("previews, commits, restores, refunds, and replays trusted import decisions idempotently", () => {
+    const db = createDatabase(":memory:");
+    const before = {
+      sources: db.prepare("SELECT COUNT(*) AS count FROM source_order_items").get(),
+      garments: db.prepare("SELECT COUNT(*) AS count FROM garments").get()
+    };
+
+    const firstPreview = previewTaobaoImportForDb(db, payload);
+    expect(firstPreview.candidates).toEqual([
+      expect.objectContaining({
+        sourceItemKey: expect.stringMatching(/^v2:[0-9a-f]{64}$/),
+        disposition: "create",
+        restoreRequired: false
+      })
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_order_items").get()).toEqual(before.sources);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual(before.garments);
+
+    const decision = {
+      sourceItemKey: firstPreview.candidates[0].sourceItemKey,
+      include: true,
+      overrides: {
+        name: "手工修正后的黑色羊毛大衣",
+        styles: ["commute"],
+        notes: "导入前已核对"
+      }
+    };
+    const firstCommit = commitTaobaoImport(db, { batch: payload, decisions: [decision] });
+    expect(firstCommit.summary).toMatchObject({ created: 1, updated: 0, unchanged: 0 });
+    const created = listGarments(db)[0];
+    expect(created).toMatchObject({
+      name: "手工修正后的黑色羊毛大衣",
+      styles: ["commute"],
+      notes: "导入前已核对",
+      origin: "taobao"
+    });
+
+    db.prepare("UPDATE source_order_items SET imported_at = '2001-01-01T00:00:00.000Z'").run();
+    db.prepare("UPDATE garments SET updated_at = '2001-01-01T00:00:00.000Z'").run();
+    const replay = commitTaobaoImport(db, { batch: payload, decisions: [decision] });
+    expect(replay.summary).toMatchObject({ created: 0, updated: 0, unchanged: 1 });
+    expect(db.prepare("SELECT imported_at FROM source_order_items").get()).toEqual({
+      imported_at: "2001-01-01T00:00:00.000Z"
+    });
+    expect(db.prepare("SELECT updated_at FROM garments").get()).toEqual({
+      updated_at: "2001-01-01T00:00:00.000Z"
+    });
+
+    archiveGarment(db, created.id);
+    const archivedPreview = previewTaobaoImportForDb(db, payload);
+    expect(archivedPreview.candidates[0]).toMatchObject({
+      existingGarmentId: created.id,
+      disposition: "update",
+      restoreRequired: true
+    });
+    const restored = commitTaobaoImport(db, { batch: payload, decisions: [decision] });
+    expect(restored.summary.updated).toBe(1);
+    expect(listGarments(db)[0]).toMatchObject({ id: created.id, archivedAt: undefined });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 1 });
+
+    const refundedBatch = {
+      ...payload,
+      items: payload.items.map((item) => ({
+        ...item,
+        status: "退款成功",
+        refundText: "退款成功",
+        rawText: `${item.rawText} 退款成功`
+      }))
+    };
+    const refundPreview = previewTaobaoImportForDb(db, refundedBatch);
+    expect(refundPreview.candidates[0]).toMatchObject({
+      existingGarmentId: created.id,
+      disposition: "refund-sync"
+    });
+
+    const cancelledRefund = commitTaobaoImport(db, {
+      batch: refundedBatch,
+      decisions: [{ sourceItemKey: refundPreview.candidates[0].sourceItemKey, include: false }]
+    });
+    expect(cancelledRefund.summary.skipped).toBe(1);
+    expect(listGarments(db)[0]).toMatchObject({ id: created.id, owned: true });
+
+    const refundDecision = { sourceItemKey: refundPreview.candidates[0].sourceItemKey, include: true };
+    const syncedRefund = commitTaobaoImport(db, { batch: refundedBatch, decisions: [refundDecision] });
+    expect(syncedRefund.summary.refundSynced).toBe(1);
+    expect(listGarments(db, { scope: "all" })[0]).toMatchObject({
+      id: created.id,
+      owned: false,
+      excluded: true
+    });
+    const refundReplay = commitTaobaoImport(db, { batch: refundedBatch, decisions: [refundDecision] });
+    expect(refundReplay.summary.unchanged).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 1 });
   });
 });

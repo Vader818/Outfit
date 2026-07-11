@@ -4,13 +4,150 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
+import { ImportReviewTable } from "../src/features/import/ImportReviewTable";
+import { ManualGarmentDialog, yuanToCents } from "../src/features/wardrobe/ManualGarmentDialog";
+import { fitImageDimensions, prepareGarmentImageForUpload } from "../src/lib/imageSanitization";
+import {
+  BACKUP_EXPORT_CONFIRMATION,
+  COMPLETE_BACKUP_SENSITIVE_NOTICE,
+  REMOTE_TAOBAO_IMAGES_SESSION_KEY,
+  exportBackupWithConfirmation,
+  exportCompleteBackupWithConfirmation,
+  readSessionStorageValue,
+  writeSessionStorageValue
+} from "../src/lib/browser";
+import {
+  isRecommendationEligibleGarment,
+  isRecommendationPendingGarment,
+  isWardrobeReviewPendingGarment,
+  resolveGarmentImageSource
+} from "../src/lib/garments";
+import {
+  DEFAULT_LATITUDE,
+  DEFAULT_LONGITUDE,
+  DEFAULT_PROFILE,
+  parseLocationCoordinates
+} from "../src/shared/presentation";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+
+const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
+const TEST_OUTFIT_SIGNATURE = "a".repeat(64);
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("App", () => {
+  it("starts with truly unset location and profile values and parses coordinates strictly", () => {
+    expect(DEFAULT_LATITUDE).toBe("");
+    expect(DEFAULT_LONGITUDE).toBe("");
+    expect(DEFAULT_PROFILE).toEqual({});
+
+    for (const coordinates of [
+      ["", ""],
+      ["   ", "116.4"],
+      ["31.2", ""],
+      ["NaN", "116.4"],
+      ["91", "116.4"],
+      ["31.2", "181"]
+    ] as const) {
+      expect(parseLocationCoordinates(coordinates[0], coordinates[1])).toBeNull();
+    }
+    expect(parseLocationCoordinates("0", "0")).toEqual({ latitude: 0, longitude: 0 });
+    expect(parseLocationCoordinates(" 31.2304 ", " 121.4737 ")).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737
+    });
+  });
+
+  it("stores remote image consent only in session storage", () => {
+    const sessionSet = vi.fn();
+    const localSet = vi.fn();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => key === REMOTE_TAOBAO_IMAGES_SESSION_KEY ? "true" : null,
+      setItem: sessionSet
+    });
+    vi.stubGlobal("localStorage", { setItem: localSet });
+
+    expect(readSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false")).toBe("true");
+    expect(writeSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false")).toBe(true);
+    expect(sessionSet).toHaveBeenCalledWith(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false");
+    expect(localSet).not.toHaveBeenCalled();
+  });
+
+  it("does not request or create a backup when sensitive export confirmation is cancelled", async () => {
+    const loadExport = vi.fn();
+    const download = vi.fn();
+    const confirmExport = vi.fn(() => false);
+
+    await expect(exportBackupWithConfirmation(confirmExport, loadExport, download)).resolves.toBe(false);
+
+    expect(BACKUP_EXPORT_CONFIRMATION).toMatch(/个人画像|淘宝|穿着记录|推荐历史/);
+    expect(confirmExport).toHaveBeenCalledWith(BACKUP_EXPORT_CONFIRMATION);
+    expect(loadExport).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("previews complete-backup sensitivity and size before asking to create a ZIP", async () => {
+    const loadPreview = vi.fn(async () => ({
+      assetCount: 4,
+      includedAssetCount: 3,
+      assetBytes: 5_000_000,
+      includedAssetBytes: 4_000_000,
+      estimatedBytes: 4_500_000,
+      warnings: [{ code: "ASSET_UNAVAILABLE" as const, assetId: 17, message: "asset unavailable" }]
+    }));
+    const loadArchive = vi.fn();
+    const download = vi.fn();
+    const confirmExport = vi.fn(() => false);
+
+    await expect(exportCompleteBackupWithConfirmation(
+      confirmExport,
+      loadPreview,
+      loadArchive,
+      download
+    )).resolves.toBe(false);
+
+    expect(loadPreview).toHaveBeenCalledOnce();
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringMatching(/个人画像.*淘宝来源.*本地衣物图片/s));
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringMatching(/3.*4.*4\.3 MB/s));
+    expect(confirmExport).toHaveBeenCalledWith(expect.stringContaining("1 项资产无法加入"));
+    expect(COMPLETE_BACKUP_SENSITIVE_NOTICE).toContain("不会删除");
+    expect(loadArchive).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("uses browser canvas only to resize and re-encode a local upload preview", async () => {
+    const drawImage = vi.fn();
+    const closeBitmap = vi.fn();
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({ drawImage })),
+      toBlob: vi.fn((callback: (blob: Blob | null) => void, type: string) => {
+        callback(new Blob([new Uint8Array(1024)], { type }));
+      })
+    };
+    vi.stubGlobal("document", {
+      createElement: vi.fn(() => canvas)
+    });
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({
+      width: 4096,
+      height: 2048,
+      close: closeBitmap
+    })));
+
+    const source = new Blob([new Uint8Array(2048)], { type: "image/jpeg" });
+    const prepared = await prepareGarmentImageForUpload(source);
+
+    expect(fitImageDimensions(4096, 2048)).toEqual({ width: 2048, height: 1024 });
+    expect(drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 2048, 1024);
+    expect(prepared).not.toBe(source);
+    expect(prepared.type).toBe("image/webp");
+    expect(prepared.size).toBeLessThanOrEqual(5 * 1024 * 1024);
+    expect(closeBitmap).toHaveBeenCalledOnce();
+  });
+
   it("renders recommendation occasion chips in Chinese", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => null,
@@ -192,7 +329,7 @@ describe("App", () => {
     expect(markup).toContain("checked");
   });
 
-  it("renders the wardrobe-only capture filter summary in the import view", () => {
+  it("reports that refund events remain available for database-aware import review", () => {
     const markup = renderToStaticMarkup(
       <ImportView
         bookmarklet="https://example.com/bookmarklet"
@@ -200,8 +337,8 @@ describe("App", () => {
         importResult={null}
         filterSummary={{
           originalItems: 8,
-          keptItems: 3,
-          skippedRefunded: 1,
+          keptItems: 4,
+          skippedRefunded: 0,
           skippedNonApparel: 4
         }}
         captureUrl=""
@@ -219,8 +356,8 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain("已从 8 条订单中保留 3 条衣服/鞋候选");
-    expect(markup).toContain("退款过滤 1 条");
+    expect(markup).toContain("已从 8 条订单中保留 4 条可审阅记录");
+    expect(markup).toContain("退款事件保留 完整");
     expect(markup).toContain("非服饰过滤 4 条");
   });
 
@@ -247,7 +384,7 @@ describe("App", () => {
     });
 
     expect(findButtonsByText(tree, "预览中")[0].props.disabled).toBe(true);
-    expect(findButtonsByText(tree, "导入")[0].props.disabled).toBe(false);
+    expect(findButtonsByText(tree, "提交选择")[0].props.disabled).toBe(true);
     expect(findButtonsByText(tree, "读取产物")[0].props.disabled).toBe(false);
   });
 
@@ -277,7 +414,7 @@ describe("App", () => {
     expect(buildRecommendationWearLogInput?.(outfit, "smart-casual", weather)).toEqual({
       garmentIds: [101, 202],
       context: {
-        outfitId: "outfit-1",
+        outfitId: TEST_CANDIDATE_ID,
         occasion: "smart-casual",
         weather
       }
@@ -288,9 +425,11 @@ describe("App", () => {
     const weather = makeWeather();
     const outfit = makeOutfit();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
-      outfits: [outfit]
+      outfits: [outfit],
+      missingSlots: []
     };
     const appModule = await import("../src/App");
     const RecommendationView = (appModule as {
@@ -366,16 +505,18 @@ describe("App", () => {
     const tree = RecommendationView?.({
       weather,
       recommendations: {
+        runId: 1,
         weather,
         occasion: "casual",
-        outfits: [outfit]
+        outfits: [outfit],
+        missingSlots: []
       },
       occasion: "casual",
       latitude: "39.9042",
       longitude: "116.4074",
       busy: false,
       recordingOutfitId: null,
-      wearLogFeedback: { outfitId: "outfit-1", message: "已标记已穿" },
+      wearLogFeedback: { outfitId: TEST_CANDIDATE_ID, message: "已标记已穿" },
       onOccasion: vi.fn(),
       onFetchWeather: vi.fn(),
       onGenerate: vi.fn(),
@@ -446,7 +587,7 @@ describe("App", () => {
     expect(markup).not.toContain(">winter<");
   });
 
-  it("renders trusted Taobao remote garment images and still blocks unrelated remote URLs", async () => {
+  it("loads trusted Taobao garment images only after explicit session opt-in", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
       WardrobeView?: (props: {
@@ -458,10 +599,11 @@ describe("App", () => {
         onUpdate: (id: number, update: Partial<Garment>) => void;
         onDelete: (id: number) => void;
         onBulkConfirm: () => void;
+        allowRemoteTaobaoImages?: boolean;
       }) => ReactNode;
     }).WardrobeView;
 
-    const trustedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+    const defaultMarkup = renderToStaticMarkup(<>{WardrobeView?.({
       garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
       selectedIds: [],
       busy: false,
@@ -470,6 +612,17 @@ describe("App", () => {
       onUpdate: vi.fn(),
       onDelete: vi.fn(),
       onBulkConfirm: vi.fn()
+    })}</>);
+    const enabledMarkup = renderToStaticMarkup(<>{WardrobeView?.({
+      garments: [makeGarment(404, "远程图片衬衫", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })],
+      selectedIds: [],
+      busy: false,
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      allowRemoteTaobaoImages: true
     })}</>);
     const blockedMarkup = renderToStaticMarkup(<>{WardrobeView?.({
       garments: [makeGarment(405, "外站图片衬衫", "top", { imageUrl: "https://example.com/remote-shirt.jpg" })],
@@ -482,10 +635,31 @@ describe("App", () => {
       onBulkConfirm: vi.fn()
     })}</>);
 
-    expect(trustedMarkup).toContain('src="https://img.alicdn.com/remote-shirt.jpg"');
-    expect(trustedMarkup).toContain('referrerPolicy="no-referrer"');
+    expect(defaultMarkup).not.toContain("https://img.alicdn.com/remote-shirt.jpg");
+    expect(defaultMarkup).not.toContain("<img");
+    expect(enabledMarkup).toContain('src="https://img.alicdn.com/remote-shirt.jpg"');
+    expect(enabledMarkup).toContain('referrerPolicy="no-referrer"');
     expect(blockedMarkup).not.toContain("https://example.com/remote-shirt.jpg");
     expect(blockedMarkup).not.toContain("<img");
+  });
+
+  it("keeps local thumbnails ahead of remote cutouts and remote originals", () => {
+    const localOriginal = makeGarment(500, "本地图优先", "top", {
+      imageUrl: "/api/garment-thumbnails/local-original.webp",
+      cutoutImageUrl: "https://img.alicdn.com/remote-cutout.png"
+    });
+    expect(resolveGarmentImageSource(localOriginal, true)).toEqual({
+      url: "/api/garment-thumbnails/local-original.webp",
+      cutout: false,
+      remote: false
+    });
+    expect(resolveGarmentImageSource(
+      makeGarment(501, "远程原图", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" })
+    )).toBeNull();
+    expect(resolveGarmentImageSource(
+      makeGarment(501, "远程原图", "top", { imageUrl: "https://img.alicdn.com/remote-shirt.jpg" }),
+      true
+    )).toMatchObject({ url: "https://img.alicdn.com/remote-shirt.jpg", cutout: false, remote: true });
   });
 
   it("renders local cached garment thumbnails with privacy-preserving image attributes", async () => {
@@ -748,6 +922,20 @@ describe("App", () => {
       onClose
     });
     const markup = renderToStaticMarkup(<>{tree}</>);
+    const enabledMarkup = renderToStaticMarkup(
+      <ThumbnailPicker
+        garment={garment}
+        candidates={candidates}
+        selectedUrl={candidates[0].url}
+        loading={false}
+        saving={false}
+        error=""
+        allowRemoteTaobaoImages
+        onSelect={onSelect}
+        onSave={onSave}
+        onClose={onClose}
+      />
+    );
 
     expect(markup).toContain("选择缩略图");
     expect(markup).toContain("候选缩略图衬衫");
@@ -761,6 +949,8 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
     expectClassTokens(markup, ["thumbnail-candidate", "thumbnail-candidate--selected"]);
     expect(markup).toContain('aria-pressed="true"');
+    expect(markup).not.toContain('src="https://img.alicdn.com/');
+    expect(enabledMarkup).toContain('src="https://img.alicdn.com/');
     findButtonsByText(tree, "详情图")[0].props.onClick();
     findButtonsByText(tree, "保存为主图")[0].props.onClick();
     findButtonsByText(tree, "关闭")[0].props.onClick();
@@ -903,6 +1093,54 @@ describe("App", () => {
 
     expect(onProfile).toHaveBeenNthCalledWith(1, expect.objectContaining({ heightCm: undefined }));
     expect(onProfile).toHaveBeenNthCalledWith(2, expect.objectContaining({ weightKg: undefined }));
+  });
+
+  it("renders and preserves a genuinely unset profile in settings", () => {
+    const onProfile = vi.fn();
+    const tree = SettingsView({
+      latitude: "",
+      longitude: "",
+      busy: false,
+      profile: {},
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile
+    });
+    const profileSelects = findElementsByComponentName(tree, "SelectField")
+      .filter((field) => String(field.props.id).startsWith("profile-"));
+
+    expect(profileSelects).toHaveLength(4);
+    expect(profileSelects.every((field) => field.props.value === "")).toBe(true);
+    expect(renderToStaticMarkup(<>{tree}</>).match(/>未设置</g)?.length).toBeGreaterThanOrEqual(4);
+
+    profileSelects[0].props.onChange({ target: { value: "" } });
+    expect(onProfile).toHaveBeenCalledWith(expect.objectContaining({ bodyType: undefined }));
+  });
+
+  it("explains that remote image permission lasts only for the current session", () => {
+    const onRemoteTaobaoImagesEnabled = vi.fn();
+    const tree = SettingsView({
+      latitude: "",
+      longitude: "",
+      busy: false,
+      profile: {},
+      remoteTaobaoImagesEnabled: false,
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn(),
+      onRemoteTaobaoImagesEnabled
+    });
+    const remoteToggle = findInputsByType(tree, "checkbox")
+      .find((input) => input.props.id === "remote-taobao-images-enabled");
+
+    expect(renderToStaticMarkup(<>{tree}</>)).toMatch(/图片隐私|仅本次.*会话|淘宝 CDN/);
+    expect(remoteToggle?.props.checked).toBe(false);
+    remoteToggle?.props.onChange({ target: { checked: true } });
+    expect(onRemoteTaobaoImagesEnabled).toHaveBeenCalledWith(true);
   });
 
   it("renders local vision model status and download controls in settings", () => {
@@ -1052,7 +1290,9 @@ describe("App", () => {
     enabledVerifyButton?.props.onClick();
     expect(onVerifyVisionModel).toHaveBeenCalledWith("clip-vit-base-patch32");
 
-    findInputsByType(tree, "checkbox")[0].props.onChange({ target: { checked: false } });
+    findInputsByType(tree, "checkbox")
+      .find((input) => input.props.id === "vision-enabled")
+      ?.props.onChange({ target: { checked: false } });
     expect(onVisionEnabled).toHaveBeenCalledWith(false);
   });
 
@@ -1280,6 +1520,7 @@ describe("App", () => {
         busy={false}
         onRefresh={vi.fn()}
         onExport={vi.fn()}
+        onExportComplete={vi.fn()}
       />
     );
 
@@ -1296,7 +1537,8 @@ describe("App", () => {
     expect(markup).toContain("补充一件经典外套");
     expect(markup).toContain("瘦高体型适合增加层次");
     expect(markup).toContain("白衬衫");
-    expect(markup).toContain("导出备份");
+    expect(markup).toContain("导出 JSON");
+    expect(markup).toContain("完整备份（含图片）");
     expectClassTokens(markup, ["history-insights-view", "view-shell"]);
     expectClassTokens(markup, ["insights-content"]);
     expectClassTokens(markup, ["health-focus"]);
@@ -1306,7 +1548,7 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
   });
 
-  it("asks for explicit confirmation before deleting a garment", async () => {
+  it("asks for explicit confirmation before archiving a garment", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
       WardrobeView?: (props: {
@@ -1336,12 +1578,12 @@ describe("App", () => {
     });
 
     const garmentTree = renderFunctionElement(findElementsByComponentName(tree, "GarmentItem")[0]);
-    findButtonsByText(garmentTree, "删除")[0].props.onClick();
+    findButtonsByText(garmentTree, "归档")[0].props.onClick();
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("短款针织衫"));
     expect(onDelete).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    findButtonsByText(garmentTree, "删除")[0].props.onClick();
+    findButtonsByText(garmentTree, "归档")[0].props.onClick();
     expect(onDelete).toHaveBeenCalledWith(303);
   });
 
@@ -1409,9 +1651,11 @@ describe("App", () => {
     const tree = RecommendationView?.({
       weather,
       recommendations: {
+        runId: 1,
         weather,
         occasion: "casual",
-        outfits: [outfit]
+        outfits: [outfit],
+        missingSlots: []
       },
       occasion: "casual",
       latitude: "39.9042",
@@ -1537,9 +1781,11 @@ describe("App", () => {
   it("renders recommendation controls beside a visual outfit stage", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
@@ -1572,9 +1818,11 @@ describe("App", () => {
   it("renders recommendation page intro metadata and weather context", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
@@ -1607,9 +1855,11 @@ describe("App", () => {
   it("renders recommendation as an accessible decision and result layout", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
-      outfits: [makeOutfit()]
+      outfits: [makeOutfit()],
+      missingSlots: []
     };
 
     const markup = renderToStaticMarkup(
@@ -1701,6 +1951,100 @@ describe("App", () => {
     expect(importMarkup).not.toContain("设置位置");
     expect(settingsMarkup).toContain("设置位置");
     expect(generateMarkup).toContain("生成今日搭配");
+  });
+
+  it("requires a non-blank valid location before the first recommendation", () => {
+    const renderLocation = (latitude: string, longitude: string) => renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={3}
+        occasion="casual"
+        latitude={latitude}
+        longitude={longitude}
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />
+    );
+
+    for (const [latitude, longitude] of [["", ""], ["   ", "  "]] as const) {
+      const markup = renderLocation(latitude, longitude);
+      expect(markup).toContain("设置位置");
+      expect(markup).not.toContain(">生成今日搭配</button>");
+    }
+    expect(renderLocation("0", "0")).toContain("生成今日搭配");
+  });
+
+  it("distinguishes pending garments and explains structured missing slots", () => {
+    const pendingMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={null}
+        recommendations={null}
+        availableGarmentCount={0}
+        pendingGarmentCount={2}
+        occasion="casual"
+        latitude="31.2304"
+        longitude="121.4737"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenWardrobe={vi.fn()}
+      />
+    );
+    const missingMarkup = renderToStaticMarkup(
+      <RecommendationView
+        weather={makeWeather()}
+        recommendations={{
+          runId: 9,
+          weather: makeWeather(),
+          occasion: "casual",
+          outfits: [],
+          missingSlots: ["bottom", "dress"]
+        }}
+        availableGarmentCount={1}
+        pendingGarmentCount={0}
+        occasion="casual"
+        latitude="31.2304"
+        longitude="121.4737"
+        busy={false}
+        recordingOutfitId={null}
+        wearLogFeedback={null}
+        onOccasion={vi.fn()}
+        onFetchWeather={vi.fn()}
+        onGenerate={vi.fn()}
+        onRecordWearLog={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenWardrobe={vi.fn()}
+      />
+    );
+
+    expect(pendingMarkup).toContain("2 件衣物等待确认");
+    expect(pendingMarkup).toContain("去确认衣物");
+    expect(pendingMarkup).not.toContain("先导入衣物");
+    expect(missingMarkup).toContain("下装或连衣裙");
+    expect(missingMarkup).toContain("补充衣物");
+    expect(missingMarkup).not.toContain("去确认衣物");
+  });
+
+  it("uses the backend recommendation eligibility rule for visible counts", () => {
+    expect(isRecommendationEligibleGarment(makeGarment(1, "已确认", "top"))).toBe(true);
+    expect(isRecommendationEligibleGarment(makeGarment(2, "待确认", "top", { confirmed: false }))).toBe(false);
+    expect(isRecommendationEligibleGarment(makeGarment(3, "未拥有", "top", { owned: false }))).toBe(false);
+    expect(isRecommendationEligibleGarment(makeGarment(4, "已排除", "top", { excluded: true }))).toBe(false);
+    const notOwnedPending = makeGarment(5, "未拥有待审核", "top", { owned: false, confirmed: false });
+    expect(isWardrobeReviewPendingGarment(notOwnedPending)).toBe(true);
+    expect(isRecommendationPendingGarment(notOwnedPending)).toBe(false);
   });
 
   it("renders wardrobe filters, selection state, and garment editing regions", () => {
@@ -1815,8 +2159,15 @@ describe("App", () => {
           color: "white",
           warmth: "light",
           seasons: ["spring"],
+          styles: ["minimal"],
+          formality: "smart-casual",
+          materials: ["cotton"],
+          patterns: ["solid"],
+          tags: ["通勤"],
+          notes: "",
           confidence: 0.88,
-          imageUrl: ""
+          imageUrl: "",
+          disposition: "create"
         }
       ],
       skipped: []
@@ -1910,6 +2261,109 @@ describe("App", () => {
     expect(cssRule(styles, ".garment-library-item--review")).toMatch(/grid-template-columns:\s*auto\s+5rem\s+minmax\(0,\s*1fr\);/);
     expect(cssRule(styles, ".garment-library-item__tools")).toMatch(/flex-wrap:\s*wrap;/);
   });
+
+  it("exposes trusted manual creation, archive recovery, batch editing, and complete import review", () => {
+    const active = makeGarment(901, "白色衬衫", "top");
+    const archived = makeGarment(902, "旧外套", "outerwear", {
+      archivedAt: "2026-07-11T00:00:00.000Z"
+    });
+    const wardrobeMarkup = renderToStaticMarkup(
+      <WardrobeView
+        garments={[active]}
+        archivedGarments={[archived]}
+        selectedIds={[active.id]}
+        busy={false}
+        onRefresh={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onRestore={vi.fn()}
+        onAddGarment={vi.fn()}
+        onBulkConfirm={vi.fn()}
+        onBulkSeasons={vi.fn()}
+        onBulkTags={vi.fn()}
+        onBulkExcluded={vi.fn()}
+      />
+    );
+    expect(wardrobeMarkup).toContain("添加衣物");
+    expect(wardrobeMarkup).toContain("归档");
+    expect(wardrobeMarkup).not.toContain(">删除<");
+    expect(wardrobeMarkup).toContain("已归档");
+    expect(wardrobeMarkup).toContain("恢复");
+    for (const label of ["品牌", "风格", "正式度", "备注", "排除推荐", "批量季节", "批量添加标签"]) {
+      expect(wardrobeMarkup).toContain(label);
+    }
+
+    const candidates = Array.from({ length: 7 }, (_, index) => ({
+      sourceItemKey: `v2:${String(index).padStart(64, "0")}`,
+      brand: "",
+      name: `候选衣物 ${index + 1}`,
+      rawName: `候选衣物 ${index + 1}`,
+      category: "top" as const,
+      color: "white",
+      warmth: "light" as const,
+      seasons: ["spring" as const],
+      styles: ["casual"],
+      formality: "casual" as const,
+      materials: [],
+      patterns: [],
+      tags: [],
+      notes: "",
+      confidence: 0.9,
+      imageUrl: "",
+      disposition: index === 6 ? "unchanged" as const : "create" as const
+    }));
+    const preview: TaobaoImportPreview = {
+      batchId: "batch-review",
+      summary: { totalItems: 7, uniqueItems: 7, skippedRefunded: 0, skippedNonApparel: 0, createdGarments: 6 },
+      duplicateCount: 0,
+      candidates,
+      skipped: []
+    };
+    const decisions = Object.fromEntries(candidates.map((item) => [item.sourceItemKey, {
+      sourceItemKey: item.sourceItemKey,
+      include: item.disposition === "create"
+    }]));
+    const importMarkup = renderToStaticMarkup(
+      <ImportView
+        bookmarklet="javascript:void(0)"
+        importText="{}"
+        importResult={null}
+        importPreview={preview}
+        importDecisions={decisions}
+        filterSummary={null}
+        captureUrl=""
+        captureEngine="selenium"
+        captureResult={null}
+        busy={false}
+        onCopyBookmarklet={vi.fn()}
+        onImportText={vi.fn()}
+        onImport={vi.fn()}
+        onImportDecision={vi.fn()}
+        onCaptureUrl={vi.fn()}
+        onCaptureEngine={vi.fn()}
+        onStartOrdersCapture={vi.fn()}
+        onStartItemCapture={vi.fn()}
+        onReadLatestCapture={vi.fn()}
+        onPreviewImport={vi.fn()}
+      />
+    );
+    expect(importMarkup).toContain("淘宝衣物导入逐项审阅");
+    expect(importMarkup).toContain("候选衣物 7");
+    expect(importMarkup).toContain("提交选择");
+    expect(importMarkup).not.toContain("preview-list");
+    expect(renderToStaticMarkup(
+      <ImportReviewTable preview={preview} decisions={decisions} onDecision={vi.fn()} />
+    )).toContain("已选择 6 / 7 个可处理候选");
+
+    expect(yuanToCents("299.05")).toBe(29905);
+    expect(yuanToCents("-1")).toBeNull();
+    const manualMarkup = renderToStaticMarkup(
+      <ManualGarmentDialog open busy={false} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(manualMarkup).toContain("本地照片（可选）");
+    expect(manualMarkup).toContain("image/jpeg,image/png,image/webp");
+  });
 });
 
 function cssRule(styles: string, selector: string): string {
@@ -1942,7 +2396,9 @@ function makeWeather(): WeatherSnapshot {
 
 function makeOutfit(): OutfitRecommendation {
   return {
-    id: "outfit-1",
+    id: TEST_CANDIDATE_ID,
+    candidateId: TEST_CANDIDATE_ID,
+    outfitSignature: TEST_OUTFIT_SIGNATURE,
     score: 91,
     items: [
       makeGarment(101, "白衬衫", "top", { brand: "无印良品", rawName: "无印良品白衬衫长标题" }),
