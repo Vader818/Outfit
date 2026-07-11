@@ -1363,6 +1363,126 @@ describe("API routes", () => {
     expect(runs[0].input).not.toHaveProperty("debugToken");
   });
 
+  it("persists globally unique candidate identities with stable cross-run signatures", async () => {
+    const db = createDatabase(":memory:");
+    const insert = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run("白色T恤", "top", "white", "light", '["summer"]', '["casual"]', "casual", "", 1, 1, 0, 0.9, "");
+    insert.run("蓝色衬衫", "top", "blue", "light", '["summer"]', '["casual"]', "casual", "", 1, 1, 0, 0.8, "");
+    insert.run("深蓝牛仔裤", "bottom", "blue", "medium", '["spring","autumn"]', '["casual"]', "casual", "", 1, 1, 0, 0.9, "");
+    insert.run("白色运动鞋", "shoes", "white", "light", '["summer"]', '["casual"]', "casual", "", 1, 1, 0, 0.9, "");
+
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const requestRecommendation = async (occasion: string, date: string) => {
+      const response = await fetch(`${baseUrl}/api/recommendations`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({
+          occasion,
+          weather: { ...recommendationWeather, date },
+          runId: 999,
+          candidateId: "client-forged-candidate",
+          outfitSignature: "client-forged-signature"
+        })
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as {
+        runId: number;
+        outfits: Array<{
+          id: string;
+          candidateId: string;
+          outfitSignature: string;
+          score: number;
+          matchPercent?: number;
+          scoreBreakdown?: Record<string, number>;
+          reasons: string[];
+          items: Array<{ id: number }>;
+        }>;
+      };
+    };
+
+    const first = await requestRecommendation("casual", "2026-07-01");
+    const second = await requestRecommendation("formal", "2026-07-02");
+    const allOutfits = [...first.outfits, ...second.outfits];
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    expect(first.runId).toBeGreaterThan(0);
+    expect(second.runId).toBeGreaterThan(first.runId);
+    expect(allOutfits.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(allOutfits.map((outfit) => outfit.candidateId)).size).toBe(allOutfits.length);
+    expect(allOutfits.every((outfit) => uuidPattern.test(outfit.candidateId))).toBe(true);
+    expect(allOutfits.every((outfit) => outfit.id === outfit.candidateId)).toBe(true);
+    expect(allOutfits.every((outfit) => /^[a-f0-9]{64}$/.test(outfit.outfitSignature))).toBe(true);
+
+    const firstByItems = new Map(first.outfits.map((outfit) => [
+      outfit.items.map((item) => item.id).sort((left, right) => left - right).join(","),
+      outfit.outfitSignature
+    ]));
+    for (const outfit of second.outfits) {
+      const itemKey = outfit.items.map((item) => item.id).sort((left, right) => left - right).join(",");
+      expect(outfit.outfitSignature).toBe(firstByItems.get(itemKey));
+    }
+
+    const rows = db.prepare(`
+      SELECT candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+      FROM recommendation_candidates
+      ORDER BY run_id, rank
+    `).all() as Array<{
+      candidate_id: string;
+      run_id: number;
+      signature: string;
+      rank: number;
+      item_ids_json: string;
+      score_snapshot: string;
+    }>;
+    expect(rows).toHaveLength(allOutfits.length);
+    for (const result of [first, second]) {
+      result.outfits.forEach((outfit, index) => {
+        const row = rows.find((candidate) => candidate.candidate_id === outfit.candidateId);
+        expect(row).toMatchObject({
+          run_id: result.runId,
+          signature: outfit.outfitSignature,
+          rank: index + 1
+        });
+        expect(JSON.parse(row!.item_ids_json)).toEqual(outfit.items.map((item) => item.id));
+        expect(JSON.parse(row!.score_snapshot)).toMatchObject({
+          score: outfit.score,
+          matchPercent: outfit.matchPercent,
+          scoreBreakdown: outfit.scoreBreakdown,
+          reasons: outfit.reasons
+        });
+      });
+    }
+    const storedRuns = db.prepare(`
+      SELECT id, input_json, result_json
+      FROM recommendation_runs
+      ORDER BY id
+    `).all() as Array<{ id: number; input_json: string; result_json: string }>;
+    expect(storedRuns.map((run) => run.id)).toEqual([first.runId, second.runId]);
+    storedRuns.forEach((row, index) => {
+      const input = JSON.parse(row.input_json);
+      expect(input).not.toHaveProperty("runId");
+      expect(input).not.toHaveProperty("candidateId");
+      expect(input).not.toHaveProperty("outfitSignature");
+      const storedResult = JSON.parse(row.result_json);
+      const responseResult = [first, second][index];
+      expect(storedResult.runId).toBe(responseResult.runId);
+      expect(storedResult.outfits.map((outfit: { candidateId: string }) => outfit.candidateId)).toEqual(
+        responseResult.outfits.map((outfit) => outfit.candidateId)
+      );
+    });
+  });
+
   it("rejects invalid wear log payloads", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);

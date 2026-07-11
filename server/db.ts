@@ -19,7 +19,35 @@ const INSIGHT_BASIC_COLORS = new Set(["black", "white", "gray", "beige", "brown"
 
 export type AppDatabase = DatabaseSyncType;
 
-const NUMBERED_MIGRATIONS: readonly Migration[] = [];
+const NUMBERED_MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: "recommendation-candidates",
+    up(db) {
+      db.exec(`
+        CREATE TABLE recommendation_candidates (
+          candidate_id TEXT PRIMARY KEY NOT NULL,
+          run_id INTEGER NOT NULL,
+          signature TEXT NOT NULL,
+          rank INTEGER NOT NULL CHECK (rank >= 1),
+          item_ids_json TEXT NOT NULL
+            CHECK (json_valid(item_ids_json) AND json_type(item_ids_json) = 'array'),
+          score_snapshot TEXT NOT NULL
+            CHECK (json_valid(score_snapshot) AND json_type(score_snapshot) = 'object'),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (run_id) REFERENCES recommendation_runs(id) ON DELETE CASCADE,
+          UNIQUE (run_id, rank)
+        ) STRICT;
+
+        CREATE INDEX idx_recommendation_candidates_run_id
+        ON recommendation_candidates(run_id);
+
+        CREATE INDEX idx_recommendation_candidates_signature
+        ON recommendation_candidates(signature);
+      `);
+    }
+  }
+];
 
 export interface DbImportResult {
   batchId: string;
@@ -880,11 +908,18 @@ export function listWearLogs(db: AppDatabase, limit = 50): WearLogEntry[] {
   }));
 }
 
-export function saveRecommendationRun(db: AppDatabase, input: unknown, result: unknown): void {
-  db.prepare("INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, ?)").run(
+export function saveRecommendationRun(db: AppDatabase, input: unknown, result: unknown): number {
+  const insert = db.prepare("INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, ?)").run(
     JSON.stringify(input),
     JSON.stringify(result)
   );
+  const runId = typeof insert.lastInsertRowid === "bigint"
+    ? Number(insert.lastInsertRowid)
+    : insert.lastInsertRowid;
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new Error("SQLite returned an invalid recommendation run id");
+  }
+  return runId;
 }
 
 export function listRecommendationRuns(db: AppDatabase, limit = 20): RecommendationRunEntry[] {

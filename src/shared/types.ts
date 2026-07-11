@@ -59,6 +59,8 @@ export interface WeatherSnapshot {
 
 export interface OutfitRecommendation {
   id: string;
+  candidateId: string;
+  outfitSignature: string;
   score: number;
   matchPercent?: number;
   scoreBreakdown?: RecommendationScoreBreakdown;
@@ -68,12 +70,19 @@ export interface OutfitRecommendation {
 }
 
 export interface RecommendationResult {
+  runId: number;
   weather: WeatherSnapshot;
   weatherScenario?: WeatherScenario;
   occasion: string;
   outfits: OutfitRecommendation[];
   missingSlots: GarmentCategory[];
 }
+
+export type RecommendationDraftResult = Omit<RecommendationResult, "runId">;
+export type RecommendationOutfitDraft = Omit<
+  OutfitRecommendation,
+  "id" | "candidateId" | "outfitSignature"
+>;
 
 export type WeatherScenario = "cold_windy" | "cold_dry" | "rainy_mild" | "hot_humid" | "hot_dry" | "dry_sunny" | "mild";
 

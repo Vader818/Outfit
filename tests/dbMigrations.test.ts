@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { migrate } from "../server/db";
+import { createDatabase, legacyBaseline0, migrate } from "../server/db";
 import {
   runMigrations,
   type Migration
@@ -24,7 +24,10 @@ describe("versioned database migrations", () => {
       FROM schema_migrations
       ORDER BY version ASC
     `).all() as Array<{ version: number; name: string }>;
-    expect(rows).toEqual([{ version: 0, name: "legacy-baseline" }]);
+    expect(rows).toEqual([
+      { version: 0, name: "legacy-baseline" },
+      { version: 1, name: "recommendation-candidates" }
+    ]);
   });
 
   it("upgrades an older legacy schema before registering baseline 0", () => {
@@ -48,7 +51,10 @@ describe("versioned database migrations", () => {
       "detail_props",
       "detail_images"
     ]));
-    expect(db.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: 0 }]);
+    expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
+      { version: 0 },
+      { version: 1 }
+    ]);
   });
 
   it("applies each numbered migration only once", () => {
@@ -218,5 +224,51 @@ describe("versioned database migrations", () => {
       () => undefined,
       [migration(1, "renamed", () => undefined)]
     )).toThrow(/name/i);
+  });
+
+  it("creates recommendation candidates only in numbered migration 1 with history-safe constraints", () => {
+    const legacyDb = new DatabaseSync(":memory:");
+    legacyBaseline0(legacyDb);
+    expect(legacyDb.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name = 'recommendation_candidates'
+    `).get()).toBeUndefined();
+
+    const db = createDatabase(":memory:");
+    const migrations = db.prepare(`
+      SELECT version, name FROM schema_migrations ORDER BY version
+    `).all();
+    const indexes = db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND tbl_name = 'recommendation_candidates'
+      ORDER BY name
+    `).all() as Array<{ name: string }>;
+    expect(migrations).toEqual([
+      { version: 0, name: "legacy-baseline" },
+      { version: 1, name: "recommendation-candidates" }
+    ]);
+    expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      "idx_recommendation_candidates_run_id",
+      "idx_recommendation_candidates_signature"
+    ]));
+
+    const run = db.prepare(`
+      INSERT INTO recommendation_runs (input_json, result_json)
+      VALUES ('{}', '{}')
+    `).run();
+    const runId = Number(run.lastInsertRowid);
+    const insert = db.prepare(`
+      INSERT INTO recommendation_candidates (
+        candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    insert.run("candidate-1", runId, "signature-1", 1, "[99,100]", "{}");
+
+    expect(() => insert.run("candidate-1", runId, "signature-2", 2, "[]", "{}")).toThrow();
+    expect(() => insert.run("candidate-2", runId, "signature-2", 1, "[]", "{}")).toThrow();
+    expect(() => insert.run("candidate-3", runId, "signature-3", 0, "[]", "{}")).toThrow();
+    expect(() => insert.run("candidate-4", runId + 999, "signature-4", 2, "[]", "{}")).toThrow();
+    expect(() => insert.run("candidate-5", runId, "signature-5", 2, "not-json", "{}")).toThrow();
+    expect(() => insert.run("candidate-6", runId, "signature-6", 3, "[]", "not-json")).toThrow();
   });
 });

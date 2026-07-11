@@ -1,4 +1,5 @@
-import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitRecommendation, PersonalProfile, RecommendationResult, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import type { Formality, Garment, GarmentCategory, GarmentWarmth, PersonalProfile, RecommendationDraftResult, RecommendationOutfitDraft, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import { attachCandidateIdentities, type CandidateIdFactory } from "./recommendationCandidates";
 
 export interface RecommendInput {
   garments: Garment[];
@@ -6,6 +7,10 @@ export interface RecommendInput {
   occasion: string;
   recentlyWornGarmentIds?: number[];
   userProfile?: PersonalProfile;
+}
+
+export interface RecommendationIdentityOptions {
+  candidateIdFactory?: CandidateIdFactory;
 }
 
 export interface GeneratedRecommendationCandidate {
@@ -56,13 +61,15 @@ const CLASHING_ACCENTS = new Set(["green:red", "green:yellow", "purple:yellow", 
 const DEFAULT_MAX_EVALUATED_CANDIDATES = 20_000;
 const DEFAULT_BEAM_WIDTH = 120;
 
-export function recommendOutfits(input: RecommendInput): RecommendationResult {
+export function recommendOutfits(
+  input: RecommendInput,
+  identityOptions: RecommendationIdentityOptions = {}
+): RecommendationDraftResult {
   const available = eligibleGarments(input.garments);
   const generated = generateCandidates({ ...input, garments: available });
   const candidates = generated.candidates;
   const sorted = candidates.sort(compareCandidates);
-  const outfits = selectDiverseCandidates(sorted).map((candidate, index) => ({
-    id: `outfit-${index + 1}`,
+  const outfitDrafts: RecommendationOutfitDraft[] = selectDiverseCandidates(sorted).map((candidate) => ({
     score: Number(candidate.score.toFixed(1)),
     matchPercent: normalizeMatchPercent(candidate.score),
     scoreBreakdown: normalizeBreakdown(candidate.scoreBreakdown),
@@ -70,6 +77,7 @@ export function recommendOutfits(input: RecommendInput): RecommendationResult {
     reasons: candidate.reasons,
     alternatives: findAlternatives(available, candidate.items, input)
   }));
+  const outfits = attachCandidateIdentities(outfitDrafts, identityOptions.candidateIdFactory);
 
   return {
     weather: input.weather,

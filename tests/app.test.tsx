@@ -6,6 +6,9 @@ import { App, AuthView, HistoryInsightsView, ImportView, MainApp, Recommendation
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
 import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
+const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
+const TEST_OUTFIT_SIGNATURE = "a".repeat(64);
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -277,7 +280,7 @@ describe("App", () => {
     expect(buildRecommendationWearLogInput?.(outfit, "smart-casual", weather)).toEqual({
       garmentIds: [101, 202],
       context: {
-        outfitId: "outfit-1",
+        outfitId: TEST_CANDIDATE_ID,
         occasion: "smart-casual",
         weather
       }
@@ -288,6 +291,7 @@ describe("App", () => {
     const weather = makeWeather();
     const outfit = makeOutfit();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
       outfits: [outfit],
@@ -367,6 +371,7 @@ describe("App", () => {
     const tree = RecommendationView?.({
       weather,
       recommendations: {
+        runId: 1,
         weather,
         occasion: "casual",
         outfits: [outfit],
@@ -377,7 +382,7 @@ describe("App", () => {
       longitude: "116.4074",
       busy: false,
       recordingOutfitId: null,
-      wearLogFeedback: { outfitId: "outfit-1", message: "已标记已穿" },
+      wearLogFeedback: { outfitId: TEST_CANDIDATE_ID, message: "已标记已穿" },
       onOccasion: vi.fn(),
       onFetchWeather: vi.fn(),
       onGenerate: vi.fn(),
@@ -1411,6 +1416,7 @@ describe("App", () => {
     const tree = RecommendationView?.({
       weather,
       recommendations: {
+        runId: 1,
         weather,
         occasion: "casual",
         outfits: [outfit],
@@ -1540,6 +1546,7 @@ describe("App", () => {
   it("renders recommendation controls beside a visual outfit stage", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
       outfits: [makeOutfit()],
@@ -1576,6 +1583,7 @@ describe("App", () => {
   it("renders recommendation page intro metadata and weather context", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
       outfits: [makeOutfit()],
@@ -1612,6 +1620,7 @@ describe("App", () => {
   it("renders recommendation as an accessible decision and result layout", () => {
     const weather = makeWeather();
     const recommendations: RecommendationResult = {
+      runId: 1,
       weather,
       occasion: "casual",
       outfits: [makeOutfit()],
@@ -1948,7 +1957,9 @@ function makeWeather(): WeatherSnapshot {
 
 function makeOutfit(): OutfitRecommendation {
   return {
-    id: "outfit-1",
+    id: TEST_CANDIDATE_ID,
+    candidateId: TEST_CANDIDATE_ID,
+    outfitSignature: TEST_OUTFIT_SIGNATURE,
     score: 91,
     items: [
       makeGarment(101, "白衬衫", "top", { brand: "无印良品", rawName: "无印良品白衬衫长标题" }),
