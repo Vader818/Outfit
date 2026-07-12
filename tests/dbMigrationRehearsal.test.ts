@@ -368,19 +368,26 @@ function assertProductionMigration(
     ...LEGACY_TABLES,
     "schema_migrations",
     "recommendation_candidates",
-    "garment_assets"
+    "garment_assets",
+    "saved_outfits",
+    "saved_outfit_items",
+    "recommendation_feedback",
+    "outfit_pair_stats",
+    "garment_availability_events"
   ]);
   assertLegacySchemaContract(db, true);
 
   const migrations = appliedMigrations(db);
   expect(migrations.map(({ version, name }) => ({ version, name }))).toEqual([
     { version: 0, name: "legacy-baseline" },
-    { version: 1, name: "recommendation-candidates" },
-    { version: 2, name: "trusted-ingestion" }
+      { version: 1, name: "recommendation-candidates" },
+      { version: 2, name: "trusted-ingestion" },
+      { version: 3, name: "saved-outfits" },
+      { version: 4, name: "feedback-availability" }
   ]);
 
   expect(db.prepare(`
-    SELECT origin, archived_at, acquired_at, purchase_price_cents, currency
+    SELECT origin, archived_at, acquired_at, purchase_price_cents, currency, availability_status
     FROM garments
     ORDER BY id ASC
   `).all()).toEqual([
@@ -389,10 +396,14 @@ function assertProductionMigration(
       archived_at: null,
       acquired_at: null,
       purchase_price_cents: null,
-      currency: null
+      currency: null,
+      availability_status: "available"
     }
   ]);
   expect(db.prepare("SELECT COUNT(*) AS count FROM garment_assets").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_pair_stats").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM garment_availability_events").get()).toEqual({ count: 0 });
 
   expect(foreignKeyContracts(db, "recommendation_candidates")).toEqual([
     [0, 0, "recommendation_runs", "run_id", "id", "NO ACTION", "CASCADE", "NONE"]
@@ -442,6 +453,118 @@ function assertProductionMigration(
   expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_candidates").get()).toEqual({
     count: 0
   });
+
+  expect(tableColumns(db, "saved_outfits")).toEqual([
+    ["id", "INTEGER", 0, null, 1],
+    ["name", "TEXT", 1, null, 0],
+    ["notes", "TEXT", 1, "''", 0],
+    ["source", "TEXT", 1, null, 0],
+    ["source_candidate_id", "TEXT", 0, null, 0],
+    ["derived_from_outfit_id", "INTEGER", 0, null, 0],
+    ["favorite", "INTEGER", 1, "0", 0],
+    ["archived_at", "TEXT", 0, null, 0],
+    ["created_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0],
+    ["updated_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0]
+  ]);
+  expect(tableColumns(db, "saved_outfit_items")).toEqual([
+    ["id", "INTEGER", 0, null, 1],
+    ["outfit_id", "INTEGER", 1, null, 0],
+    ["garment_id", "INTEGER", 0, null, 0],
+    ["slot", "TEXT", 1, null, 0],
+    ["position", "INTEGER", 1, null, 0],
+    ["garment_snapshot", "TEXT", 1, null, 0]
+  ]);
+
+  expect(foreignKeyContracts(db, "saved_outfits").map((foreignKey) => ({
+    table: foreignKey[2],
+    from: foreignKey[3],
+    to: foreignKey[4],
+    onDelete: foreignKey[6]
+  }))).toEqual(expect.arrayContaining([
+    {
+      table: "recommendation_candidates",
+      from: "source_candidate_id",
+      to: "candidate_id",
+      onDelete: "SET NULL"
+    },
+    {
+      table: "saved_outfits",
+      from: "derived_from_outfit_id",
+      to: "id",
+      onDelete: "RESTRICT"
+    }
+  ]));
+  expect(foreignKeyContracts(db, "saved_outfits")).toHaveLength(2);
+  expect(foreignKeyContracts(db, "saved_outfit_items").map((foreignKey) => ({
+    table: foreignKey[2],
+    from: foreignKey[3],
+    to: foreignKey[4],
+    onDelete: foreignKey[6]
+  }))).toEqual(expect.arrayContaining([
+    {
+      table: "saved_outfits",
+      from: "outfit_id",
+      to: "id",
+      onDelete: "CASCADE"
+    },
+    {
+      table: "garments",
+      from: "garment_id",
+      to: "id",
+      onDelete: "SET NULL"
+    }
+  ]));
+  expect(foreignKeyContracts(db, "saved_outfit_items")).toHaveLength(2);
+
+  expect(indexContracts(db, "saved_outfits").filter((index) => index.origin === "c")).toEqual([
+    {
+      name: "idx_saved_outfits_archived_at",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: ["archived_at"]
+    },
+    {
+      name: "idx_saved_outfits_derived_from_outfit_id",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: ["derived_from_outfit_id"]
+    },
+    {
+      name: "idx_saved_outfits_source_candidate_id",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: ["source_candidate_id"]
+    }
+  ]);
+  const savedItemIndexes = indexContracts(db, "saved_outfit_items");
+  expect(savedItemIndexes.filter((index) => index.origin === "c")).toEqual([
+    {
+      name: "idx_saved_outfit_items_outfit_id",
+      unique: 0,
+      origin: "c",
+      partial: 0,
+      columns: ["outfit_id"]
+    }
+  ]);
+  expect(savedItemIndexes.filter((index) => index.origin === "u")).toEqual([
+    expect.objectContaining({
+      unique: 1,
+      columns: ["outfit_id", "slot", "position"]
+    })
+  ]);
+
+  for (const table of ["saved_outfits", "saved_outfit_items"]) {
+    const definition = db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?
+    `).get(table) as { sql: string } | undefined;
+    expect(definition?.sql).toMatch(/\)\s*STRICT\s*$/i);
+  }
+  expect(db.prepare("SELECT COUNT(*) AS count FROM saved_outfits").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM saved_outfit_items").get()).toEqual({ count: 0 });
+  assertDatabaseHealthy(db);
 
   return migrations;
 }

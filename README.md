@@ -56,7 +56,7 @@ npm run start
 
 前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8788`。
 
-API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 1（`recommendation-candidates`）。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
+API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 4（`recommendation-candidates`、`trusted-ingestion`、`saved-outfits`、`feedback-availability`）。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
 
 ## 测试与构建
 
@@ -138,19 +138,19 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 2. 在浏览器中新建书签，把脚本放入书签地址。
 3. 打开淘宝订单页或商品详情页后点击该书签。
 4. 脚本会把采集 JSON 复制到剪贴板；如果剪贴板不可用，会弹出可复制的文本框。
-5. 将 JSON 粘贴到应用的「采集 JSON」文本框并导入。
+5. 将 JSON 粘贴到应用的「采集 JSON」文本框，先生成预览，逐项确认或修正后再提交导入。
 
 ## 导入规则
 
 - 输入必须是 `TaobaoCapturedBatch`，并包含 `items` 数组。
-- 同一商品会按 `itemId + sku` 等稳定键去重。
-- 退款或售后候选会被标记并跳过衣橱草稿创建。
+- 同一商品优先按 `itemId + sku` 等稳定身份键去重；缺少商品 ID 时使用订单、链接或内容指纹生成稳定键。
+- 退款或售后事件不会在读取采集产物时消失；预览会显示退款同步候选，用户可决定是否同步状态，但不能借此改写衣物字段。
 - 当前自动衣橱导入会为 `top`、`bottom`、`dress`、`outerwear`、`shoes`、`accessory` 创建衣橱草稿；配饰在推荐中作为可选增强项，不作为完整搭配的必需核心单品。
 - 导入预览不会写入数据库，可用于在正式导入前检查自动分类、置信度、重复项和跳过原因。
 - 商品详情采集可以补充品牌、商品名、详情图、参数和描述；后导入的详情会合并到已购 SKU。
 - 淘宝导入创建的衣物默认 `confirmed=false`；重复导入不会把用户已经确认的衣物重新设为未确认。导入后的条目可以在应用中确认、编辑、排除或标记为未拥有。
-- `POST /api/garments` 创建不关联淘宝来源的手工衣物，服务端固定写入 `owned=true`、`confirmed=true`、`excluded=false`。当前接口不接收图片；本地照片建档属于后续资产流程。
-- 推荐及替代单品只使用同时满足 `owned=true`、`confirmed=true`、`excluded=false` 的衣物。无法组成连衣裙或“上装＋下装”核心时，响应会通过 `missingSlots` 说明缺口。
+- `POST /api/garments` 先以 JSON 创建不关联淘宝来源的手工衣物，服务端固定写入 `owned=true`、`confirmed=true`、`excluded=false`；随后可用 `PUT /api/garments/:id/image` 上传不超过 5 MB 的 JPEG、PNG 或 WebP，本地服务会净化并统一重编码为无原始元数据的 WebP。
+- 推荐及替代单品只使用同时满足 `owned=true`、未归档、`confirmed=true`、`excluded=false`、`availabilityStatus=available` 的衣物。待洗、维修中、借出或已装箱衣物仍保留在衣服库与历史中，但会被候选硬过滤；无法组成连衣裙或“上装＋下装”核心时，响应会通过 `missingSlots` 和 `missingSlotDetails[].unavailableCount` 说明缺口与不可用数量。
 - 衣服库和推荐卡片默认只加载本地 `/api/garment-thumbnails/...` 或 `/api/garment-assets/...` 图片，本地去背景图和缩略图始终优先。用户可在“设置 → 图片隐私”中显式开启本次会话加载淘宝远程图；该选择只保存在 `sessionStorage`，新会话恢复为关闭。开启后浏览器会直接请求通过校验的 HTTPS 淘宝 CDN 图片，可能暴露 IP 与 User-Agent；其他远程域名仍不会加载。
 
 ## 推荐边界与稳定身份
@@ -158,6 +158,24 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - 推荐按“核心组合 → 外套 → 鞋履 → 配饰”分层生成。默认一次最多评估 20,000 个中间候选，每层最多保留 120 个 beam 状态；超出预算时使用确定性均匀采样。因此结果是有界、可解释的启发式选择，不宣称全局最优。
 - 每次推荐响应包含数据库 `runId`。每套候选的 `candidateId` 是全局唯一 UUID，兼容字段 `id` 当前与 `candidateId` 相同。
 - `outfitSignature` 是完整衣物组合的稳定 SHA-256 内容签名；相同组合跨 run 保持一致，但天气、场合、rank 和评分仍属于各自的 run/candidate 快照。
+- `includeGarmentIds` 可锁定必须出现的核心单品，`excludeGarmentIds` 可显式排除衣物；失效、未确认、已归档或互相冲突的 ID 会返回逐项结构化错误，不会静默忽略。
+- 每套候选的 `replacements` 按目标衣物给出完整新搭配、匹配度变化和理由；被锁定的核心单品不会被建议替换。
+
+## 推荐反馈与可用状态
+
+- 推荐卡的喜欢、不喜欢、评分与“实际穿了”都按稳定 `candidateId` 保存；同一候选再次提交会更新原反馈并重算组合统计，不会重复加权。`actuallyWorn=true` 首次写入时会与对应穿着记录在同一事务提交；它与“改穿保存搭配”互斥。
+- 衣物状态为 `available`、`laundry`、`repair`、`loaned`、`packed`。状态更新与 `garment_availability_events` 历史在同一事务写入；重复设置当前状态不追加事件。“标记已穿”不会自动把衣物改为待洗。
+- 学习信号是 `likes + 2*wornCount - 2*dislikes`，置信度为 `min(1,totalFeedback/5)`；`totalFeedback` 包含 skipped、仅评分等每条候选反馈。单对衣物少于 3 条证据时只记录、不调权；达到阈值后每对最多贡献 -4…+4，整套通过 `scoreBreakdown.learnedPreference` 单列并限制在 -8…+8。
+- 清空反馈支持全部、指定候选和按 `updatedAt` 日期闭区间三种范围。界面必须先调用 `GET /api/recommendation-feedback/clear-preview` 展示反馈条数与受影响组合数，用户二次确认后才发送 DELETE；删除与剩余组合统计重算在同一事务完成。
+- 洞察页只展示反馈总数、接受率与常见拒绝原因；接受率按 `verdict=liked` 或 `actuallyWorn=true` 的去重反馈数除以总反馈数，不把少于阈值的组合包装成已学习结论。
+
+## 保存与复用搭配
+
+1. 在推荐卡点击「保存搭配」，应用会用推荐候选的历史快照创建记录并立即打开编辑器；可修改名称、备注和收藏状态。
+2. 在衣服库展开单品后点击「以这件为核心」，或在推荐卡某件衣物上点击同名动作，可生成包含该衣物的硬约束推荐；推荐页可清除约束。
+3. 推荐卡每件可替换衣物都有「换这件」。替换对话框会先展示目标、完整新整套、匹配度变化和理由；只有确认应用后才创建新版本。
+4. 进入「历史洞察 → 保存的搭配」可新建手工搭配、重新打开编辑、收藏或归档；已归档搭配仍在独立历史区域按保存时快照回看。手工搭配的核心必须是连衣裙，或上装加下装；配饰可拖动，也可用上移/下移按钮调整顺序。
+5. 替换创建的新版本会显示原搭配关系；原记录不会被覆盖。衣物以后改名或归档也不会改变已经保存的名称、品牌、类别和图片快照。
 
 ## 隐私边界
 
@@ -174,13 +192,14 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 
 ## 数据删除、导出与备份
 
-- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着记录、推荐历史和个人画像。
+- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着记录、推荐历史、推荐反馈与评论、衣物状态历史、保存搭配及个人画像。
 - `output/chrome-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Selenium Chrome 退出淘宝登录态。
 - `output/playwright-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Playwright Chrome 退出淘宝登录态。
 - `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
 - `output/garment-thumbnails` 是本地缩略图缓存。
-- `GET /api/export` 当前始终返回 `OutfitExportV2`，包含 `version=2`、当前 `schemaVersion`、功能标识、画像、衣物、淘宝来源、穿着记录、全部推荐 run 和推荐 candidate 快照。前端请求前会明确提示其中含有敏感本地数据。
-- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1 导出。
+- `GET /api/export` 当前始终返回 `OutfitExportV2`：envelope 保持 `version=2`，当前数据库自动报告 `schemaVersion=4`，并带有 `feedback-availability` 功能标识。除画像、衣物、淘宝来源、穿着记录、全部推荐 run/candidate，以及 active、归档、派生保存搭配和衣物快照外，还导出全部推荐反馈、衣物组合统计和可用状态变更历史。
+- 反馈 verdict/评分、拒绝原因、自由文本评论、实际穿着选择与完整状态历史都是敏感本地数据。前端请求 JSON 或完整 ZIP 前会明确提示这些内容；直接调用 API 的人必须自行确认接收方和存放位置可信。
+- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1，以及缺少反馈/状态数组的旧 V2 导出。
 
 查看隐私清理计划但不删除任何文件：
 

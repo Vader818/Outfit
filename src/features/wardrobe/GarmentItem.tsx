@@ -6,18 +6,26 @@ import {
   Image as ImageIcon,
   Scissors,
   Tags,
+  Target,
 } from "lucide-react";
 import { GarmentImage } from "../../components/garments/GarmentImage";
 import { Badge, Button, cx } from "../../components/ui";
-import { displayGarmentName, garmentMeta } from "../../lib/garments";
+import {
+  displayGarmentName,
+  garmentAvailabilityStatus,
+  garmentMeta,
+  isGarmentAvailable
+} from "../../lib/garments";
 import {
   CATEGORY_LABELS,
   COLOR_LABELS,
+  GARMENT_AVAILABILITY_LABELS,
   SEASON_LABELS,
   type BusyAction,
   WARMTH_LABELS
 } from "../../shared/presentation";
-import type { Garment } from "../../shared/types";
+import type { Garment, GarmentAvailabilityStatus } from "../../shared/types";
+import { AvailabilityMenu } from "./AvailabilityMenu";
 import { GarmentEditor } from "./GarmentEditor";
 
 export interface GarmentItemProps {
@@ -34,6 +42,9 @@ export interface GarmentItemProps {
   onOpenThumbnailPicker?: (garment: Garment) => void;
   onCutoutGarment?: (id: number) => void;
   onAnalyzeGarmentVision?: (id: number) => void;
+  onUseGarmentAsCore?: (garment: Garment) => void;
+  availabilityBusyGarmentId?: number | null;
+  onAvailabilityChange?: (id: number, status: GarmentAvailabilityStatus) => void;
 }
 
 export function GarmentItem({
@@ -49,12 +60,18 @@ export function GarmentItem({
   onDelete,
   onOpenThumbnailPicker,
   onCutoutGarment,
-  onAnalyzeGarmentVision
+  onAnalyzeGarmentVision,
+  onUseGarmentAsCore,
+  availabilityBusyGarmentId,
+  onAvailabilityChange
 }: GarmentItemProps) {
   const meta = garmentMeta(item);
   const detailUrl = item.detailUrl || item.itemUrl;
   const visionBusy = visionBusyId === item.id;
   const status = garmentStatus(item);
+  const availabilityStatus = garmentAvailabilityStatus(item);
+  const availabilityBusy = availabilityBusyGarmentId === item.id;
+  const available = isGarmentAvailable(item);
 
   return (
     <article
@@ -90,7 +107,12 @@ export function GarmentItem({
             {meta.brand ? <span className="garment-library-item__brand">{meta.brand}</span> : null}
             <h3>{item.name}</h3>
           </div>
-          <Badge tone={status.tone}>{status.label}</Badge>
+          <div className="garment-library-item__statuses">
+            <Badge tone={status.tone}>{status.label}</Badge>
+            <Badge tone={availabilityBadgeTone(availabilityStatus)}>
+              {GARMENT_AVAILABILITY_LABELS[availabilityStatus]}
+            </Badge>
+          </div>
         </header>
 
         <div className="garment-library-item__attributes" aria-label="衣物关键属性">
@@ -103,6 +125,15 @@ export function GarmentItem({
         <p className="garment-library-item__wear">
           {item.wearCount ? `已穿 ${item.wearCount} 次` : "暂无穿着记录"}
         </p>
+
+        {onAvailabilityChange ? (
+          <AvailabilityMenu
+            value={availabilityStatus}
+            garmentName={displayGarmentName(item)}
+            busy={availabilityBusy}
+            onChange={(nextStatus) => onAvailabilityChange(item.id, nextStatus)}
+          />
+        ) : null}
 
         {presentation === "review" ? (
           <p className="garment-library-item__review-note">核对名称和关键属性，确认后它会进入日常衣橱。</p>
@@ -145,6 +176,19 @@ export function GarmentItem({
           <GarmentEditor item={item} onUpdate={(update) => onUpdate(item.id, update)} />
 
           <div className="garment-library-item__tools">
+            {onUseGarmentAsCore ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label={`以${displayGarmentName(item)}为核心推荐`}
+                disabled={!item.owned || !item.confirmed || item.excluded || !available}
+                title={!available ? `${GARMENT_AVAILABILITY_LABELS[availabilityStatus]}衣物不能作为推荐核心` : undefined}
+                onClick={() => onUseGarmentAsCore(item)}
+              >
+                <Target aria-hidden="true" size={16} />
+                以这件为核心
+              </Button>
+            ) : null}
             {onOpenThumbnailPicker ? (
               <Button variant="secondary" size="sm" onClick={() => onOpenThumbnailPicker(item)}>
                 <ImageIcon aria-hidden="true" size={16} />
@@ -195,6 +239,13 @@ export function GarmentItem({
       </div>
     </article>
   );
+}
+
+function availabilityBadgeTone(status: GarmentAvailabilityStatus): "success" | "warning" | "danger" | "neutral" {
+  if (status === "available") return "success";
+  if (status === "repair") return "danger";
+  if (status === "laundry") return "warning";
+  return "neutral";
 }
 
 function garmentStatus(item: Garment): {

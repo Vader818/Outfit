@@ -76,7 +76,6 @@ export function ImportReviewTable({ preview, decisions, disabled = false, onDeci
                       aria-label={`${decision.include ? "取消选择" : "选择"}导入「${effectiveName || item.name}」`}
                       aria-describedby={descriptionId}
                       onChange={(event) => onDecision(item.sourceItemKey, {
-                        ...decision,
                         sourceItemKey: item.sourceItemKey,
                         include: event.target.checked
                       })}
@@ -132,11 +131,14 @@ function ImportRowEditor({
   onDecision: (next: ImportDecision) => void;
 }) {
   const seasons = fieldValue(item, decision, "seasons") ?? [];
+  const refundSync = item.disposition === "refund-sync";
+  const editorDisabled = disabled || refundSync;
 
   function change<Key extends keyof ImportGarmentOverrides>(
     key: Key,
     value: ImportGarmentOverrides[Key]
   ) {
+    if (editorDisabled) return;
     onDecision(withImportOverride(item, decision, key, value));
   }
 
@@ -152,10 +154,19 @@ function ImportRowEditor({
 
   return (
     <details className="import-review-row-editor">
-      <summary aria-label={`修正「${item.name}」的导入字段`} aria-disabled={disabled || undefined}>
-        {disabled && item.disposition === "skip" ? "不可修正" : "展开修正"}
+      <summary aria-label={`修正「${item.name}」的导入字段`} aria-disabled={editorDisabled || undefined}>
+        {refundSync
+          ? "退款同步：字段不可修正"
+          : editorDisabled
+            ? "不可修正"
+            : "展开修正"}
       </summary>
-      <fieldset disabled={disabled} className="import-review-row-editor__fields">
+      {refundSync ? (
+        <p className="import-review-row-editor__notice" role="note">
+          此候选仅同步退款状态；可以选择是否同步，但不能修改衣物字段。
+        </p>
+      ) : null}
+      <fieldset disabled={editorDisabled} className="import-review-row-editor__fields">
         <legend className="sr-only">修正「{item.name}」的衣物字段</legend>
         <div className="import-review-row-editor__grid">
           <Field

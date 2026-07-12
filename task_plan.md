@@ -1,10 +1,10 @@
-# 任务计划：Outfit 全前端重构
+# 任务计划：Outfit M1–M3 连续交付
 
 ## 目标
-在已完成全前端重构的基础上，严格执行 `docs/2026-07-10-outfit-m1-trusted-ingestion-plan.md`，完整交付 Outfit M1“可信建档与导入暂存区”：安全手工建档、受保护本地图片资产、软归档/恢复、数据库感知的淘宝导入审阅与幂等提交、V2/ZIP 完整备份，以及对应文档和全量验证。
+在已完成并保留 M1/M2 工作区成果的基础上，严格执行 `docs/2026-07-10-outfit-m3-feedback-availability-plan.md`，完整交付 Outfit M3：稳定 candidateId 反馈、幂等 pair stats、透明有界的学习偏好、衣物可用状态及历史、推荐硬过滤、反馈清空一致性、V2 导出、文档、自动化测试与真实交互验收。
 
 ## 当前阶段
-已完成：Outfit M1 可信建档与导入暂存区
+进行中：阶段 36——文档、全量验证与最终验收
 
 ## 各阶段
 
@@ -90,6 +90,145 @@
 - [x] 更新三份规划记录并汇总交付；不执行任何文件删除。
 - **状态：** complete
 
+### 阶段 14：M2 上下文恢复、契约审计与测试蓝图
+- [x] 运行 session catchup，读取项目约束、M2 计划、Git 差异、现有迁移/schema、推荐候选、历史洞察、导出与前端契约。
+- [x] 运行修改前基线，确认 M0 全局 UUID 与 M1 可复用能力的实际落地状态。
+- [x] 将每条 M2 实施任务和验收标准映射到具体文件、测试顺序及无冲突并行范围。
+- **状态：** complete
+
+### 阶段 15：表迁移、Saved Outfits CRUD 与归档（TDD）
+- [x] 先写迁移和 CRUD 失败测试，覆盖 `slot+position` 唯一、派生搭配存在且不可自引用、归档衣物 snapshot 可回看。
+- [x] 创建 `server/services/savedOutfits.ts`、`server/routes/outfits.ts` 和 `tests/savedOutfits.test.ts`，实现严格校验、事务 CRUD 与软归档。
+- [x] 接入主路由且保留 session、Origin/Sec-Fetch-Site、结构化错误等现有安全边界。
+- **状态：** complete
+
+### 阶段 16：推荐一键保存与保存搭配管理（TDD）
+- [x] 实现 `/api/recommendation-candidates/:candidateId/save`，使用 M0 全局唯一 UUID，默认名称为日期+场合且支持立即改名。
+- [x] 创建 `SavedOutfitsPanel`，在历史洞察页内增加“保存的搭配”二级区域，不增加第六个移动端主导航项。
+- [x] 覆盖重新打开、编辑、归档以及来源衣物归档后的历史展示。
+- **状态：** complete
+
+### 阶段 17：OutfitBuilder 手工搭配编辑（TDD）
+- [x] 创建 `OutfitBuilder`，按 slot 选择衣物并支持配饰拖动或按钮调整顺序。
+- [x] 保存前执行完整性和重复位置校验，覆盖键盘、移动端、加载与结构化错误状态。
+- **状态：** complete
+
+### 阶段 18：锁定核心与排除衣物的推荐约束（TDD）
+- [x] 扩展推荐请求类型、校验与服务，支持 `includeGarmentIds` / `excludeGarmentIds`。
+- [x] 对不存在、未确认、已归档、互相冲突或被排除的 ID 返回结构化校验错误；本轮不提前实现 M3 availability。
+- [x] 为衣物详情与推荐卡接入“以这件为核心”操作，确保键盘和移动端可完成。
+- **状态：** complete
+
+### 阶段 19：结构化替代建议与可追溯新版本（TDD）
+- [x] 将 `findAlternatives()` 改为 `OutfitReplacementSuggestion` 结构，包含目标衣物、完整新搭配、分数变化和理由。
+- [x] 创建 `ReplacementDialog`；应用替代项时新建 `source=replacement` 且带 `derivedFromOutfitId` 的保存搭配，不覆盖原记录。
+- [x] 为推荐卡接入“换这件”，验证旧搭配仍可回看且新旧修改/归档互不影响。
+- **状态：** complete
+
+### 阶段 20：V2 导出、文档、全量验证与验收
+- [x] 扩展 `OutfitExportV2`，加入 saved outfits、items、snapshot 与 `derivedFromOutfitId`，用归档衣物 fixture 验证完整性。
+- [x] 同步 `docs/api.md`、`docs/schema.md` 及必要用户说明。
+- [x] 运行目标测试、`npm run typecheck`、`npm test`、`npm run build`，并逐条验证五项验收标准与桌面/移动端交互。
+- [x] 更新规划、发现与进度记录；不执行任何未经用户明确确认的文件删除。
+- **状态：** complete
+
+### 阶段 21：独立验收基线与计划映射
+- [x] 读取两份开发计划、现有规划记录、Git 状态与近期提交，区分已提交 M1 与未提交 M2。
+- [x] 将 M1/M2 的实施任务和验收标准逐条映射到当前实现、测试与文档证据。
+- [x] 使用独立代码审查与只读子 Agent 交叉检查既有完成声明。
+- **状态：** complete
+
+### 阶段 22：实现质量与安全边界审计
+- [x] 审查迁移、事务、严格校验、认证/来源保护、图片/ZIP 安全、软归档和幂等边界。
+- [x] 审查保存搭配、推荐约束、替代派生、归档快照和导出完整性。
+- [x] 按严重度记录缺陷、偏离、证据不足和可维护性风险。
+- **状态：** complete
+
+### 阶段 23：独立验证
+- [x] 运行 M1/M2 专项测试、类型检查、全量测试和生产构建。
+- [x] 运行依赖审计，并核实测试覆盖是否对应计划验收标准。
+- [x] 对失败项定位根因，不在未获修复授权时修改产品代码。
+- **状态：** complete
+
+### 阶段 24：结论与交付
+- [x] 汇总计划符合度、项目质量等级、关键证据与残余风险。
+- [x] 明确回答 Codex 是否按两份计划完成开发，并区分“实现存在”“测试覆盖”“人工交互已复验”。
+- [x] 更新三份规划记录并完成当前 goal。
+- **状态：** complete
+
+### 阶段 25：验收缺陷修复基线与并行实施
+- [x] 恢复验收上下文、Git 差异和 active goal，确认不覆盖既有 M1/M2 工作区改动。
+- [x] 将修复拆分为 M1 导入审阅、M2 多配饰硬约束、M2 历史搭配交互及主线兼容接口/文档四个无冲突范围。
+- [x] 等待三个写入子 Agent 完成并逐项复核其实现与测试证据。
+- **状态：** complete
+
+### 阶段 26：M1 可信导入闭环
+- [x] 取消候选时清除 overrides，退款同步行禁止字段修正，并补真实交互序列回归测试。
+- [x] 禁用旧 `/api/import/taobao-batch` 直接写库路径，返回结构化弃用响应并更新客户端/测试。
+- [x] 同步 README/API 关于图片建档、restore 与两阶段导入的说明。
+- **状态：** complete
+
+### 阶段 27：M2 推荐约束与历史搭配修复
+- [x] 让多个锁定配饰同时出现在每个候选，或在不可满足时返回结构化错误；补双配饰测试。
+- [x] 保证含归档/已删除来源衣物的搭配可安全改名/备注，组合编辑不静默丢失 snapshot。
+- [x] 为归档 saved outfits 提供明确回看区域，并覆盖键盘/移动端可用性。
+- **状态：** complete
+
+### 阶段 28：计划与文档收口
+- [x] 将 M1/M2 计划状态、任务勾选和验收说明同步到当前实现。
+- [x] 修正文档中过时或与服务端行为不一致的描述。
+- [x] 复核 API/schema/README 相互一致。
+- **状态：** complete
+
+### 阶段 29：全量验证与最终签收
+- [x] 运行目标测试、typecheck、全量 Node/Python 测试、生产构建、依赖审计与 diff 检查。
+- [x] 使用隔离 fixture 完成导入取消修正、多配饰硬锁定、历史搭配回看/编辑的组件与 API 回归。
+- [x] 更新规划记录并仅在所有验收缺陷均有直接证据时完成 goal。
+- **状态：** complete
+
+### 阶段 30：M3 上下文恢复、契约审计与基线验证
+- [x] 运行 session catchup，读取 M3 计划、Git 差异、M2 candidate/saved outfit、wear log、推荐评分、洞察、导出与前端契约。
+- [x] 保留全部既有未提交 M1/M2 改动，划定无冲突写入范围并记录现有迁移编号与 schemaVersion。
+- [x] 运行修改前 typecheck、专项/全量测试并映射十二项任务；生产构建因删除约束延期，最终在用户明确授权后完成。
+- **状态：** complete
+
+### 阶段 31：衣物可用状态、事件历史与推荐硬过滤（TDD）
+- [x] 先写迁移、状态枚举、原子更新和事件历史失败测试，再新增 `garments.availability_status` 与 `garment_availability_events`。
+- [x] 创建 `server/services/garmentAvailability.ts`，实现严格状态校验及 garment/event 同事务更新，并接入认证写路由。
+- [x] 推荐硬过滤非 available 衣物；缺槽时在 `missingSlots` 中提示不可用数量；“标记已穿”仅建议待洗，不自动改状态。
+- **状态：** complete
+
+### 阶段 32：反馈幂等、pair stats 与透明有界评分（TDD）
+- [x] 先写反馈幂等、评分范围、原因枚举、候选归属、重复提交和稳定 candidateId 测试。
+- [x] 创建 `recommendation_feedback`、`outfit_pair_stats`、`server/services/recommendationFeedback.ts` 与 `server/routes/feedback.ts`，实现同候选更新而非叠加。
+- [x] 按计划公式重算 pair stats：少于 3 条证据不调权，单搭配总 bonus 限制在 -8…+8，并以 `scoreBreakdown.learnedPreference` 单独展示。
+- **状态：** complete
+
+### 阶段 33：实际穿着事务与反馈推荐集成（TDD）
+- [x] 将 `actuallyWorn=true` 与当前 `wear_logs` 写入放在同一事务，复用 service 边界但不提前依赖 M4 表。
+- [x] 验证失败时两侧均不残留写入，重复反馈不会重复穿着记录或重复加权。
+- [x] 验证反馈阈值前后排序、解释字段、可用状态过滤与 M2 include/exclude/替代约束兼容。
+- **状态：** complete
+
+### 阶段 34：反馈、可用状态与洞察前端（TDD）
+- [x] 创建 `FeedbackDialog` 和 `AvailabilityMenu`，为 OutfitStage 接入喜欢、不喜欢、实际穿了及有限拒绝原因。
+- [x] 衣服库接入单件和批量状态切换，覆盖加载、错误、键盘、移动端与结构化校验反馈。
+- [x] 洞察页显示反馈数量、接受率和最常见拒绝原因，不展示未达阈值的学习结论。
+- **状态：** complete
+
+### 阶段 35：反馈清空、导出与一致性（TDD）
+- [x] 实现 all/candidate/date-range 清空预览、范围展示、二次确认、严格 scope 校验和结构化审计结果。
+- [x] 在同一事务删除目标反馈并重算 pair stats，覆盖越权 scope、空范围、无效日期和重放。
+- [x] 扩展 OutfitExportV2，加入 feedback、pair stats 与 availability events，验证状态历史与归档引用不遗漏。
+- **状态：** complete
+
+### 阶段 36：文档、全量验证与最终验收
+- [x] 同步 `docs/api.md`、`docs/schema.md` 及必要用户说明，并更新 M3 原计划勾选与状态。
+- [x] 运行目标测试、`npm run typecheck`、`npm test`、Python 测试、`npm run build`、依赖审计与 `git diff --check`。
+- [x] 使用隔离数据完成桌面/移动端真实交互验收，逐条核对五项验收标准并更新三份规划记录。
+- [x] 删除前向用户展示目标与影响并取得明确确认；仅由标准构建清理并重建已列明的 6 个 `dist` 生成文件。
+- **状态：** complete
+
 ## 关键问题
 1. 工作区已有 `src/App.tsx`、`src/styles.css`、`tests/app.test.tsx` 未提交改动，必须先理解并保留。
 2. 当前前端可能以大型单文件为主，是否拆分需依据实际耦合和测试边界决定。
@@ -146,6 +285,34 @@
 | 最终清单复核发现 canvas 预处理缺少直接交互模拟测试 | 1 | 新增 4096×2048 本地图经 canvas 缩至 2048×1024 并输出 WebP 的测试；后端净化测试继续作为真正安全边界 |
 | 首次补 ZIP 前端测试的组合补丁未命中现有测试标题 | 1 | 读取文件精确上下文后按真实标题定点应用，未产生部分写入 |
 | ZIP 路由 TDD 红灯仍返回默认 V2 JSON | 1 | 增加 `format=zip&preview=1` 预览分支、流式 ZIP 分支与非法格式结构化错误后转绿 |
+| M2 Saved Outfits 首轮红灯：`server/services/savedOutfits.ts` 尚不存在 | 1 | 这是预期的 TDD 失败；下一步实现共享类型、严格 DTO、事务服务和认证路由后重跑同一目标测试 |
+| Saved Outfits 首轮实现后 1 条测试因断言只接受“衣物不存在”，实际沿用既有“衣服不存在”文案 | 1 | 扩展测试正则兼容项目既有结构化 NOT_FOUND 文案，产品实现无需改动；专项 18/18 与 typecheck 随后通过 |
+| 推荐保存 UI 转绿时并行 typecheck 暂时看到前端 Agent 已写测试但组件文件尚未落盘 | 1 | 这是明确写入边界内的并行中间态；不修改 Agent 文件，单独验证主线 `savedOutfitsUi` 2/2 通过，等待组件任务完成后再跑 typecheck |
+| v3 迁移完成后导出测试仍精确断言 schemaVersion 2 | 1 | 将当前 builder 预期更新为 3；随后在 M2 导出阶段继续加入 saved-outfits feature 与数据字段 |
+| 更新 schemaVersion 断言时首次补丁命中前一处 legacy V2 fixture | 1 | 读取精确行后恢复兼容 fixture，并只把当前 builder 断言改为 3 |
+| M2 首次全量回归剩 1 条 API 导出断言仍固定为 M1 schemaVersion 2/三项 feature | 1 | 保留实现的 v3 输出，只把真实 API 集成预期迁移为 3、追加 saved-outfits 与 savedOutfits 数组 |
+| Playwright 首次命令把 workdir 指向尚未创建的证据目录 | 1 | 先从项目根创建 `output/playwright/m2-final-20260711`，再以该目录运行 CLI |
+| Windows PowerShell 首轮 QA seed 未显式发送 UTF-8 bytes，中文 fixture 名变为问号 | 1 | 改用 UTF-8 bytes；为便于视觉辨识，以 ASCII 名更新临时衣物并新建可信 snapshot，旧 fixture 只软归档不删除 |
+| 移动端一次 Playwright eval 的 selector 引号被 CLI 参数解析吞掉 | 1 | 不依赖该表达式，使用语义 snapshot 验证 Dialog，并单独复测 clientWidth/scrollWidth |
+| 本次独立验收新建 goal 失败，因为用户的 `/goal` 已自动创建 active goal | 1 | 读取 `get_goal`，确认目标与本次验收一致并沿用 |
+| code-review 首次读取中文请求时使用系统 GBK，触发 `UnicodeDecodeError` | 1 | 下一次调用设置 `PYTHONUTF8=1`，保持请求文件为 UTF-8 |
+| code-review OpenAI provider 无法从 WindowsApps 路径启动 Codex，触发 `WinError 5` | 1 | 不重复调用该 provider；检查并改用技能支持的 GitHub provider，主审查继续独立推进 |
+| code-review GitHub provider 检查失败，系统未安装 `gh`/Copilot CLI | 1 | 停止外部 provider 尝试；使用两个独立只读子 Agent 与主线静态/动态审查交叉验证，不阻塞验收 |
+| Playwright CLI 直接填充 JSON 时 Windows 参数解析去掉引号，后续 run-code 又依次遇到函数签名、Buffer 与隐藏 textarea 定位问题 | 4 | 按 CLI 函数签名用页面端 Base64 解码，并用可访问名称精确定位“采集 JSON”，最终成功复现导入缺陷 |
+| 全量 Vitest 与 Python/依赖审计并行时 1 个 worker 异常退出，完成 22/23 文件、297/320 项 | 1 | 专项均通过且子 Agent 独立全量为 320/320；改为不并发、单独重跑全量确认 |
+| M3 首轮迁移/服务红灯：v4 未注册且 feedback/availability service 文件不存在 | 1 | 这是预期的 TDD 失败；下一步仅实现 v4 migration 与两个事务 service 后重跑同一目标测试 |
+| M3 v4 实现后迁移测试剩余 2 项失败：演练表清单未同步、pair fixture 缺少第二件衣物 | 1 | 将 3 张新表/默认 available 纳入精确演练，并创建真实第二件衣物后验证 pair FK/顺序约束 |
+| M3 推荐红灯：availability 尚未过滤、UNAVAILABLE 未校验、learnedPreference 未计分 | 1 | 这是预期的 TDD 失败；将 availability 加入统一 eligibility/缺槽详情，并在 scoreCandidate 接入有界 pair bonus |
+| M3 反馈管理对话框红灯：`FeedbackManagementDialog.tsx` 尚不存在 | 1 | 这是预期的 TDD 失败；实现范围表单、影响预览与二次确认组件后重跑同一测试 |
+| 反馈管理 UI 首次实现后 1 条测试把说明中的“确认清空”误判为按钮 | 1 | 将断言收紧为匹配实际 button 标签，保留预览前说明文案与产品行为 |
+| M3 实际穿着增强测试发现空 reasonCodes 会清掉既有拒绝原因 | 1 | 将“仅 actuallyWorn=true”的提交识别为增量事实，保留已有 verdict/rating/reasons/comment 并只新增一次 wear log |
+| M3 首次统一 typecheck 剩 8 项：1 个生产 draft、3 个 SQLite 类型、4 组测试 fixture | 1 | 保持新字段必填，补默认 available/learnedPreference，并将 SQLite 输出与参数收窄到真实类型，不放宽契约 |
+| 一次多文件机械补丁因 recommendationCandidates 分数字段尾部上下文不符而未应用 | 1 | 拆分已确认文件补丁，单独读取候选 fixture 精确上下文后再定点修改，未产生部分写入 |
+| M3 浏览器 QA 首次隔离 seed 脚本被 PowerShell 双引号 here-string 吞掉 JS 反引号 | 1 | API/Vite 尚未启动；改用无反引号的单引号脚本模板与路径占位替换，保留失败临时目录且不删除 |
+| M3 浏览器 QA 第二次 seed 的 `tsx -e` 字符串引号被 Windows 原生命令参数处理剥离 | 1 | 不再使用 inline TS seed；先启动空隔离 API，再通过自身注册/手工建档 HTTP 接口创建 QA 数据 |
+| 浏览器首次用精确 label 定位登录账号失败，账号提示文字被并入可访问名称 | 1 | 读取最新 DOM snapshot 后改用精确 role/name 定位，登录与后续交互均通过 |
+| npm 全量审计首次走本机 `npmmirror`，其安全审计端点返回 404 | 1 | 临时显式使用 `https://registry.npmjs.org` 重跑生产及全量审计，均为 0 漏洞 |
+| `check-complete.ps1` 在 Windows PowerShell 中直接执行时把无 BOM UTF-8 当作系统代码页，显式读取脚本后又使其内部 `Get-Content` 得到 0/0 | 2 | 用 UTF-8 创建 ScriptBlock，并为内部 `Get-Content` 设置 UTF-8 默认值；最终报告 36/36 阶段完成 |
 
 ## 备注
 - 优先使用 PowerShell 原生命令，不先使用 `rg`。

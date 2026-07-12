@@ -27,7 +27,9 @@ describe("versioned database migrations", () => {
     expect(rows).toEqual([
       { version: 0, name: "legacy-baseline" },
       { version: 1, name: "recommendation-candidates" },
-      { version: 2, name: "trusted-ingestion" }
+      { version: 2, name: "trusted-ingestion" },
+      { version: 3, name: "saved-outfits" },
+      { version: 4, name: "feedback-availability" }
     ]);
   });
 
@@ -55,7 +57,9 @@ describe("versioned database migrations", () => {
     expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 0 },
       { version: 1 },
-      { version: 2 }
+      { version: 2 },
+      { version: 3 },
+      { version: 4 }
     ]);
   });
 
@@ -248,7 +252,9 @@ describe("versioned database migrations", () => {
     expect(migrations).toEqual([
       { version: 0, name: "legacy-baseline" },
       { version: 1, name: "recommendation-candidates" },
-      { version: 2, name: "trusted-ingestion" }
+      { version: 2, name: "trusted-ingestion" },
+      { version: 3, name: "saved-outfits" },
+      { version: 4, name: "feedback-availability" }
     ]);
     expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
       "idx_recommendation_candidates_run_id",
@@ -346,5 +352,274 @@ describe("versioned database migrations", () => {
     `).run(garmentId, "c".repeat(64))).toThrow();
     expect(() => db.prepare("UPDATE garments SET purchase_price_cents = 1.5 WHERE id = ?").run(garmentId)).toThrow();
     expect(() => db.prepare("DELETE FROM garments WHERE id = ?").run(garmentId)).toThrow();
+  });
+
+  it("adds strict saved outfit history with provenance, snapshots, and derivation constraints in migration 3", () => {
+    const legacyDb = new DatabaseSync(":memory:");
+    legacyBaseline0(legacyDb);
+    expect(legacyDb.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN ('saved_outfits', 'saved_outfit_items')
+    `).all()).toEqual([]);
+
+    const db = createDatabase(":memory:");
+    const outfitColumns = db.prepare("PRAGMA table_info(saved_outfits)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(outfitColumns.map((column) => column.name)).toEqual([
+      "id",
+      "name",
+      "notes",
+      "source",
+      "source_candidate_id",
+      "derived_from_outfit_id",
+      "favorite",
+      "archived_at",
+      "created_at",
+      "updated_at"
+    ]);
+    expect(outfitColumns.find((column) => column.name === "id")).toMatchObject({
+      type: "INTEGER",
+      pk: 1
+    });
+
+    const itemColumns = db.prepare("PRAGMA table_info(saved_outfit_items)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+    expect(itemColumns.map((column) => column.name)).toEqual([
+      "id",
+      "outfit_id",
+      "garment_id",
+      "slot",
+      "position",
+      "garment_snapshot"
+    ]);
+    expect(itemColumns.find((column) => column.name === "id")).toMatchObject({
+      type: "INTEGER",
+      pk: 1
+    });
+
+    expect(db.prepare("PRAGMA foreign_key_list(saved_outfits)").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "recommendation_candidates",
+        from: "source_candidate_id",
+        to: "candidate_id",
+        on_delete: "SET NULL"
+      }),
+      expect.objectContaining({
+        table: "saved_outfits",
+        from: "derived_from_outfit_id",
+        to: "id",
+        on_delete: "RESTRICT"
+      })
+    ]));
+    expect(db.prepare("PRAGMA foreign_key_list(saved_outfit_items)").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: "saved_outfits",
+        from: "outfit_id",
+        to: "id",
+        on_delete: "CASCADE"
+      }),
+      expect.objectContaining({
+        table: "garments",
+        from: "garment_id",
+        to: "id",
+        on_delete: "SET NULL"
+      })
+    ]));
+
+    const outfitIndexes = db.prepare("PRAGMA index_list(saved_outfits)").all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    expect(outfitIndexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "idx_saved_outfits_archived_at", unique: 0 }),
+      expect.objectContaining({ name: "idx_saved_outfits_source_candidate_id", unique: 0 }),
+      expect.objectContaining({ name: "idx_saved_outfits_derived_from_outfit_id", unique: 0 })
+    ]));
+    const itemIndexes = db.prepare("PRAGMA index_list(saved_outfit_items)").all() as Array<{
+      name: string;
+      unique: number;
+    }>;
+    expect(itemIndexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "idx_saved_outfit_items_outfit_id", unique: 0 }),
+      expect.objectContaining({ unique: 1 })
+    ]));
+
+    const runId = Number(db.prepare(`
+      INSERT INTO recommendation_runs (input_json, result_json)
+      VALUES ('{}', '{}')
+    `).run().lastInsertRowid);
+    const candidateId = "11111111-1111-4111-8111-111111111111";
+    db.prepare(`
+      INSERT INTO recommendation_candidates (
+        candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+      ) VALUES (?, ?, 'signature', 1, '[]', '{}')
+    `).run(candidateId, runId);
+    const garmentId = Number(db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality
+      ) VALUES ('白色衬衫', 'top', 'white', 'light', '[]', '[]', 'casual')
+    `).run().lastInsertRowid);
+
+    const insertOutfit = db.prepare(`
+      INSERT INTO saved_outfits (
+        id, name, notes, source, source_candidate_id, derived_from_outfit_id, favorite
+      ) VALUES (?, ?, '', ?, ?, ?, ?)
+    `);
+    insertOutfit.run(1, "手工搭配", "manual", null, null, 0);
+    insertOutfit.run(2, "推荐搭配", "recommendation", candidateId, null, 1);
+    insertOutfit.run(3, "替换版本", "replacement", null, 1, 0);
+
+    const snapshot = JSON.stringify({
+      id: garmentId,
+      name: "白色衬衫",
+      brand: "",
+      category: "top",
+      imageUrl: ""
+    });
+    const insertItem = db.prepare(`
+      INSERT INTO saved_outfit_items (
+        outfit_id, garment_id, slot, position, garment_snapshot
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+    insertItem.run(1, garmentId, "top", 0, snapshot);
+
+    expect(() => insertOutfit.run(4, "非法来源", "generated", null, null, 0)).toThrow();
+    expect(() => insertOutfit.run(5, "非法收藏值", "manual", null, null, 2)).toThrow();
+    expect(() => insertOutfit.run(6, "缺少父搭配", "replacement", null, null, 0)).toThrow();
+    expect(() => insertOutfit.run(7, "不存在的父搭配", "replacement", null, 999, 0)).toThrow();
+    expect(() => insertOutfit.run(8, "不存在的候选", "recommendation", "missing", null, 0)).toThrow();
+    expect(() => insertOutfit.run(9, "自引用", "replacement", null, 9, 0)).toThrow();
+    expect(() => insertItem.run(1, garmentId, "top", 0, snapshot)).toThrow();
+    expect(() => insertItem.run(1, garmentId, "hat", 1, snapshot)).toThrow();
+    expect(() => insertItem.run(1, garmentId, "accessory", -1, snapshot)).toThrow();
+    expect(() => insertItem.run(1, garmentId, "accessory", 1, "not-json")).toThrow();
+    expect(() => insertItem.run(1, garmentId, "accessory", 1, "[]")).toThrow();
+
+    db.prepare("DELETE FROM garments WHERE id = ?").run(garmentId);
+    expect(db.prepare(`
+      SELECT garment_id, garment_snapshot
+      FROM saved_outfit_items
+      WHERE outfit_id = 1
+    `).get()).toEqual({ garment_id: null, garment_snapshot: snapshot });
+
+    const cascadeOutfitId = Number(db.prepare(`
+      INSERT INTO saved_outfits (name, notes, source, favorite)
+      VALUES ('可级联删除', '', 'manual', 0)
+    `).run().lastInsertRowid);
+    insertItem.run(cascadeOutfitId, null, "accessory", 0, JSON.stringify({
+      id: 999,
+      name: "历史配饰",
+      brand: "",
+      category: "accessory",
+      imageUrl: ""
+    }));
+    db.prepare("DELETE FROM saved_outfits WHERE id = ?").run(cascadeOutfitId);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM saved_outfit_items WHERE outfit_id = ?
+    `).get(cascadeOutfitId)).toEqual({ count: 0 });
+
+    db.prepare("DELETE FROM recommendation_runs WHERE id = ?").run(runId);
+    expect(db.prepare(`
+      SELECT source_candidate_id FROM saved_outfits WHERE id = 2
+    `).get()).toEqual({ source_candidate_id: null });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("adds feedback, pair statistics, and garment availability history in migration 4", () => {
+    const legacyDb = new DatabaseSync(":memory:");
+    legacyBaseline0(legacyDb);
+    expect(legacyDb.prepare("PRAGMA table_info(garments)").all()).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "availability_status" })
+    ]));
+
+    const db = createDatabase(":memory:");
+    expect(db.prepare("PRAGMA table_info(garments)").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "availability_status",
+        type: "TEXT",
+        notnull: 1,
+        dflt_value: "'available'"
+      })
+    ]));
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table'
+        AND name IN ('recommendation_feedback', 'outfit_pair_stats', 'garment_availability_events')
+      ORDER BY name
+    `).all()).toEqual([
+      { name: "garment_availability_events" },
+      { name: "outfit_pair_stats" },
+      { name: "recommendation_feedback" }
+    ]);
+
+    const garmentId = Number(db.prepare(`
+      INSERT INTO garments (name, category, color, warmth, seasons, styles, formality)
+      VALUES ('测试上衣', 'top', 'black', 'medium', '[]', '[]', 'casual')
+    `).run().lastInsertRowid);
+    const secondGarmentId = Number(db.prepare(`
+      INSERT INTO garments (name, category, color, warmth, seasons, styles, formality)
+      VALUES ('测试下装', 'bottom', 'black', 'medium', '[]', '[]', 'casual')
+    `).run().lastInsertRowid);
+    expect(db.prepare("SELECT availability_status FROM garments WHERE id = ?").get(garmentId)).toEqual({
+      availability_status: "available"
+    });
+    expect(() => db.prepare("UPDATE garments SET availability_status = 'lost' WHERE id = ?").run(garmentId)).toThrow();
+
+    const runId = Number(db.prepare(`
+      INSERT INTO recommendation_runs (input_json, result_json) VALUES ('{}', '{}')
+    `).run().lastInsertRowid);
+    const candidateId = "44444444-4444-4444-8444-444444444444";
+    db.prepare(`
+      INSERT INTO recommendation_candidates (
+        candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+      ) VALUES (?, ?, 'm3-signature', 1, ?, '{}')
+    `).run(candidateId, runId, JSON.stringify([garmentId, secondGarmentId]));
+
+    const feedbackInsert = db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
+        wore_instead_outfit_id, wear_log_id, created_at, updated_at
+      ) VALUES (?, 'liked', 5, 1, '[]', '', NULL, NULL, ?, ?)
+    `);
+    const now = "2026-07-12T10:00:00.000Z";
+    feedbackInsert.run(candidateId, now, now);
+    expect(() => feedbackInsert.run(candidateId, now, now)).toThrow();
+    expect(() => db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
+        created_at, updated_at
+      ) VALUES ('missing', 'liked', NULL, 0, '[]', '', ?, ?)
+    `).run(now, now)).toThrow();
+
+    db.prepare(`
+      INSERT INTO outfit_pair_stats (
+        garment_a_id, garment_b_id, likes, dislikes, worn_count, total_feedback, signal, updated_at
+      ) VALUES (?, ?, 1, 0, 1, 1, 3, ?)
+    `).run(garmentId, secondGarmentId, now);
+    expect(() => db.prepare(`
+      INSERT INTO outfit_pair_stats (
+        garment_a_id, garment_b_id, likes, dislikes, worn_count, total_feedback, signal, updated_at
+      ) VALUES (?, ?, 0, 0, 0, 0, 0, ?)
+    `).run(secondGarmentId, garmentId, now)).toThrow();
+
+    db.prepare(`
+      INSERT INTO garment_availability_events (
+        garment_id, previous_status, status, changed_at
+      ) VALUES (?, 'available', 'laundry', ?)
+    `).run(garmentId, now);
+    expect(() => db.prepare(`
+      INSERT INTO garment_availability_events (
+        garment_id, previous_status, status, changed_at
+      ) VALUES (?, 'available', 'missing', ?)
+    `).run(garmentId, now)).toThrow();
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });

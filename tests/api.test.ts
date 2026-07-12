@@ -1023,6 +1023,28 @@ describe("API routes", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 1 });
   });
 
+  it("rejects the legacy direct-write Taobao import endpoint without persisting data", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/import/taobao-batch`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(payload)
+    });
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ error: { code: "LEGACY_IMPORT_DISABLED" } });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_order_items").get()).toEqual({ count: 0 });
+  });
+
   it("imports Taobao items, updates garments, and returns recommendations", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
@@ -1033,13 +1055,8 @@ describe("API routes", () => {
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl);
 
-    const importResponse = await fetch(`${baseUrl}/api/import/taobao-batch`, {
-      method: "POST",
-      headers: jsonHeaders(authCookie),
-      body: JSON.stringify(payload)
-    });
-    expect(importResponse.status).toBe(200);
-    expect(await importResponse.json()).toMatchObject({ summary: { createdGarments: 4 } });
+    const importResult = await trustedImportBatch(baseUrl, authCookie, payload);
+    expect(importResult).toMatchObject({ summary: { created: 4 } });
 
     const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
       headers: { cookie: authCookie }
@@ -1125,11 +1142,7 @@ describe("API routes", () => {
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl);
 
-    await fetch(`${baseUrl}/api/import/taobao-batch`, {
-      method: "POST",
-      headers: jsonHeaders(authCookie),
-      body: JSON.stringify(payload)
-    });
+    await trustedImportBatch(baseUrl, authCookie, payload);
 
     const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
       headers: { cookie: authCookie }
@@ -1508,11 +1521,7 @@ describe("API routes", () => {
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl);
 
-    await fetch(`${baseUrl}/api/import/taobao-batch`, {
-      method: "POST",
-      headers: jsonHeaders(authCookie),
-      body: JSON.stringify(payload)
-    });
+    await trustedImportBatch(baseUrl, authCookie, payload);
     const garments = (await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json()) as Array<{ id: number; category: string }>;
     const top = garments.find((garment) => garment.category === "top") ?? garments[0];
 
@@ -1574,13 +1583,20 @@ describe("API routes", () => {
     const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
       version: 2,
-      schemaVersion: 2,
-      features: ["versioned-migrations", "recommendation-candidates", "garment-assets"],
+      schemaVersion: 4,
+      features: [
+        "versioned-migrations",
+        "recommendation-candidates",
+        "garment-assets",
+        "saved-outfits",
+        "feedback-availability"
+      ],
       profile: expect.any(Object),
       garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
       wearLogs: expect.any(Array),
       recommendationRuns: expect.any(Array),
       sourceOrderItems: expect.any(Array),
+      savedOutfits: expect.any(Array),
       recommendationCandidates: expect.arrayContaining([
         expect.objectContaining({
           candidateId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
@@ -1827,6 +1843,104 @@ describe("API routes", () => {
     expect(runs[0].input).not.toHaveProperty("debugToken");
   });
 
+  it("validates recommendation garment constraints structurally and against all wardrobe states", async () => {
+    const db = createDatabase(":memory:");
+    const insert = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes, archived_at
+      ) VALUES (?, ?, 'black', 'medium', '["spring","summer","autumn"]',
+        '["casual"]', 'casual', '', ?, ?, ?, ?, '', ?)
+    `);
+    const activeTopId = Number(insert.run("高分上装", "top", 1, 1, 0, 1, null).lastInsertRowid);
+    const lockedTopId = Number(insert.run("指定低分上装", "top", 1, 1, 0, 0.1, null).lastInsertRowid);
+    const bottomId = Number(insert.run("有效下装", "bottom", 1, 1, 0, 1, null).lastInsertRowid);
+    const notOwnedId = Number(insert.run("未拥有上装", "top", 0, 1, 0, 1, null).lastInsertRowid);
+    const unconfirmedId = Number(insert.run("未确认上装", "top", 1, 0, 0, 1, null).lastInsertRowid);
+    const excludedId = Number(insert.run("已排除上装", "top", 1, 1, 1, 1, null).lastInsertRowid);
+    const archivedId = Number(insert.run(
+      "已归档上装",
+      "top",
+      1,
+      1,
+      0,
+      1,
+      "2026-07-10T00:00:00.000Z"
+    ).lastInsertRowid);
+
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const request = async (constraints: Record<string, unknown>) => fetch(`${baseUrl}/api/recommendations`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        weather: recommendationWeather,
+        occasion: "casual",
+        ...constraints
+      })
+    });
+
+    const structuralCases = [
+      { constraints: { includeGarmentIds: "bad" }, reason: "INVALID_ARRAY" },
+      { constraints: { includeGarmentIds: [lockedTopId, lockedTopId] }, reason: "DUPLICATE" },
+      {
+        constraints: { includeGarmentIds: [lockedTopId], excludeGarmentIds: [lockedTopId] },
+        reason: "INCLUDE_EXCLUDE_CONFLICT"
+      }
+    ];
+    for (const testCase of structuralCases) {
+      const response = await request(testCase.constraints);
+      expect(response.status).toBe(400);
+      const payload = await response.json() as { error: { details?: { issues?: Array<{ reason: string }> } } };
+      expect(payload.error.details?.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ reason: testCase.reason })
+      ]));
+    }
+
+    const stateCases = [
+      { field: "includeGarmentIds", garmentId: 999_999, reason: "NOT_FOUND" },
+      { field: "includeGarmentIds", garmentId: notOwnedId, reason: "NOT_OWNED" },
+      { field: "includeGarmentIds", garmentId: archivedId, reason: "ARCHIVED" },
+      { field: "includeGarmentIds", garmentId: unconfirmedId, reason: "UNCONFIRMED" },
+      { field: "excludeGarmentIds", garmentId: excludedId, reason: "EXCLUDED" }
+    ];
+    for (const testCase of stateCases) {
+      const response = await request({ [testCase.field]: [testCase.garmentId] });
+      expect(response.status).toBe(400);
+      const payload = await response.json() as {
+        error: { details?: { issues?: Array<{ field: string; garmentId: number; reason: string }> } };
+      };
+      expect(payload.error.details?.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining(testCase)
+      ]));
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_runs").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_candidates").get()).toEqual({ count: 0 });
+
+    const valid = await request({
+      includeGarmentIds: [lockedTopId],
+      excludeGarmentIds: [activeTopId]
+    });
+    expect(valid.status).toBe(200);
+    const result = await valid.json() as { outfits: Array<{ items: Array<{ id: number }> }> };
+    expect(result.outfits.length).toBeGreaterThan(0);
+    expect(result.outfits.every((outfit) => outfit.items.some((item) => item.id === lockedTopId))).toBe(true);
+    expect(result.outfits.every((outfit) => outfit.items.every((item) => item.id !== activeTopId))).toBe(true);
+    expect(result.outfits.every((outfit) => outfit.items.some((item) => item.id === bottomId))).toBe(true);
+
+    const stored = db.prepare("SELECT input_json FROM recommendation_runs ORDER BY id DESC LIMIT 1")
+      .get() as { input_json: string };
+    expect(JSON.parse(stored.input_json)).toMatchObject({
+      includeGarmentIds: [lockedTopId],
+      excludeGarmentIds: [activeTopId]
+    });
+  });
+
   it("persists globally unique candidate identities with stable cross-run signatures", async () => {
     const db = createDatabase(":memory:");
     const insert = db.prepare(`
@@ -1947,6 +2061,338 @@ describe("API routes", () => {
     });
   });
 
+  it("upserts recommendation feedback and garment availability through authenticated local routes", async () => {
+    const db = createDatabase(":memory:");
+    const candidateId = "11111111-1111-4111-8111-111111111111";
+    const [garmentId] = seedFeedbackCandidate(db, candidateId);
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const feedbackInput = {
+      candidateId,
+      verdict: "liked",
+      rating: 5,
+      actuallyWorn: false,
+      reasonCodes: [],
+      comment: "适合今天"
+    };
+
+    const unauthenticated = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(feedbackInput)
+    });
+    expect(unauthenticated.status).toBe(401);
+
+    const crossOrigin = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: { ...jsonHeaders(authCookie), origin: "https://evil.example" },
+      body: JSON.stringify(feedbackInput)
+    });
+    expect(crossOrigin.status).toBe(403);
+    expect(await crossOrigin.json()).toMatchObject({ error: { code: "ORIGIN_NOT_ALLOWED" } });
+
+    const created = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify(feedbackInput)
+    });
+    expect(created.status).toBe(200);
+    const createdBody = await created.json() as {
+      feedback: { id: number; candidateId: string; verdict: string; rating: number };
+      pairStatsRecomputed: number;
+    };
+    expect(createdBody).toMatchObject({
+      feedback: { candidateId, verdict: "liked", rating: 5 },
+      pairStatsRecomputed: 1
+    });
+
+    const replayed = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ ...feedbackInput, verdict: "disliked", reasonCodes: ["fit"] })
+    });
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toMatchObject({
+      feedback: { id: createdBody.feedback.id, candidateId, verdict: "disliked", reasonCodes: ["fit"] }
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 1 });
+
+    const changed = await fetch(`${baseUrl}/api/garments/${garmentId}/availability`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ status: "laundry" })
+    });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({
+      changed: true,
+      garment: { id: garmentId, availabilityStatus: "laundry" },
+      event: { previousStatus: "available", status: "laundry" }
+    });
+
+    const availabilityReplay = await fetch(`${baseUrl}/api/garments/${garmentId}/availability`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ status: "laundry" })
+    });
+    expect(availabilityReplay.status).toBe(200);
+    expect(await availabilityReplay.json()).toMatchObject({
+      changed: false,
+      garment: { availabilityStatus: "laundry" }
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garment_availability_events").get()).toEqual({ count: 1 });
+  });
+
+  it("applies three stable-candidate feedback rows to later recommendations, insights, wear logs, and clear", async () => {
+    const db = createDatabase(":memory:");
+    const garmentIds = ["top", "bottom", "shoes"].map((category, index) => Number(db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality, confirmed
+      ) VALUES (?, ?, 'black', 'medium', '["spring"]', '["casual"]', 'casual', 1)
+    `).run(`学习测试衣物 ${index}`, category).lastInsertRowid));
+    const candidateIds = [
+      "77777777-7777-4777-8777-777777777771",
+      "77777777-7777-4777-8777-777777777772",
+      "77777777-7777-4777-8777-777777777773"
+    ];
+    candidateIds.forEach((candidateId) => seedFeedbackCandidate(db, candidateId, garmentIds));
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const recommend = async () => {
+      const response = await fetch(`${baseUrl}/api/recommendations`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ weather: recommendationWeather, occasion: "casual" })
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as {
+        outfits: Array<{ scoreBreakdown: { learnedPreference: number } }>;
+      };
+    };
+
+    expect((await recommend()).outfits[0].scoreBreakdown.learnedPreference).toBe(0);
+    for (const candidateId of candidateIds) {
+      const response = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ candidateId, verdict: "liked", reasonCodes: [] })
+      });
+      expect(response.status).toBe(200);
+    }
+
+    expect((await recommend()).outfits[0].scoreBreakdown.learnedPreference).toBe(7.2);
+    const insights = await (await fetch(`${baseUrl}/api/insights`, {
+      headers: { cookie: authCookie }
+    })).json();
+    expect(insights.feedbackSummary).toEqual({
+      totalCount: 3,
+      acceptedCount: 3,
+      acceptanceRate: 100,
+      rejectionReasons: []
+    });
+
+    for (let replay = 0; replay < 2; replay += 1) {
+      const worn = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ candidateId: candidateIds[0], actuallyWorn: true, reasonCodes: [] })
+      });
+      expect(worn.status).toBe(200);
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+
+    const cleared = await fetch(`${baseUrl}/api/recommendation-feedback?scope=all`, {
+      method: "DELETE",
+      headers: { cookie: authCookie }
+    });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({
+      deletedFeedbackCount: 3,
+      remainingPairStatsCount: 0
+    });
+    expect((await recommend()).outfits[0].scoreBreakdown.learnedPreference).toBe(0);
+  });
+
+  it("strictly validates recommendation feedback and availability payloads", async () => {
+    const db = createDatabase(":memory:");
+    const candidateId = "22222222-2222-4222-8222-222222222222";
+    const [garmentId] = seedFeedbackCandidate(db, candidateId);
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const valid = { candidateId, verdict: "liked", rating: 5, reasonCodes: [] };
+    const invalidFeedbackBodies: unknown[] = [
+      { ...valid, candidateId: "not-a-uuid" },
+      { ...valid, verdict: "accepted" },
+      { ...valid, rating: 0 },
+      { ...valid, rating: 6 },
+      { ...valid, rating: 4.5 },
+      { ...valid, rating: "5" },
+      { candidateId, verdict: "liked" },
+      { ...valid, reasonCodes: "fit" },
+      { ...valid, reasonCodes: ["unknown"] },
+      { ...valid, reasonCodes: ["fit", "fit"] },
+      { ...valid, actuallyWorn: "true" },
+      { ...valid, actuallyWorn: true, woreInsteadOutfitId: 1 },
+      { ...valid, woreInsteadOutfitId: 0 },
+      { ...valid, comment: 123 },
+      { ...valid, comment: "x".repeat(2001) },
+      { ...valid, unexpected: true },
+      { candidateId, reasonCodes: [] },
+      { candidateId, actuallyWorn: false, reasonCodes: [], comment: "   " },
+      []
+    ];
+    for (const body of invalidFeedbackBodies) {
+      const response = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(body)
+      });
+      expect(response.status, JSON.stringify(body).slice(0, 120)).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
+
+    const missingCandidate = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ ...valid, candidateId: "33333333-3333-4333-8333-333333333333" })
+    });
+    expect(missingCandidate.status).toBe(404);
+    expect(await missingCandidate.json()).toMatchObject({
+      error: { code: "RECOMMENDATION_CANDIDATE_NOT_FOUND" }
+    });
+
+    for (const body of [{}, { status: "washing" }, { status: "laundry", extra: true }, []]) {
+      const response = await fetch(`${baseUrl}/api/garments/${garmentId}/availability`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(body)
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+
+    const invalidId = await fetch(`${baseUrl}/api/garments/not-an-id/availability`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ status: "repair" })
+    });
+    expect(invalidId.status).toBe(400);
+  });
+
+  it("previews and clears feedback with strict all, candidate, and updated-at date scopes", async () => {
+    const db = createDatabase(":memory:");
+    const firstCandidateId = "44444444-4444-4444-8444-444444444444";
+    const secondCandidateId = "55555555-5555-4555-8555-555555555555";
+    seedFeedbackCandidate(db, firstCandidateId);
+    seedFeedbackCandidate(db, secondCandidateId);
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    for (const candidateId of [firstCandidateId, secondCandidateId]) {
+      const response = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ candidateId, verdict: "liked", reasonCodes: [] })
+      });
+      expect(response.status).toBe(200);
+    }
+    db.prepare("UPDATE recommendation_feedback SET updated_at = ? WHERE candidate_id = ?")
+      .run("2026-07-02T23:59:59.000Z", firstCandidateId);
+    db.prepare("UPDATE recommendation_feedback SET updated_at = ? WHERE candidate_id = ?")
+      .run("2026-07-03T00:00:00.000Z", secondCandidateId);
+
+    const allPreview = await fetch(`${baseUrl}/api/recommendation-feedback/clear-preview?scope=all`, {
+      headers: { cookie: authCookie }
+    });
+    expect(allPreview.status).toBe(200);
+    expect(await allPreview.json()).toMatchObject({ scope: "all", feedbackCount: 2 });
+
+    const candidatePreview = await fetch(
+      `${baseUrl}/api/recommendation-feedback/clear-preview?scope=candidate&candidateId=${firstCandidateId}`,
+      { headers: { cookie: authCookie } }
+    );
+    expect(candidatePreview.status).toBe(200);
+    expect(await candidatePreview.json()).toMatchObject({
+      scope: "candidate",
+      candidateId: firstCandidateId,
+      feedbackCount: 1
+    });
+
+    const datePreview = await fetch(
+      `${baseUrl}/api/recommendation-feedback/clear-preview?scope=date-range&from=2026-07-02&to=2026-07-02`,
+      { headers: { cookie: authCookie } }
+    );
+    expect(datePreview.status).toBe(200);
+    expect(await datePreview.json()).toMatchObject({
+      scope: "date-range",
+      from: "2026-07-02",
+      to: "2026-07-02",
+      feedbackCount: 1
+    });
+
+    const invalidQueries = [
+      "",
+      "?scope=unknown",
+      "?scope=all&candidateId=44444444-4444-4444-8444-444444444444",
+      "?scope=all&extra=1",
+      "?scope=candidate",
+      "?scope=candidate&candidateId=not-a-uuid",
+      "?scope=date-range&from=2026-02-30&to=2026-03-01",
+      "?scope=date-range&from=2026-07-03&to=2026-07-02",
+      "?scope=date-range&from=2026-07-02",
+      "?scope=all&scope=candidate"
+    ];
+    for (const query of invalidQueries) {
+      const response = await fetch(`${baseUrl}/api/recommendation-feedback/clear-preview${query}`, {
+        headers: { cookie: authCookie }
+      });
+      expect(response.status, query).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+
+    const missingCandidatePreview = await fetch(
+      `${baseUrl}/api/recommendation-feedback/clear-preview?scope=candidate&candidateId=66666666-6666-4666-8666-666666666666`,
+      { headers: { cookie: authCookie } }
+    );
+    expect(missingCandidatePreview.status).toBe(404);
+
+    const cleared = await fetch(
+      `${baseUrl}/api/recommendation-feedback?scope=date-range&from=2026-07-02&to=2026-07-02`,
+      { method: "DELETE", headers: { cookie: authCookie } }
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ deletedFeedbackCount: 1 });
+
+    const replayed = await fetch(
+      `${baseUrl}/api/recommendation-feedback?scope=date-range&from=2026-07-02&to=2026-07-02`,
+      { method: "DELETE", headers: { cookie: authCookie } }
+    );
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toMatchObject({ deletedFeedbackCount: 0 });
+    expect(db.prepare("SELECT candidate_id FROM recommendation_feedback").all()).toEqual([
+      { candidate_id: secondCandidateId }
+    ]);
+  });
+
   it("rejects invalid wear log payloads", async () => {
     const db = createDatabase(":memory:");
     const app = createApiApp(db);
@@ -2024,26 +2470,22 @@ describe("API routes", () => {
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl);
 
-    const response = await fetch(`${baseUrl}/api/import/taobao-batch`, {
-      method: "POST",
-      headers: jsonHeaders(authCookie),
-      body: JSON.stringify({
-        source: "taobao-bookmarklet",
-        pageType: "item-detail",
-        pageUrl: "https://item.taobao.com/item.htm?id=808",
-        items: [
-          {
-            itemId: "808",
-            detailUrl: "https://item.taobao.com/item.htm?id=808",
-            detailTitle: "蓝色透气运动鞋 夏季 轻便跑步休闲鞋",
-            detailProps: [{ name: "颜色分类", value: "蓝色" }],
-            detailImages: ["https://img.alicdn.com/shoe.jpg"]
-          }
-        ]
-      })
-    });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ summary: { createdGarments: 1 } });
+    const detailCapture = {
+      source: "taobao-bookmarklet",
+      pageType: "item-detail",
+      pageUrl: "https://item.taobao.com/item.htm?id=808",
+      items: [
+        {
+          itemId: "808",
+          detailUrl: "https://item.taobao.com/item.htm?id=808",
+          detailTitle: "蓝色透气运动鞋 夏季 轻便跑步休闲鞋",
+          detailProps: [{ name: "颜色分类", value: "蓝色" }],
+          detailImages: ["https://img.alicdn.com/shoe.jpg"]
+        }
+      ]
+    };
+    const importResult = await trustedImportBatch(baseUrl, authCookie, detailCapture);
+    expect(importResult).toMatchObject({ summary: { created: 1 } });
 
     const garmentsResponse = await fetch(`${baseUrl}/api/garments`, {
       headers: { cookie: authCookie }
@@ -2089,26 +2531,23 @@ describe("API routes", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const importResponse = await realFetch(`${baseUrl}/api/import/taobao-batch`, {
-      method: "POST",
-      headers: jsonHeaders(authCookie),
-      body: JSON.stringify({
-        source: "taobao-selenium-order-list",
-        pageType: "order-list",
-        items: [
-          {
-            itemId: "sample-item-1",
-            orderId: "order-example-1",
-            title: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
-            sku: "颜色分类: 曜石黑/银白色; 鞋码: 42",
-            status: "交易成功",
-            itemUrl: "https://item.taobao.com/item.htm?id=sample-item-1",
-            imageUrl: "https://gw.alicdn.com/imgextra/i2/12345/O1CN01platform-2-tps-80-36.png"
-          }
-        ]
-      })
-    });
-    expect(importResponse.status).toBe(200);
+    const orderCapture = {
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [
+        {
+          itemId: "sample-item-1",
+          orderId: "order-example-1",
+          title: "361男鞋运动鞋2026夏季篮球文化鞋跑步潮流休闲鞋",
+          sku: "颜色分类: 曜石黑/银白色; 鞋码: 42",
+          status: "交易成功",
+          itemUrl: "https://item.taobao.com/item.htm?id=sample-item-1",
+          imageUrl: "https://gw.alicdn.com/imgextra/i2/12345/O1CN01platform-2-tps-80-36.png"
+        }
+      ]
+    };
+    const importResult = await trustedImportBatch(baseUrl, authCookie, orderCapture, realFetch);
+    expect(importResult).toMatchObject({ summary: { created: 1 } });
     const captureDir = path.join(captureRoot, "cap_test");
     mkdirSync(captureDir, { recursive: true });
     writeFileSync(path.join(captureDir, "capture.json"), JSON.stringify({
@@ -2998,6 +3437,27 @@ function jsonHeaders(cookie?: string): Record<string, string> {
   };
 }
 
+function seedFeedbackCandidate(
+  db: AppDatabase,
+  candidateId: string,
+  existingGarmentIds?: number[]
+): number[] {
+  const garmentIds = existingGarmentIds ?? ["top", "bottom"].map((category, index) => Number(db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality, confirmed
+      ) VALUES (?, ?, 'black', 'medium', '["spring"]', '["casual"]', 'casual', 1)
+    `).run(`反馈测试衣物 ${candidateId}-${index}`, category).lastInsertRowid));
+  const runId = Number(db.prepare(`
+    INSERT INTO recommendation_runs (input_json, result_json) VALUES ('{}', '{}')
+  `).run().lastInsertRowid);
+  db.prepare(`
+    INSERT INTO recommendation_candidates (
+      candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+    ) VALUES (?, ?, ?, 1, ?, '{}')
+  `).run(candidateId, runId, `feedback-signature-${candidateId}`, JSON.stringify(garmentIds));
+  return garmentIds;
+}
+
 function seedThumbnailSelectionFixture(db: AppDatabase): {
   garmentId: number;
   itemId: string;
@@ -3079,6 +3539,53 @@ async function registerTestUser(baseUrl: string, fetcher: typeof fetch = fetch):
   });
   expect(response.status).toBe(201);
   return sessionCookie(response);
+}
+
+async function trustedImportBatch(
+  baseUrl: string,
+  authCookie: string,
+  batch: unknown,
+  fetcher: typeof fetch = fetch
+): Promise<{
+  summary: {
+    created: number;
+    updated: number;
+    unchanged: number;
+    refundSynced: number;
+    skipped: number;
+  };
+}> {
+  const previewResponse = await fetcher(`${baseUrl}/api/import/taobao-preview`, {
+    method: "POST",
+    headers: jsonHeaders(authCookie),
+    body: JSON.stringify(batch)
+  });
+  expect(previewResponse.status).toBe(200);
+  const preview = await previewResponse.json() as {
+    candidates: Array<{ sourceItemKey: string }>;
+  };
+
+  const commitResponse = await fetcher(`${baseUrl}/api/import/taobao-commit`, {
+    method: "POST",
+    headers: jsonHeaders(authCookie),
+    body: JSON.stringify({
+      batch,
+      decisions: preview.candidates.map((candidate) => ({
+        sourceItemKey: candidate.sourceItemKey,
+        include: true
+      }))
+    })
+  });
+  expect(commitResponse.status).toBe(200);
+  return await commitResponse.json() as {
+    summary: {
+      created: number;
+      updated: number;
+      unchanged: number;
+      refundSynced: number;
+      skipped: number;
+    };
+  };
 }
 
 function sessionCookie(response: Response): string {

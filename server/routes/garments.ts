@@ -14,8 +14,10 @@ import {
   readActiveGarmentAsset,
   saveGarmentImageAsset
 } from "../services/garmentAssets";
+import { setGarmentAvailability } from "../services/garmentAvailability";
 import {
   ApiError,
+  validateGarmentAvailabilityRequest,
   validateGarmentUpdate,
   validateManualGarmentCreate,
   validatePositiveIntegerParam
@@ -89,6 +91,14 @@ export function registerGarmentRoutes(
       db,
       validatePositiveIntegerParam(request.params.id),
       validateGarmentUpdate(request.body) as GarmentUpdate
+    ));
+  });
+
+  app.post("/api/garments/:id/availability", (request, response) => {
+    handle(response, () => setGarmentAvailability(
+      db,
+      validatePositiveIntegerParam(request.params.id, "garmentId"),
+      validateGarmentAvailabilityRequest(request.body).status
     ));
   });
 

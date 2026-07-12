@@ -1,7 +1,7 @@
-﻿# Outfit M2：保存搭配、指定核心单品与换一件
+# Outfit M2：保存搭配、指定核心单品与换一件
 
 > 恢复说明：本文件正文从 2026-07-11 的本地 Codex 会话存档中按原章节边界恢复，未凭记忆改写。
-> 状态：按用户指令停止本轮 M1–M6 实施；本文件作为后续可独立执行的开发计划保留。
+> 状态：M2 已完成实现，并于 2026-07-12 经独立验收修复后通过本计划验收。
 
 ## 共同执行约束
 
@@ -96,17 +96,17 @@ interface OutfitReplacementSuggestion {
 
 ### 实施任务
 
-- [ ] 先写表迁移与 CRUD 失败测试；同一 outfit 中 slot+position 唯一，derived_from_outfit_id 必须存在且不能自引用，衣物归档后 snapshot 仍可回看。
-- [ ] 实现 savedOutfits 服务与路由；删除按钮实际执行 archive，不物理删除。
-- [ ] 推荐候选卡增加“保存搭配”；默认名称由日期+场合生成，用户可立即改名。
-- [ ] 在现有“历史洞察”页内增加二级区域“保存的搭配”，不增加第六个移动端主导航项。
-- [ ] 实现 OutfitBuilder：按 slot 选择衣物、拖动/按钮调整配饰顺序、保存前做完整性校验。
-- [ ] 扩展推荐请求校验，支持锁定 includeGarmentIds 和排除 excludeGarmentIds；不存在、未确认、已归档或 excluded ID 返回结构化校验错误，M3 上线后再叠加 availability 校验。
-- [ ] 把 findAlternatives() 改为结构化 replacements；每个建议标明替换目标、分数变化和理由。
-- [ ] ReplacementDialog 应用替代后生成带 derivedFromOutfitId 的新 saved outfit，不静默覆盖旧版本。
-- [ ] 为推荐卡增加“以这件为核心”和“换这件”动作；键盘和移动端均可完成。
-- [ ] 扩展 OutfitExportV2，加入 saved outfits、items、snapshot 与 derivedFromOutfitId，并用归档衣物 fixture 验证导出完整。
-- [ ] 更新文档并完成全量验证。
+- [x] 先写表迁移与 CRUD 失败测试；同一 outfit 中 slot+position 唯一，derived_from_outfit_id 必须存在且不能自引用，衣物归档后 snapshot 仍可回看。
+- [x] 实现 savedOutfits 服务与路由；删除按钮实际执行 archive，不物理删除。
+- [x] 推荐候选卡增加“保存搭配”；默认名称由日期+场合生成，用户可立即改名。
+- [x] 在现有“历史洞察”页内增加二级区域“保存的搭配”，不增加第六个移动端主导航项。
+- [x] 实现 OutfitBuilder：按 slot 选择衣物、拖动/按钮调整配饰顺序、保存前做完整性校验。
+- [x] 扩展推荐请求校验，支持锁定 includeGarmentIds 和排除 excludeGarmentIds；不存在、未确认、已归档或 excluded ID 返回结构化校验错误，M3 上线后再叠加 availability 校验。
+- [x] 把 findAlternatives() 改为结构化 replacements；每个建议标明替换目标、分数变化和理由。
+- [x] ReplacementDialog 应用替代后生成带 derivedFromOutfitId 的新 saved outfit，不静默覆盖旧版本。
+- [x] 为推荐卡增加“以这件为核心”和“换这件”动作；键盘和移动端均可完成。
+- [x] 扩展 OutfitExportV2，加入 saved outfits、items、snapshot 与 derivedFromOutfitId，并用归档衣物 fixture 验证导出完整。
+- [x] 更新文档并完成全量验证。
 
 ### 验收标准
 
@@ -115,5 +115,12 @@ interface OutfitReplacementSuggestion {
 - 点击某件衣物的替代项后，界面显示新整套、分数变化与理由；旧搭配仍可回看。
 - 已归档/删除来源衣物不会使历史搭配页面崩溃。
 - 替换产生的新搭配可以追溯到原搭配，归档或修改新搭配不会改变原记录。
+
+### 独立验收记录（2026-07-12）
+
+- 修复多个配饰 include 未同时进入每套候选的问题；约束保持确定性、有界且替换建议不会移除锁定项。
+- 历史搭配默认使用 metadata-only 更新，归档、删除或不可用来源的快照不会静默丢失；组合更新必须显式替换或移除。
+- 归档搭配现可在历史洞察的独立区域回看保存时快照和派生关系。
+- 与 M1 合并后的全量验证为 Vitest 24 个文件、330 项测试及 Python 33 项测试全部通过；类型检查、生产构建和依赖审计通过。
 
 ---

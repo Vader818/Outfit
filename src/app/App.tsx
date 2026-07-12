@@ -11,10 +11,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AUTH_REQUIRED_EVENT,
   analyzeGarmentVisionTags,
+  applySavedOutfitReplacement,
   archiveGarment,
+  archiveSavedOutfit,
   commitTaobaoImport,
+  clearRecommendationFeedback,
   createGarment,
   createGarmentCutout,
+  createSavedOutfit,
   downloadCompleteBackup,
   downloadVisionModel,
   exportLocalData,
@@ -26,6 +30,7 @@ import {
   getPersonalProfile,
   getRecommendationRuns,
   getRecommendations,
+  getSavedOutfits,
   getVisionModels,
   getWearLogs,
   getWeather,
@@ -33,15 +38,19 @@ import {
   logout,
   previewTaobaoImport,
   previewCompleteBackup,
+  previewRecommendationFeedbackClear,
   readLatestTaobaoCapture,
-  recordWearLog,
   refreshGarmentThumbnails,
   register as registerAccount,
   restoreGarment,
   savePersonalProfile,
+  saveRecommendationCandidate,
   selectGarmentThumbnail,
   startCaptureJob,
+  submitRecommendationFeedback,
   updateGarment,
+  updateGarmentAvailability,
+  updateSavedOutfit,
   uploadGarmentImage,
   verifyVisionModel,
   type CaptureStartResult,
@@ -52,12 +61,16 @@ import { AppMark, IconButton, Notice, Skeleton, cx } from "../components/ui";
 import { AuthView, SessionSummary } from "../features/auth/AuthView";
 import { HistoryInsightsView } from "../features/insights/HistoryInsightsView";
 import { ImportView } from "../features/import/ImportView";
+import { OutfitBuilder } from "../features/outfits/OutfitBuilder";
+import { ReplacementDialog } from "../features/outfits/ReplacementDialog";
 import { RecommendationView } from "../features/recommendations/RecommendationView";
+import { FeedbackDialog } from "../features/recommendations/FeedbackDialog";
 import { SettingsView } from "../features/settings/SettingsView";
 import { ThumbnailPicker } from "../features/wardrobe/ThumbnailDialog";
 import { ManualGarmentDialog } from "../features/wardrobe/ManualGarmentDialog";
 import { WardrobeView } from "../features/wardrobe/WardrobeView";
-import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, buildRecommendationWearLogInput, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
+import { FeedbackManagementDialog } from "../features/insights/FeedbackManagementDialog";
+import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
 import { prepareGarmentImageForUpload } from "../lib/imageSanitization";
 import { applyGarmentPatch, isRecommendationEligibleGarment, isRecommendationPendingGarment, isWardrobeReviewPendingGarment } from "../lib/garments";
 import {
@@ -77,13 +90,23 @@ import type {
   AuthUser,
   CaptureEngine,
   CaptureJob,
+  FeedbackVerdict,
+  Formality,
   Garment,
+  GarmentAvailabilityStatus,
   ImportDecision,
   ManualGarmentCreate,
   OutfitRecommendation,
+  OutfitReplacementSuggestion,
   PersonalProfile,
   RecommendationResult,
+  RecommendationFeedbackClearPreview,
+  RecommendationFeedbackClearScope,
+  RecommendationFeedbackInput,
   RecommendationRunEntry,
+  SavedOutfit,
+  SavedOutfitCreateInput,
+  SavedOutfitUpdateInput,
   Season,
   TaobaoImportPreview,
   TaobaoImportCommitResult,
@@ -103,6 +126,18 @@ type ThumbnailPickerState = {
   loading: boolean;
   saving: boolean;
   error: string;
+} | null;
+
+type ReplacementDialogState = {
+  outfit: OutfitRecommendation;
+  targetGarment: Garment;
+  suggestions: OutfitReplacementSuggestion[];
+  appliedOutfit?: SavedOutfit;
+} | null;
+
+type FeedbackDialogState = {
+  outfit: OutfitRecommendation;
+  verdict: Extract<FeedbackVerdict, "liked" | "disliked">;
 } | null;
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: ReactNode }> = [
@@ -215,17 +250,36 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [captureJob, setCaptureJob] = useState<CaptureJob | null>(null);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [includeGarmentIds, setIncludeGarmentIds] = useState<number[]>([]);
+  const [excludeGarmentIds, setExcludeGarmentIds] = useState<number[]>([]);
   const [profile, setProfile] = useState<PersonalProfile>(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [wearLogs, setWearLogs] = useState<WearLogEntry[]>([]);
   const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
+  const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
+  const [savedOutfitBusy, setSavedOutfitBusy] = useState(false);
+  const [savingOutfitId, setSavingOutfitId] = useState<string | null>(null);
+  const [outfitBuilderOutfit, setOutfitBuilderOutfit] = useState<SavedOutfit | null | undefined>(undefined);
+  const [outfitBuilderError, setOutfitBuilderError] = useState("");
+  const [replacementDialog, setReplacementDialog] = useState<ReplacementDialogState>(null);
+  const [replacementBusy, setReplacementBusy] = useState(false);
+  const [replacementError, setReplacementError] = useState("");
+  const [applyingReplacementId, setApplyingReplacementId] = useState<number | null>(null);
   const [visionModels, setVisionModels] = useState<VisionModelsResponse | null>(null);
   const [visionEnabled, setVisionEnabled] = useState(() => readLocalStorageValue("outfit.localVision.enabled", "true") !== "false");
   const [remoteTaobaoImagesEnabled, setRemoteTaobaoImagesEnabled] = useState(() =>
     readSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false") === "true"
   );
   const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
+  const [feedbackDialog, setFeedbackDialog] = useState<FeedbackDialogState>(null);
+  const [feedbackBusyCandidateId, setFeedbackBusyCandidateId] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [availabilityBusyGarmentId, setAvailabilityBusyGarmentId] = useState<number | null>(null);
+  const [feedbackManagementOpen, setFeedbackManagementOpen] = useState(false);
+  const [feedbackClearPreview, setFeedbackClearPreview] = useState<RecommendationFeedbackClearPreview | null>(null);
+  const [feedbackClearBusy, setFeedbackClearBusy] = useState(false);
+  const [feedbackClearError, setFeedbackClearError] = useState("");
   const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
@@ -235,7 +289,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [manualGarmentError, setManualGarmentError] = useState("");
   const [manualSavedGarment, setManualSavedGarment] = useState<Garment | null>(null);
   const thumbnailPickerRequestId = useRef(0);
-  const [occasion, setOccasion] = useState("casual");
+  const [occasion, setOccasion] = useState<Formality>("casual");
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
   const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
   const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
@@ -246,6 +300,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const reviewPendingCount = garments.filter(isWardrobeReviewPendingGarment).length;
   const recommendationPendingCount = garments.filter(isRecommendationPendingGarment).length;
   const recommendationGarments = garments.filter(isRecommendationEligibleGarment);
+  const coreGarments = includeGarmentIds
+    .map((id) => garments.find((garment) => garment.id === id))
+    .filter((garment): garment is Garment => Boolean(garment));
   const canLogout = Boolean(props.user && props.onLogout);
 
   function navigateTo(nextTab: AppTab) {
@@ -266,7 +323,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setBootstrapping(false);
       setStatusMessage("部分数据仍在加载，可以先使用其他功能");
     }, 10_000);
-    Promise.allSettled([refreshGarments(), refreshProfile(), refreshHistoryData(), refreshVisionModels()])
+    Promise.allSettled([
+      refreshGarments(),
+      refreshProfile(),
+      refreshHistoryData(),
+      refreshSavedOutfits(),
+      refreshVisionModels()
+    ])
       .finally(() => {
         window.clearTimeout(timeout);
         if (active) setBootstrapping(false);
@@ -320,6 +383,18 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setInsights(nextInsights);
     } catch (historyError) {
       setError(historyError instanceof Error ? historyError.message : "历史数据读取失败");
+    }
+  }
+
+  async function refreshSavedOutfits() {
+    try {
+      const [active, archived] = await Promise.all([
+        getSavedOutfits(),
+        getSavedOutfits({ archived: true })
+      ]);
+      setSavedOutfits([...active, ...archived]);
+    } catch (savedOutfitError) {
+      setError(savedOutfitError instanceof Error ? savedOutfitError.message : "保存搭配读取失败");
     }
   }
 
@@ -564,6 +639,53 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     void bulkUpdate(excluded ? "所选衣物已排除推荐" : "所选衣物已恢复推荐", () => ({ excluded }));
   }
 
+  async function changeGarmentAvailability(id: number, status: GarmentAvailabilityStatus) {
+    setAvailabilityBusyGarmentId(id);
+    setError("");
+    try {
+      const result = await updateGarmentAvailability(id, status);
+      setGarments((items) => applyGarmentPatch(items, id, result.garment));
+      setArchivedGarments((items) => applyGarmentPatch(items, id, result.garment));
+      if (status !== "available") {
+        setIncludeGarmentIds((ids) => ids.filter((garmentId) => garmentId !== id));
+      }
+      setRecommendations(null);
+      setStatusMessage(result.changed ? "衣物可用状态已更新" : "衣物已经是该状态");
+      await refreshHistoryData();
+    } catch (availabilityError) {
+      setError(availabilityError instanceof Error ? availabilityError.message : "衣物状态更新失败");
+    } finally {
+      setAvailabilityBusyGarmentId(null);
+    }
+  }
+
+  async function bulkAvailability(status: GarmentAvailabilityStatus) {
+    if (!selectedIds.length) return;
+    setBusyAction("bulk-availability");
+    setError("");
+    const ids = [...selectedIds];
+    try {
+      const results = await Promise.allSettled(ids.map((id) => updateGarmentAvailability(id, status)));
+      const succeededIds = ids.filter((_, index) => results[index].status === "fulfilled");
+      const failedIds = ids.filter((_, index) => results[index].status === "rejected");
+      setSelectedIds(failedIds);
+      if (status !== "available") {
+        const succeeded = new Set(succeededIds);
+        setIncludeGarmentIds((current) => current.filter((id) => !succeeded.has(id)));
+      }
+      setRecommendations(null);
+      await Promise.all([refreshGarments(), refreshHistoryData()]);
+      if (succeededIds.length) {
+        setStatusMessage(`${succeededIds.length} 件衣物状态已更新`);
+      }
+      if (failedIds.length) {
+        setError(`${failedIds.length} 件衣物更新失败，已保留选择以便重试`);
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function openManualGarmentDialog() {
     setManualGarmentError("");
     setManualSavedGarment(null);
@@ -799,12 +921,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function updateOccasion(value: string) {
-    setOccasion(value);
+    setOccasion(value as Formality);
     setRecommendations(null);
     setWearLogFeedback(null);
   }
 
   async function generateRecommendations() {
+    await requestRecommendations({ includeGarmentIds, excludeGarmentIds });
+  }
+
+  async function requestRecommendations(constraints: {
+    includeGarmentIds: number[];
+    excludeGarmentIds: number[];
+  }) {
     const coordinates = parseLocationCoordinates(latitude, longitude);
     if (!coordinates) {
       setError("请先在设置中确认有效位置");
@@ -816,7 +945,17 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     try {
       const snapshot = weather ?? await getWeather(coordinates.latitude, coordinates.longitude);
       setWeather(snapshot);
-      setRecommendations(await getRecommendations({ weather: snapshot, occasion, userProfile: profile }));
+      setRecommendations(await getRecommendations({
+        weather: snapshot,
+        occasion,
+        userProfile: profile,
+        ...(constraints.includeGarmentIds.length
+          ? { includeGarmentIds: constraints.includeGarmentIds }
+          : {}),
+        ...(constraints.excludeGarmentIds.length
+          ? { excludeGarmentIds: constraints.excludeGarmentIds }
+          : {})
+      }));
     } catch (recommendError) {
       setError(recommendError instanceof Error ? recommendError.message : "推荐失败");
     } finally {
@@ -824,23 +963,247 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  function useGarmentAsCore(garment: Garment) {
+    const nextInclude = [garment.id];
+    setIncludeGarmentIds(nextInclude);
+    setExcludeGarmentIds([]);
+    setRecommendations(null);
+    setWearLogFeedback(null);
+    navigateTo("recommend");
+    void requestRecommendations({ includeGarmentIds: nextInclude, excludeGarmentIds: [] });
+  }
+
+  function clearGarmentConstraints() {
+    setIncludeGarmentIds([]);
+    setExcludeGarmentIds([]);
+    setRecommendations(null);
+    setStatusMessage("已清除核心单品，可重新生成搭配");
+  }
+
+  function openReplacementDialog(outfit: OutfitRecommendation, targetGarment: Garment) {
+    const suggestions = outfit.replacements.filter((suggestion) =>
+      suggestion.targetGarmentId === targetGarment.id
+    );
+    if (!suggestions.length) return;
+    setReplacementError("");
+    setReplacementDialog({ outfit, targetGarment, suggestions });
+  }
+
+  function closeReplacementDialog() {
+    if (replacementBusy) return;
+    setReplacementDialog(null);
+    setReplacementError("");
+    setApplyingReplacementId(null);
+  }
+
+  async function applyReplacementSuggestion(suggestion: OutfitReplacementSuggestion) {
+    if (!replacementDialog) return;
+    setReplacementBusy(true);
+    setApplyingReplacementId(suggestion.replacement.id);
+    setReplacementError("");
+    try {
+      let parent = savedOutfits.find((outfit) =>
+        outfit.sourceCandidateId === replacementDialog.outfit.candidateId
+      );
+      if (!parent) {
+        parent = await saveRecommendationCandidate(replacementDialog.outfit.candidateId);
+        upsertSavedOutfit(parent);
+      }
+      const derived = await applySavedOutfitReplacement(parent.id, {
+        targetGarmentId: suggestion.targetGarmentId,
+        replacementGarmentId: suggestion.replacement.id
+      });
+      upsertSavedOutfit(derived);
+      setReplacementDialog((current) => current ? { ...current, appliedOutfit: derived } : current);
+      setStatusMessage("替换版本已保存，原搭配保持不变");
+    } catch (replacementActionError) {
+      setReplacementError(
+        replacementActionError instanceof Error ? replacementActionError.message : "替换版本生成失败"
+      );
+    } finally {
+      setApplyingReplacementId(null);
+      setReplacementBusy(false);
+    }
+  }
+
   async function recordRecommendationWear(outfit: OutfitRecommendation) {
     setError("");
     setWearLogFeedback(null);
-    setRecordingOutfitId(outfit.id);
+    setRecordingOutfitId(outfit.candidateId);
     try {
-      await recordWearLog(buildRecommendationWearLogInput(
-        outfit,
-        recommendations?.occasion ?? occasion,
-        recommendations?.weather ?? weather
-      ));
-      setWearLogFeedback({ outfitId: outfit.id, message: "已标记已穿" });
+      await submitRecommendationFeedback({
+        candidateId: outfit.candidateId,
+        actuallyWorn: true,
+        reasonCodes: []
+      });
+      setWearLogFeedback({
+        outfitId: outfit.candidateId,
+        message: "已记录实际穿着；如需可手动将相关衣物设为待洗"
+      });
       await refreshHistoryData();
     } catch (wearLogError) {
-      setError(wearLogError instanceof Error ? wearLogError.message : "标记已穿失败");
+      setError(wearLogError instanceof Error ? wearLogError.message : "记录实际穿着失败");
     } finally {
       setRecordingOutfitId(null);
     }
+  }
+
+  function openRecommendationFeedback(
+    outfit: OutfitRecommendation,
+    verdict: Extract<FeedbackVerdict, "liked" | "disliked">
+  ) {
+    setFeedbackError("");
+    setFeedbackDialog({ outfit, verdict });
+  }
+
+  function closeRecommendationFeedback() {
+    if (feedbackBusyCandidateId) return;
+    setFeedbackDialog(null);
+    setFeedbackError("");
+  }
+
+  async function saveRecommendationFeedback(input: RecommendationFeedbackInput) {
+    if (!feedbackDialog || input.candidateId !== feedbackDialog.outfit.candidateId) {
+      setFeedbackError("反馈候选已变化，请重新打开");
+      return;
+    }
+    setFeedbackBusyCandidateId(input.candidateId);
+    setFeedbackError("");
+    try {
+      await submitRecommendationFeedback(input);
+      setFeedbackDialog(null);
+      setWearLogFeedback({ outfitId: input.candidateId, message: "反馈已保存，将用于后续有限排序" });
+      setStatusMessage("推荐反馈已保存");
+      await refreshHistoryData();
+    } catch (feedbackSubmitError) {
+      setFeedbackError(feedbackSubmitError instanceof Error ? feedbackSubmitError.message : "反馈保存失败");
+    } finally {
+      setFeedbackBusyCandidateId(null);
+    }
+  }
+
+  function openFeedbackManagement() {
+    setFeedbackClearError("");
+    setFeedbackClearPreview(null);
+    setFeedbackManagementOpen(true);
+  }
+
+  function closeFeedbackManagement() {
+    if (feedbackClearBusy) return;
+    setFeedbackManagementOpen(false);
+    setFeedbackClearPreview(null);
+    setFeedbackClearError("");
+  }
+
+  async function previewFeedbackClear(scope: RecommendationFeedbackClearScope) {
+    setFeedbackClearBusy(true);
+    setFeedbackClearError("");
+    try {
+      setFeedbackClearPreview(await previewRecommendationFeedbackClear(scope));
+    } catch (previewError) {
+      setFeedbackClearPreview(null);
+      setFeedbackClearError(previewError instanceof Error ? previewError.message : "反馈范围预览失败");
+    } finally {
+      setFeedbackClearBusy(false);
+    }
+  }
+
+  async function confirmFeedbackClear(scope: RecommendationFeedbackClearScope) {
+    if (!feedbackClearPreview) return;
+    setFeedbackClearBusy(true);
+    setFeedbackClearError("");
+    try {
+      const result = await clearRecommendationFeedback(scope);
+      setFeedbackManagementOpen(false);
+      setFeedbackClearPreview(null);
+      setRecommendations(null);
+      setStatusMessage(`已清空 ${result.deletedFeedbackCount} 条反馈，学习权重已重算`);
+      await refreshHistoryData();
+    } catch (clearError) {
+      setFeedbackClearError(clearError instanceof Error ? clearError.message : "反馈清空失败");
+    } finally {
+      setFeedbackClearBusy(false);
+    }
+  }
+
+  async function saveRecommendationOutfit(outfit: OutfitRecommendation) {
+    setSavingOutfitId(outfit.candidateId);
+    setError("");
+    setOutfitBuilderError("");
+    try {
+      const saved = await saveRecommendationCandidate(outfit.candidateId);
+      upsertSavedOutfit(saved);
+      setOutfitBuilderOutfit(saved);
+      setStatusMessage("搭配已保存，可以立即改名或调整");
+    } catch (savedOutfitError) {
+      setError(savedOutfitError instanceof Error ? savedOutfitError.message : "推荐搭配保存失败");
+    } finally {
+      setSavingOutfitId(null);
+    }
+  }
+
+  function openNewSavedOutfit() {
+    setOutfitBuilderError("");
+    setOutfitBuilderOutfit(null);
+  }
+
+  function openSavedOutfit(outfit: SavedOutfit) {
+    setOutfitBuilderError("");
+    setOutfitBuilderOutfit(outfit);
+  }
+
+  function closeOutfitBuilder() {
+    if (savedOutfitBusy) return;
+    setOutfitBuilderOutfit(undefined);
+    setOutfitBuilderError("");
+  }
+
+  async function submitSavedOutfit(input: SavedOutfitCreateInput | SavedOutfitUpdateInput) {
+    setSavedOutfitBusy(true);
+    setOutfitBuilderError("");
+    try {
+      const saved = outfitBuilderOutfit
+        ? await updateSavedOutfit(outfitBuilderOutfit.id, input as SavedOutfitUpdateInput)
+        : await createSavedOutfit(input as SavedOutfitCreateInput);
+      upsertSavedOutfit(saved);
+      setOutfitBuilderOutfit(undefined);
+      setStatusMessage(outfitBuilderOutfit ? "保存的搭配已更新" : "新搭配已保存");
+    } catch (savedOutfitError) {
+      setOutfitBuilderError(savedOutfitError instanceof Error ? savedOutfitError.message : "搭配保存失败");
+    } finally {
+      setSavedOutfitBusy(false);
+    }
+  }
+
+  async function favoriteSavedOutfit(outfit: SavedOutfit, favorite: boolean) {
+    setSavedOutfitBusy(true);
+    setError("");
+    try {
+      upsertSavedOutfit(await updateSavedOutfit(outfit.id, { favorite }));
+      setStatusMessage(favorite ? "搭配已收藏" : "已取消收藏");
+    } catch (savedOutfitError) {
+      setError(savedOutfitError instanceof Error ? savedOutfitError.message : "搭配收藏状态更新失败");
+    } finally {
+      setSavedOutfitBusy(false);
+    }
+  }
+
+  async function archiveOneSavedOutfit(outfit: SavedOutfit) {
+    if (!globalThis.confirm(`确定归档「${outfit.name}」吗？归档后历史版本仍会保留。`)) return;
+    setSavedOutfitBusy(true);
+    setError("");
+    try {
+      upsertSavedOutfit(await archiveSavedOutfit(outfit.id));
+      setStatusMessage("搭配已归档");
+    } catch (savedOutfitError) {
+      setError(savedOutfitError instanceof Error ? savedOutfitError.message : "搭配归档失败");
+    } finally {
+      setSavedOutfitBusy(false);
+    }
+  }
+
+  function upsertSavedOutfit(saved: SavedOutfit) {
+    setSavedOutfits((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
   }
 
   async function saveSettings() {
@@ -872,7 +1235,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function refreshHistory() {
     setBusyAction("history");
     try {
-      await refreshHistoryData();
+      await Promise.all([refreshHistoryData(), refreshSavedOutfits()]);
     } finally {
       setBusyAction(null);
     }
@@ -962,12 +1325,20 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 longitude={longitude}
                 busy={Boolean(busyAction)}
                 busyAction={busyAction}
+                savingOutfitId={savingOutfitId}
+                feedbackBusyCandidateId={feedbackBusyCandidateId}
+                coreGarments={coreGarments}
                 recordingOutfitId={recordingOutfitId}
                 wearLogFeedback={wearLogFeedback}
                 onOccasion={updateOccasion}
                 onFetchWeather={fetchForecast}
                 onGenerate={generateRecommendations}
                 onRecordWearLog={recordRecommendationWear}
+                onRecommendationFeedback={openRecommendationFeedback}
+                onSaveOutfit={saveRecommendationOutfit}
+                onUseGarmentAsCore={useGarmentAsCore}
+                onClearGarmentConstraints={clearGarmentConstraints}
+                onReplaceGarment={openReplacementDialog}
                 onOpenImport={() => navigateTo("import")}
                 onOpenSettings={() => navigateTo("settings")}
                 onOpenWardrobe={() => navigateTo("wardrobe")}
@@ -993,8 +1364,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onBulkSeasons={bulkSeasons}
                 onBulkTags={bulkTags}
                 onBulkExcluded={bulkExcluded}
+                availabilityBusyGarmentId={availabilityBusyGarmentId}
+                onAvailabilityChange={(id, status) => { void changeGarmentAvailability(id, status); }}
+                onBulkAvailability={(status) => { void bulkAvailability(status); }}
                 onRefreshThumbnails={refreshThumbnails}
                 onOpenThumbnailPicker={openThumbnailPicker}
+                onUseGarmentAsCore={useGarmentAsCore}
                 onCutoutGarment={cutoutGarment}
                 onAnalyzeGarmentVision={analyzeVisionTags}
                 visionEnabled={visionEnabled}
@@ -1008,11 +1383,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 insights={insights}
                 wearLogs={wearLogs}
                 recommendationRuns={recommendationRuns}
+                savedOutfits={savedOutfits}
+                savedOutfitsBusy={savedOutfitBusy}
+                allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
                 busy={Boolean(busyAction)}
                 busyAction={busyAction}
                 onRefresh={refreshHistory}
                 onExport={exportBackup}
                 onExportComplete={exportCompleteBackup}
+                onCreateSavedOutfit={openNewSavedOutfit}
+                onOpenSavedOutfit={openSavedOutfit}
+                onFavoriteSavedOutfit={favoriteSavedOutfit}
+                onArchiveSavedOutfit={archiveOneSavedOutfit}
+                onManageFeedback={openFeedbackManagement}
               />
             ) : null}
             {tab === "import" ? (
@@ -1100,6 +1483,51 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         savedGarment={manualSavedGarment}
         onClose={closeManualGarmentDialog}
         onSubmit={submitManualGarment}
+      />
+
+      <OutfitBuilder
+        open={outfitBuilderOutfit !== undefined}
+        outfit={outfitBuilderOutfit ?? null}
+        garments={garments}
+        busy={savedOutfitBusy}
+        error={outfitBuilderError}
+        onClose={closeOutfitBuilder}
+        onSave={submitSavedOutfit}
+      />
+
+      <ReplacementDialog
+        open={Boolean(replacementDialog)}
+        outfit={replacementDialog?.outfit ?? null}
+        targetGarment={replacementDialog?.targetGarment ?? null}
+        suggestions={replacementDialog?.suggestions ?? []}
+        busy={replacementBusy}
+        applyingReplacementId={applyingReplacementId}
+        error={replacementError}
+        appliedOutfit={replacementDialog?.appliedOutfit}
+        allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
+        onClose={closeReplacementDialog}
+        onApply={applyReplacementSuggestion}
+      />
+
+      <FeedbackDialog
+        open={Boolean(feedbackDialog)}
+        candidateId={feedbackDialog?.outfit.candidateId ?? ""}
+        verdict={feedbackDialog?.verdict ?? "liked"}
+        busy={feedbackBusyCandidateId === feedbackDialog?.outfit.candidateId}
+        error={feedbackError}
+        onClose={closeRecommendationFeedback}
+        onSubmit={saveRecommendationFeedback}
+      />
+
+      <FeedbackManagementDialog
+        open={feedbackManagementOpen}
+        busy={feedbackClearBusy}
+        error={feedbackClearError}
+        preview={feedbackClearPreview}
+        onClose={closeFeedbackManagement}
+        onPreview={(scope) => { void previewFeedbackClear(scope); }}
+        onConfirm={(scope) => { void confirmFeedbackClear(scope); }}
+        onResetPreview={() => setFeedbackClearPreview(null)}
       />
     </div>
   );
