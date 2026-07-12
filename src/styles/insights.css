@@ -37,6 +37,97 @@
   font-weight: 730;
 }
 
+.feedback-management-dialog {
+  width: min(38rem, calc(100vw - 2rem));
+}
+
+.feedback-management-dialog__body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.feedback-management-dialog__dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.feedback-management-dialog .ui-notice p {
+  margin: 0;
+}
+
+.feedback-management-dialog .ui-notice p + p {
+  margin-top: var(--space-2);
+}
+
+@media (max-width: 540px) {
+  .feedback-management-dialog__dates {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feedback-summary {
+  display: grid;
+  gap: var(--space-4);
+  padding: clamp(1rem, 3vw, 1.5rem);
+}
+
+.feedback-summary > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.feedback-summary > header span:not(.ui-badge) {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.feedback-summary h2 {
+  margin: 0.2rem 0 0;
+  font-size: 1.05rem;
+}
+
+.feedback-summary dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.feedback-summary dl > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+}
+
+.feedback-summary dt {
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.feedback-summary dd {
+  margin: 0.35rem 0 0;
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.feedback-summary > p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .feedback-summary dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .health-focus,
 .utilization-focus,
 .shopping-focus {

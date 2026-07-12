@@ -2,11 +2,18 @@ import type { Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 import archiver, { type Archiver } from "archiver";
 import type {
+  FeedbackReason,
+  FeedbackVerdict,
   GarmentAssetMetadata,
+  GarmentAvailabilityEvent,
+  GarmentAvailabilityStatus,
   OutfitExport,
   OutfitExportV2,
+  OutfitPairStat,
   RecommendationCandidateExport,
+  RecommendationFeedback,
   RecommendationRunEntry,
+  SavedOutfit,
   WearLogEntry
 } from "../../src/shared/types";
 import {
@@ -19,11 +26,14 @@ import {
   DEFAULT_GARMENT_ASSET_ROOT,
   readGarmentAssetForBackup
 } from "./garmentAssets";
+import { listSavedOutfits } from "./savedOutfits";
 
 export const OUTFIT_EXPORT_V2_FEATURES = [
   "versioned-migrations",
   "recommendation-candidates",
-  "garment-assets"
+  "garment-assets",
+  "saved-outfits",
+  "feedback-availability"
 ] as const;
 
 export const OUTFIT_EXPORT_JSON_ENTRY = "outfit-export-v2.json";
@@ -37,6 +47,25 @@ const TEMPERATURE_SENSITIVITIES = ["runs-cold", "neutral", "runs-hot"] as const;
 const BODY_TYPES = ["slim-tall", "average", "athletic", "stocky"] as const;
 const SKIN_TONES = ["dark-yellow", "medium-yellow", "fair", "deep"] as const;
 const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as const;
+const FEEDBACK_VERDICTS = ["liked", "disliked", "skipped"] as const;
+const FEEDBACK_REASONS = [
+  "too-warm",
+  "too-cold",
+  "too-formal",
+  "too-casual",
+  "color",
+  "fit",
+  "repeat",
+  "unavailable",
+  "other"
+] as const;
+const GARMENT_AVAILABILITY_STATUSES = [
+  "available",
+  "laundry",
+  "repair",
+  "loaned",
+  "packed"
+] as const;
 
 export interface BuildOutfitExportOptions {
   now?: () => Date;
@@ -107,7 +136,11 @@ export function buildOutfitExportV2(
       wearLogs: listAllWearLogs(db),
       recommendationRuns: listAllRecommendationRuns(db),
       recommendationCandidates: listRecommendationCandidates(db),
-      garmentAssets: listGarmentAssets(db)
+      garmentAssets: listGarmentAssets(db),
+      savedOutfits: listSavedOutfitsForExport(db),
+      recommendationFeedback: listRecommendationFeedbackForExport(db),
+      outfitPairStats: listOutfitPairStatsForExport(db),
+      garmentAvailabilityEvents: listGarmentAvailabilityEventsForExport(db)
     };
     validateOutfitExport(exported);
     db.exec("COMMIT");
@@ -175,6 +208,41 @@ export function validateOutfitExport(value: unknown): OutfitExport {
     ) {
       throw new OutfitExportError(
         "Invalid export envelope: garmentAssets contains an invalid entry"
+      );
+    }
+    if (
+      value.savedOutfits !== undefined &&
+      (!Array.isArray(value.savedOutfits) || !value.savedOutfits.every(isSavedOutfitShape))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: savedOutfits contains an invalid entry"
+      );
+    }
+    if (
+      value.recommendationFeedback !== undefined &&
+      (!Array.isArray(value.recommendationFeedback) ||
+        !value.recommendationFeedback.every(isRecommendationFeedbackShape))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: recommendationFeedback contains an invalid entry"
+      );
+    }
+    if (
+      value.outfitPairStats !== undefined &&
+      (!Array.isArray(value.outfitPairStats) ||
+        !value.outfitPairStats.every(isOutfitPairStatShape))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: outfitPairStats contains an invalid entry"
+      );
+    }
+    if (
+      value.garmentAvailabilityEvents !== undefined &&
+      (!Array.isArray(value.garmentAvailabilityEvents) ||
+        !value.garmentAvailabilityEvents.every(isGarmentAvailabilityEventShape))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: garmentAvailabilityEvents contains an invalid entry"
       );
     }
   }
@@ -522,6 +590,165 @@ function listGarmentAssets(db: AppDatabase): GarmentAssetMetadata[] {
       throw new OutfitExportError(`Cannot export garment_assets row ${row.id}: invalid metadata`);
     }
     return metadata;
+  });
+}
+
+function listSavedOutfitsForExport(db: AppDatabase): SavedOutfit[] {
+  let outfits: SavedOutfit[];
+  try {
+    outfits = listSavedOutfits(db, { scope: "all" });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new OutfitExportError(`Cannot export saved_outfit_items: ${message}`);
+  }
+
+  for (const outfit of outfits) {
+    for (const item of outfit.items) {
+      if (!isPortableAssetReference(item.garmentSnapshot.imageUrl)) {
+        throw new OutfitExportError(
+          `Cannot export saved_outfit_items row ${item.id}: garment_snapshot.imageUrl must contain a portable URL, never a filesystem path or embedded binary`
+        );
+      }
+    }
+  }
+
+  return outfits.sort((left, right) => left.id - right.id);
+}
+
+function listRecommendationFeedbackForExport(db: AppDatabase): RecommendationFeedback[] {
+  const rows = db.prepare(`
+    SELECT id, candidate_id, verdict, rating, actually_worn, reason_codes_json,
+      comment, wore_instead_outfit_id, wear_log_id, created_at, updated_at
+    FROM recommendation_feedback
+    ORDER BY created_at ASC, id ASC
+  `).all() as Array<{
+    id: number;
+    candidate_id: string;
+    verdict: FeedbackVerdict | null;
+    rating: 1 | 2 | 3 | 4 | 5 | null;
+    actually_worn: number;
+    reason_codes_json: string;
+    comment: string;
+    wore_instead_outfit_id: number | null;
+    wear_log_id: number | null;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  return rows.map((row) => {
+    const reasonCodes = parseJsonColumn<unknown>(
+      "recommendation_feedback",
+      row.id,
+      "reason_codes_json",
+      row.reason_codes_json
+    );
+    if (
+      !Array.isArray(reasonCodes) ||
+      !reasonCodes.every((reason) =>
+        typeof reason === "string" && includes(FEEDBACK_REASONS, reason)
+      )
+    ) {
+      throw invalidColumnShape(
+        "recommendation_feedback",
+        row.id,
+        "reason_codes_json",
+        "only valid FeedbackReason values"
+      );
+    }
+    if (row.actually_worn !== 0 && row.actually_worn !== 1) {
+      throw invalidColumnShape(
+        "recommendation_feedback",
+        row.id,
+        "actually_worn",
+        "0 or 1"
+      );
+    }
+    const feedback: RecommendationFeedback = {
+      id: row.id,
+      candidateId: row.candidate_id,
+      ...(row.verdict === null ? {} : { verdict: row.verdict }),
+      ...(row.rating === null ? {} : { rating: row.rating }),
+      actuallyWorn: Boolean(row.actually_worn),
+      reasonCodes: reasonCodes as FeedbackReason[],
+      comment: row.comment,
+      ...(row.wore_instead_outfit_id === null
+        ? {}
+        : { woreInsteadOutfitId: row.wore_instead_outfit_id }),
+      ...(row.wear_log_id === null ? {} : { wearLogId: row.wear_log_id }),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+    if (!isRecommendationFeedbackShape(feedback)) {
+      throw new OutfitExportError(
+        `Cannot export recommendation_feedback row ${row.id}: invalid feedback data`
+      );
+    }
+    return feedback;
+  });
+}
+
+function listOutfitPairStatsForExport(db: AppDatabase): OutfitPairStat[] {
+  const rows = db.prepare(`
+    SELECT garment_a_id, garment_b_id, likes, dislikes, worn_count,
+      total_feedback, signal, updated_at
+    FROM outfit_pair_stats
+    ORDER BY garment_a_id ASC, garment_b_id ASC
+  `).all() as Array<{
+    garment_a_id: number;
+    garment_b_id: number;
+    likes: number;
+    dislikes: number;
+    worn_count: number;
+    total_feedback: number;
+    signal: number;
+    updated_at: string;
+  }>;
+  return rows.map((row) => {
+    const stat: OutfitPairStat = {
+      garmentAId: row.garment_a_id,
+      garmentBId: row.garment_b_id,
+      likes: row.likes,
+      dislikes: row.dislikes,
+      wornCount: row.worn_count,
+      totalFeedback: row.total_feedback,
+      signal: row.signal,
+      updatedAt: row.updated_at
+    };
+    if (!isOutfitPairStatShape(stat)) {
+      throw new OutfitExportError(
+        `Cannot export outfit_pair_stats row ${row.garment_a_id}/${row.garment_b_id}: invalid pair statistics`
+      );
+    }
+    return stat;
+  });
+}
+
+function listGarmentAvailabilityEventsForExport(db: AppDatabase): GarmentAvailabilityEvent[] {
+  const rows = db.prepare(`
+    SELECT id, garment_id, previous_status, status, changed_at
+    FROM garment_availability_events
+    ORDER BY changed_at ASC, id ASC
+  `).all() as Array<{
+    id: number;
+    garment_id: number;
+    previous_status: GarmentAvailabilityStatus;
+    status: GarmentAvailabilityStatus;
+    changed_at: string;
+  }>;
+  return rows.map((row) => {
+    const event: GarmentAvailabilityEvent = {
+      id: row.id,
+      garmentId: row.garment_id,
+      previousStatus: row.previous_status,
+      status: row.status,
+      changedAt: row.changed_at
+    };
+    if (!isGarmentAvailabilityEventShape(event)) {
+      throw new OutfitExportError(
+        `Cannot export garment_availability_events row ${row.id}: invalid availability event`
+      );
+    }
+    return event;
   });
 }
 
@@ -889,6 +1116,7 @@ function isGarmentShape(value: unknown): boolean {
     typeof value.owned !== "boolean" ||
     typeof value.confirmed !== "boolean" ||
     typeof value.excluded !== "boolean" ||
+    !hasOptionalEnum(value, "availabilityStatus", GARMENT_AVAILABILITY_STATUSES) ||
     !isFiniteNumber(value.confidence)
   ) {
     return false;
@@ -1009,6 +1237,114 @@ function isRecommendationCandidateShape(value: unknown): boolean {
   );
 }
 
+function isSavedOutfitShape(value: unknown): value is SavedOutfit {
+  if (!isRecord(value)) return false;
+  if (
+    !isSafeInteger(value.id) ||
+    typeof value.name !== "string" ||
+    typeof value.notes !== "string" ||
+    typeof value.source !== "string" ||
+    !includes(["recommendation", "manual", "replacement"] as const, value.source) ||
+    !hasOptionalString(value, "sourceCandidateId") ||
+    !hasOptionalSafeInteger(value, "derivedFromOutfitId") ||
+    typeof value.favorite !== "boolean" ||
+    !hasOptionalString(value, "archivedAt") ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    !Array.isArray(value.items)
+  ) {
+    return false;
+  }
+
+  return value.items.every((item) => {
+    if (!isRecord(item) || !isRecord(item.garmentSnapshot)) return false;
+    const snapshot = item.garmentSnapshot;
+    return (
+      isSafeInteger(item.id) &&
+      isSafeInteger(item.outfitId) &&
+      hasOptionalSafeInteger(item, "garmentId") &&
+      typeof item.slot === "string" &&
+      includes(GARMENT_CATEGORIES, item.slot) &&
+      isSafeInteger(item.position) &&
+      item.position >= 0 &&
+      isSafeInteger(snapshot.id) &&
+      typeof snapshot.name === "string" &&
+      typeof snapshot.brand === "string" &&
+      typeof snapshot.category === "string" &&
+      includes(GARMENT_CATEGORIES, snapshot.category) &&
+      snapshot.category === item.slot &&
+      typeof snapshot.imageUrl === "string" &&
+      isPortableAssetReference(snapshot.imageUrl)
+    );
+  });
+}
+
+function isRecommendationFeedbackShape(value: unknown): value is RecommendationFeedback {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isSafeInteger(value.id) &&
+    value.id > 0 &&
+    typeof value.candidateId === "string" &&
+    value.candidateId.length > 0 &&
+    hasOptionalEnum(value, "verdict", FEEDBACK_VERDICTS) &&
+    (value.rating === undefined ||
+      (isSafeInteger(value.rating) && value.rating >= 1 && value.rating <= 5)) &&
+    typeof value.actuallyWorn === "boolean" &&
+    Array.isArray(value.reasonCodes) &&
+    value.reasonCodes.every((reason) =>
+      typeof reason === "string" && includes(FEEDBACK_REASONS, reason)
+    ) &&
+    typeof value.comment === "string" &&
+    hasOptionalPositiveSafeInteger(value, "woreInsteadOutfitId") &&
+    hasOptionalPositiveSafeInteger(value, "wearLogId") &&
+    typeof value.createdAt === "string" &&
+    value.createdAt.length > 0 &&
+    typeof value.updatedAt === "string" &&
+    value.updatedAt.length > 0
+  );
+}
+
+function isOutfitPairStatShape(value: unknown): value is OutfitPairStat {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isSafeInteger(value.garmentAId) &&
+    value.garmentAId > 0 &&
+    isSafeInteger(value.garmentBId) &&
+    value.garmentBId > value.garmentAId &&
+    isSafeInteger(value.likes) &&
+    value.likes >= 0 &&
+    isSafeInteger(value.dislikes) &&
+    value.dislikes >= 0 &&
+    isSafeInteger(value.wornCount) &&
+    value.wornCount >= 0 &&
+    isSafeInteger(value.totalFeedback) &&
+    value.totalFeedback >= 1 &&
+    value.likes + value.dislikes <= value.totalFeedback &&
+    value.wornCount <= value.totalFeedback &&
+    isSafeInteger(value.signal) &&
+    value.signal === value.likes + 2 * value.wornCount - 2 * value.dislikes &&
+    typeof value.updatedAt === "string" &&
+    value.updatedAt.length > 0
+  );
+}
+
+function isGarmentAvailabilityEventShape(value: unknown): value is GarmentAvailabilityEvent {
+  if (!isRecord(value)) return false;
+  return Boolean(
+    isSafeInteger(value.id) &&
+    value.id > 0 &&
+    isSafeInteger(value.garmentId) &&
+    value.garmentId > 0 &&
+    typeof value.previousStatus === "string" &&
+    includes(GARMENT_AVAILABILITY_STATUSES, value.previousStatus) &&
+    typeof value.status === "string" &&
+    includes(GARMENT_AVAILABILITY_STATUSES, value.status) &&
+    value.previousStatus !== value.status &&
+    typeof value.changedAt === "string" &&
+    value.changedAt.length > 0
+  );
+}
+
 function isGarmentAssetMetadataShape(value: unknown): value is GarmentAssetMetadata {
   if (!isRecord(value)) return false;
   return Boolean(
@@ -1041,6 +1377,15 @@ function hasOptionalFiniteNumber(record: Record<string, unknown>, key: string): 
 
 function hasOptionalSafeInteger(record: Record<string, unknown>, key: string): boolean {
   return record[key] === undefined || isSafeInteger(record[key]);
+}
+
+function hasOptionalPositiveSafeInteger(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  return value === undefined || (isSafeInteger(value) && value > 0);
+}
+
+function hasOptionalString(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === undefined || typeof record[key] === "string";
 }
 
 function hasOptionalStringArray(record: Record<string, unknown>, key: string): boolean {

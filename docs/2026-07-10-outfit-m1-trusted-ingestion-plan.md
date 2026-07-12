@@ -1,7 +1,7 @@
 # Outfit M1：可信建档与导入暂存区
 
 > 恢复说明：本文件正文从 2026-07-11 的本地 Codex 会话存档中按原章节边界恢复，未凭记忆改写。
-> 状态：M1 已于 2026-07-11 按本计划执行完成；M2–M6 仍作为后续可独立执行的开发计划保留。
+> 状态：M1 已于 2026-07-11 完成主体实现，并于 2026-07-12 经独立验收修复后通过本计划验收。
 
 ## 共同执行约束
 
@@ -103,22 +103,22 @@ interface ImportDecision {
 
 ### 实施任务
 
-- [ ] 写 migration 测试并新增 origin、archived_at、acquired_at、purchase_price_cents、currency 与 garment_assets；availability_status 留到 M3，避免重复归属。
-- [ ] 写 POST /api/garments 失败测试：手工衣物无 sourceOrderItemId、默认 confirmed=true/origin=manual、非法枚举和负价格被拒绝。
-- [ ] 实现 createManualGarment() 和 JSON 路由，不要求图片即可保存。
-- [ ] 写后端图片净化失败测试：带 EXIF 的 JPEG、PNG/WebP、伪造 MIME、像素炸弹、解码失败、超字节上限和路径穿越；浏览器 canvas 只补交互测试。
-- [ ] 加入并锁定 `sharp`，实现 PUT image 专用 raw body、服务器端解码/旋转/无元数据 WebP 重编码、UUID storage_key、sha256 和原子落盘。
-- [ ] 实现认证 GET asset content；验证不存在/非 active/越界 storage_key 均不泄露物理路径，Garment.imageUrl 指向该端点。
-- [ ] 旧图片不自动删除；只将 active 置为 false，后续由 privacy-clean 预览和明确确认处理。
-- [ ] 在衣服库增加“添加衣物”入口和 ManualGarmentDialog；保存成功后直接进入已确认藏品。
-- [ ] 把衣物删除 UI 改为“归档”，实现 archive/restore；统一 active predicate 为 `owned=true AND archived_at IS NULL`，推荐再叠加 `confirmed=true AND excluded=false`。
-- [ ] 列表、洞察默认只计算 active garments；导入去重必须命中已归档来源并提示“恢复并更新”，不能静默创建重复衣物。
-- [ ] 写数据库感知预览测试：同一来源区分 create/update/unchanged/refund-sync，且预览不写库。
-- [ ] 读取采集产物时不再提前丢弃退款事件；在 ImportReviewTable 中逐项勾选和修正字段。
-- [ ] 提交时服务端重新计算 sourceItemKey/disposition，拒绝不存在的 decision 或非法 override。
-- [ ] 补齐品牌、风格、正式度、备注和“排除推荐”的编辑入口；新增批量季节/标签/排除动作。
-- [ ] 扩展 OutfitExportV2 资产元数据并实现显式 ZIP 完整备份；验证 ZIP 无绝对路径、无路径穿越、缺失资产有 manifest 警告。
-- [ ] 更新文档并完成全量验证。
+- [x] 写 migration 测试并新增 origin、archived_at、acquired_at、purchase_price_cents、currency 与 garment_assets；availability_status 留到 M3，避免重复归属。
+- [x] 写 POST /api/garments 失败测试：手工衣物无 sourceOrderItemId、默认 confirmed=true/origin=manual、非法枚举和负价格被拒绝。
+- [x] 实现 createManualGarment() 和 JSON 路由，不要求图片即可保存。
+- [x] 写后端图片净化失败测试：带 EXIF 的 JPEG、PNG/WebP、伪造 MIME、像素炸弹、解码失败、超字节上限和路径穿越；浏览器 canvas 只补交互测试。
+- [x] 加入并锁定 `sharp`，实现 PUT image 专用 raw body、服务器端解码/旋转/无元数据 WebP 重编码、UUID storage_key、sha256 和原子落盘。
+- [x] 实现认证 GET asset content；验证不存在/非 active/越界 storage_key 均不泄露物理路径，Garment.imageUrl 指向该端点。
+- [x] 旧图片不自动删除；只将 active 置为 false，后续由 privacy-clean 预览和明确确认处理。
+- [x] 在衣服库增加“添加衣物”入口和 ManualGarmentDialog；保存成功后直接进入已确认藏品。
+- [x] 把衣物删除 UI 改为“归档”，实现 archive/restore；统一 active predicate 为 `owned=true AND archived_at IS NULL`，推荐再叠加 `confirmed=true AND excluded=false`。
+- [x] 列表、洞察默认只计算 active garments；导入去重必须命中已归档来源并提示“恢复并更新”，不能静默创建重复衣物。
+- [x] 写数据库感知预览测试：同一来源区分 create/update/unchanged/refund-sync，且预览不写库。
+- [x] 读取采集产物时不再提前丢弃退款事件；在 ImportReviewTable 中逐项勾选和修正字段。
+- [x] 提交时服务端重新计算 sourceItemKey/disposition，拒绝不存在的 decision 或非法 override。
+- [x] 补齐品牌、风格、正式度、备注和“排除推荐”的编辑入口；新增批量季节/标签/排除动作。
+- [x] 扩展 OutfitExportV2 资产元数据并实现显式 ZIP 完整备份；验证 ZIP 无绝对路径、无路径穿越、缺失资产有 manifest 警告。
+- [x] 更新文档并完成全量验证。
 
 ### 验收标准
 
@@ -129,5 +129,11 @@ interface ImportDecision {
 - 预览中的每个候选可选择、修正，并明确显示新增/更新/退款同步/无变化。
 - 取消某项不会写入；退款同步不会因 wardrobeOnly 过滤而消失。
 - 同批提交重放保持幂等。
+
+### 独立验收记录（2026-07-12）
+
+- 修复取消选择仍携带 overrides、退款同步允许编辑字段，以及旧直写 API 绕过预览—提交的问题。
+- 旧 `/api/import/taobao-batch` 现固定返回 HTTP 410，公共导入仅保留可信两阶段写入链路。
+- 与 M2 合并后的全量验证为 Vitest 24 个文件、330 项测试及 Python 33 项测试全部通过；类型检查、生产构建和依赖审计通过。
 
 ---

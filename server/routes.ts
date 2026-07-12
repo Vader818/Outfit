@@ -3,16 +3,20 @@ import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, ThumbnailRefreshOptions } from "./db";
 import type { WeatherSnapshot } from "../src/shared/types";
-import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, importTaobaoBatchIntoDb, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail } from "./db";
+import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail } from "./db";
 import { buildOutfitExportV2, previewOutfitExportZip, writeOutfitExportZip } from "./services/export";
 import { recommendOutfits } from "./services/recommend";
 import { persistRecommendationSnapshot } from "./services/recommendationCandidates";
+import { validateRecommendationConstraints } from "./services/recommendationConstraints";
+import { getRecommendationFeedbackInsights, listOutfitPairStats } from "./services/recommendationFeedback";
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
 import { buildEstimatedWeather, fetchWeather } from "./services/weather";
 import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateTaobaoImportCommitRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
 import { registerGarmentRoutes } from "./routes/garments";
+import { registerOutfitRoutes } from "./routes/outfits";
+import { registerFeedbackRoutes } from "./routes/feedback";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -102,9 +106,13 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
 
   app.use(defaultThumbnailPublicBasePath(), express.static(options.thumbnailOutputDir || defaultThumbnailOutputDir()));
   registerGarmentRoutes(app, db, { assetRoot: options.garmentAssetRoot });
+  registerOutfitRoutes(app, db);
+  registerFeedbackRoutes(app, db);
 
   app.post("/api/import/taobao-batch", (request, response) => {
-    handle(response, () => importTaobaoBatchIntoDb(db, request.body));
+    handle(response, () => {
+      throw legacyImportDisabled();
+    });
   });
 
   app.post("/api/import/taobao-preview", (request, response) => {
@@ -211,7 +219,10 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.get("/api/insights", (_request, response) => {
-    handle(response, () => getWardrobeInsights(db));
+    handle(response, () => ({
+      ...getWardrobeInsights(db),
+      feedbackSummary: getRecommendationFeedbackInsights(db)
+    }));
   });
 
   app.get("/api/export", (request, response) => {
@@ -284,9 +295,10 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   app.post("/api/recommendations", (request, response) => {
     handle(response, () => {
       const recommendationRequest = validateRecommendationRequest(request.body);
-      const garments = listGarments(db);
+      const garments = listGarments(db, { scope: "all" });
+      const constraints = validateRecommendationConstraints(garments, recommendationRequest);
       const recentlyWornGarmentIds = Array.from(new Set([
-        ...recommendationRequest.recentlyWornGarmentIds,
+        ...(recommendationRequest.recentlyWornGarmentIds ?? []),
         ...listRecentlyWornGarmentIds(db)
       ]));
       const effectiveProfile = recommendationRequest.userProfile ?? getPersonalProfile(db);
@@ -295,7 +307,9 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
         weather: recommendationRequest.weather,
         occasion: recommendationRequest.occasion,
         recentlyWornGarmentIds,
-        userProfile: effectiveProfile
+        userProfile: effectiveProfile,
+        pairStats: listOutfitPairStats(db),
+        ...constraints
       });
       return persistRecommendationSnapshot(
         db,
@@ -513,6 +527,10 @@ function safeDecodeCookieValue(value: string): string | undefined {
 
 function legacyCaptureDisabled(): ApiError {
   return new ApiError("LEGACY_CAPTURE_DISABLED", "旧版 detached 采集接口已禁用，请使用 /api/capture/jobs。", 410);
+}
+
+function legacyImportDisabled(): ApiError {
+  return new ApiError("LEGACY_IMPORT_DISABLED", "旧版直写导入接口已禁用，请使用 /api/import/taobao-preview 和 /api/import/taobao-commit。", 410);
 }
 
 function setSessionCookie(response: Response, token: string): void {

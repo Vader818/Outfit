@@ -3,6 +3,7 @@ import { Badge, Button, EmptyState, PageIntro, Surface } from "../../components/
 import {
   CATEGORY_LABELS,
   COLOR_LABELS,
+  FEEDBACK_REASON_LABELS,
   HEALTH_LEVEL_LABELS,
   OCCASION_LABELS,
   SEASON_LABELS,
@@ -14,11 +15,13 @@ import {
 } from "../../shared/presentation";
 import type {
   RecommendationRunEntry,
+  SavedOutfit,
   WardrobeInsights,
   WardrobeSuggestion,
   WearLogEntry,
   WornGarmentInsight
 } from "../../shared/types";
+import { SavedOutfitsPanel } from "../outfits/SavedOutfitsPanel";
 import { DistributionBars } from "./DistributionBars";
 import { InsightSuggestionList } from "./InsightSuggestionList";
 
@@ -26,11 +29,19 @@ export type HistoryInsightsViewProps = {
   insights: WardrobeInsights | null;
   wearLogs: WearLogEntry[];
   recommendationRuns: RecommendationRunEntry[];
+  savedOutfits?: SavedOutfit[];
+  savedOutfitsBusy?: boolean;
+  allowRemoteTaobaoImages?: boolean;
   busy: boolean;
   busyAction?: BusyAction | null;
   onRefresh: () => void;
   onExport: () => void;
   onExportComplete?: () => void;
+  onCreateSavedOutfit?: () => void;
+  onOpenSavedOutfit?: (outfit: SavedOutfit) => void;
+  onFavoriteSavedOutfit?: (outfit: SavedOutfit, favorite: boolean) => void;
+  onArchiveSavedOutfit?: (outfit: SavedOutfit) => void;
+  onManageFeedback?: () => void;
 };
 
 const PRIORITY_ORDER: Record<WardrobeSuggestion["priority"], number> = {
@@ -73,6 +84,12 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
   const refreshing = props.busyAction === "history";
   const exporting = props.busyAction === "export";
   const exportingComplete = props.busyAction === "export-complete";
+  const canManageSavedOutfits = Boolean(
+    props.onCreateSavedOutfit &&
+    props.onOpenSavedOutfit &&
+    props.onFavoriteSavedOutfit &&
+    props.onArchiveSavedOutfit
+  );
 
   return (
     <section className="history-insights-view view-shell" aria-labelledby="history-insights-title" aria-busy={props.busy || undefined}>
@@ -85,6 +102,11 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
               <RefreshCw aria-hidden="true" />
               {refreshing ? "刷新中" : "刷新"}
             </Button>
+            {props.onManageFeedback ? (
+              <Button variant="secondary" disabled={props.busy} onClick={props.onManageFeedback}>
+                管理反馈
+              </Button>
+            ) : null}
             <Button variant="secondary" disabled={exporting || exportingComplete} aria-busy={exporting || undefined} onClick={props.onExport}>
               <Download aria-hidden="true" />
               {exporting ? "导出中" : "导出 JSON"}
@@ -103,6 +125,18 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
           </>
         )}
       />
+
+      {canManageSavedOutfits ? (
+        <SavedOutfitsPanel
+          outfits={props.savedOutfits ?? []}
+          busy={props.savedOutfitsBusy}
+          allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
+          onCreate={props.onCreateSavedOutfit as () => void}
+          onOpen={props.onOpenSavedOutfit as (outfit: SavedOutfit) => void}
+          onFavorite={props.onFavoriteSavedOutfit as (outfit: SavedOutfit, favorite: boolean) => void}
+          onArchive={props.onArchiveSavedOutfit as (outfit: SavedOutfit) => void}
+        />
+      ) : null}
 
       {insights ? <InsightsContent insights={insights} recommendationRuns={props.recommendationRuns} /> : (
         <Surface className="history-insights-empty">
@@ -140,6 +174,8 @@ function InsightsContent({ insights, recommendationRuns }: {
         <div><dt>已确认</dt><dd>{insights.confirmedGarments}</dd></div>
         <div><dt>待确认</dt><dd>{insights.pendingGarments}</dd></div>
       </dl>
+
+      <FeedbackSummary insights={insights} />
 
       <div className="insight-lead-grid grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(17rem,0.8fr)]">
         <Surface className="health-focus" aria-labelledby="wardrobe-health-title">
@@ -263,5 +299,48 @@ function InsightsContent({ insights, recommendationRuns }: {
         ) : <EmptyState compact title="还没有推荐历史。" />}
       </section>
     </div>
+  );
+}
+
+function FeedbackSummary({ insights }: { insights: WardrobeInsights }) {
+  const summary = insights.feedbackSummary ?? {
+    totalCount: 0,
+    acceptedCount: 0,
+    acceptanceRate: 0,
+    rejectionReasons: []
+  };
+  const commonReason = summary.mostCommonRejectionReason
+    ? summary.rejectionReasons.find((entry) => entry.reason === summary.mostCommonRejectionReason)
+    : undefined;
+  return (
+    <Surface className="feedback-summary" aria-labelledby="feedback-summary-title">
+      <header>
+        <div>
+          <span>推荐反馈</span>
+          <h2 id="feedback-summary-title">选择记录</h2>
+        </div>
+        <Badge tone={summary.totalCount >= 3 ? "accent" : "neutral"}>
+          {summary.totalCount >= 3 ? "已达到排序阈值" : "样本积累中"}
+        </Badge>
+      </header>
+      <dl>
+        <div><dt>反馈数量</dt><dd>{summary.totalCount}</dd></div>
+        <div><dt>接受次数</dt><dd>{summary.acceptedCount}</dd></div>
+        <div><dt>接受率</dt><dd>{summary.acceptanceRate}%</dd></div>
+        <div>
+          <dt>常见拒绝原因</dt>
+          <dd>
+            {commonReason
+              ? `${FEEDBACK_REASON_LABELS[commonReason.reason]} · ${commonReason.count} 次`
+              : "暂无"}
+          </dd>
+        </div>
+      </dl>
+      <p>
+        {summary.totalCount < 3
+          ? "证据少于 3 条时只记录事实，不改变推荐排序。"
+          : "学习偏好只以有限分值影响排序，可随时预览范围并清空。"}
+      </p>
+    </Surface>
   );
 }

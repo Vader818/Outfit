@@ -118,9 +118,18 @@ http://127.0.0.1:8788
 
 ## POST /api/import/taobao-batch
 
-兼容旧客户端的立即导入接口。接口会归一化采集项、去重并直接写库；新 UI 不再调用它，而是使用数据库感知的 preview/commit 两阶段流程。
+旧版立即导入接口已禁用，固定返回 HTTP 410 与 `LEGACY_IMPORT_DISABLED`，且不会写入数据库。所有调用方必须先请求数据库感知的 `/api/import/taobao-preview`，经用户逐项审阅后再调用 `/api/import/taobao-commit`；服务端不存在绕过审阅直接写库的公共导入入口。
 
 请求体：`TaobaoCapturedBatch`
+
+```json
+{
+  "error": {
+    "code": "LEGACY_IMPORT_DISABLED",
+    "message": "旧版直写导入接口已禁用，请使用 /api/import/taobao-preview 和 /api/import/taobao-commit。"
+  }
+}
+```
 
 ```json
 {
@@ -472,6 +481,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
     "owned": true,
     "confirmed": false,
     "excluded": false,
+    "availabilityStatus": "available",
     "confidence": 0.82,
     "notes": "",
     "itemUrl": "https://item.taobao.com/item.htm?id=808",
@@ -514,8 +524,8 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 - 必填字段为 `name`、`category`、`color`、`warmth`、`seasons`、`styles`、`formality`。
 - 可选字段为 `brand`、`size`、`materials`、`patterns`、`tags`、`notes`、`acquiredAt`、`purchasePriceCents`、`currency`。
 - `acquiredAt` 使用有效的 `YYYY-MM-DD`；价格使用非负整数“分”，传价格时币种只能是 `CNY`。
-- 不接受 `sourceOrderItemId`、`rawName`、`imageUrl`、`owned`、`confirmed`、`excluded`、`confidence` 等服务端状态字段；传入未知字段返回 HTTP 400。
-- 服务端固定写入 `source_order_item_id=NULL`、`origin=manual`、`raw_name=name`、空图片、`owned=true`、`confirmed=true`、`excluded=false`、`confidence=1`。
+- 不接受 `sourceOrderItemId`、`rawName`、`imageUrl`、`owned`、`confirmed`、`excluded`、`availabilityStatus`、`confidence` 等服务端状态字段；传入未知字段返回 HTTP 400。
+- 服务端固定写入 `source_order_item_id=NULL`、`origin=manual`、`raw_name=name`、空图片、`owned=true`、`confirmed=true`、`excluded=false`、`availabilityStatus=available`、`confidence=1`。
 
 照片使用下一个独立端点上传，因此不选照片也能先完成建档。
 
@@ -547,7 +557,36 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/garments/:id/restore
 
-清除 `archived_at` 并返回更新后的 `Garment`。若衣物仍为 `owned=false`，恢复后仍不属于默认 active 集合，需另行更新拥有状态。
+清除 `archived_at`、将 `owned` 恢复为 `true`，并返回更新后的 `Garment`；恢复后的衣物重新进入默认 active 集合。
+
+## POST /api/garments/:id/availability
+
+更新单件衣物的可用状态。请求体只允许 `status`：
+
+```json
+{ "status": "laundry" }
+```
+
+状态枚举为 `available`、`laundry`、`repair`、`loaned`、`packed`，分别表示可用、待洗、维修中、借出和已装箱。成功时在同一事务中更新 `garments.availability_status` 并追加状态事件：
+
+```json
+{
+  "changed": true,
+  "garment": {
+    "id": 12,
+    "availabilityStatus": "laundry"
+  },
+  "event": {
+    "id": 7,
+    "garmentId": 12,
+    "previousStatus": "available",
+    "status": "laundry",
+    "changedAt": "2026-07-11T09:00:00.000Z"
+  }
+}
+```
+
+重复提交当前状态返回 HTTP 200、`changed=false`，且不写重复事件。非 `available` 衣物保留在衣服库和历史中，但会被推荐及替代单品硬过滤；该操作不会自动改写 `owned`、归档状态或穿着记录。非法 ID、状态、未知字段或非对象请求体返回 400 `VALIDATION_ERROR`。
 
 ## GET /api/profile
 
@@ -861,6 +900,90 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 ]
 ```
 
+## POST /api/recommendation-feedback
+
+按持久化的 `candidateId` 新增或更新推荐反馈。相同候选重复提交会更新同一行并重算全部衣物组合统计，不会叠加为多条反馈。成功响应为 HTTP 200：
+
+```json
+{
+  "feedback": {
+    "id": 9,
+    "candidateId": "11111111-1111-4111-8111-111111111111",
+    "verdict": "disliked",
+    "rating": 2,
+    "actuallyWorn": false,
+    "reasonCodes": ["too-warm", "color"],
+    "comment": "室内太热",
+    "createdAt": "2026-07-11T08:00:00.000Z",
+    "updatedAt": "2026-07-11T09:00:00.000Z"
+  },
+  "pairStatsRecomputed": 3
+}
+```
+
+请求规则：
+
+- `candidateId` 必须是已持久化候选的 UUID；不存在时返回 404 `RECOMMENDATION_CANDIDATE_NOT_FOUND`。
+- `verdict` 可为 `liked`、`disliked`、`skipped`；`rating` 可为整数 1–5；`actuallyWorn` 为布尔值。
+- `reasonCodes` 是必填的不重复数组，可以为空；元素只允许 `too-warm`、`too-cold`、`too-formal`、`too-casual`、`color`、`fit`、`repeat`、`unavailable`、`other`。
+- `comment` 可省略，最多 2000 字符。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与 `actuallyWorn=true` 同时提交。
+- 除 `candidateId` 和空 `reasonCodes` 外，至少还要提供一个有意义信号：verdict、rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId`；全空中性提交返回 400。
+- 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 `wear_logs` 在同一事务中写入；重放不会再建第二条关联穿着记录。
+- 未知字段、错误类型、越界评分或重复/未知原因返回 400 `VALIDATION_ERROR`。写接口继续要求有效本地 session，并经过 Origin/Sec-Fetch-Site 校验。
+
+组合学习分采用固定、有界公式：
+
+```text
+signal = likes + 2*wornCount - 2*dislikes
+confidence = min(1, totalFeedback / 5)
+pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
+```
+
+`totalFeedback` 计入该衣物对出现过的每一条候选反馈，包括 `skipped`、仅评分或没有 verdict 的反馈；`likes`、`dislikes`、`wornCount` 分别计数，同一条反馈可以同时贡献 verdict 与实际穿着信号。
+
+单对衣物少于 3 条反馈时只记录统计，`pairBonus` 按 0 处理，不改变排序。达到阈值后，每对最多贡献 -4…+4；一套搭配的全部组合贡献最终限制在 -8…+8，并通过 `scoreBreakdown.learnedPreference` 单独返回。
+
+## GET /api/recommendation-feedback/clear-preview
+
+只读预览将被清空的反馈数和受影响衣物组合数，不删除数据。查询范围必须且只能使用以下一种：
+
+| scope | 额外参数 | 语义 |
+| --- | --- | --- |
+| `all` | 无 | 全部反馈 |
+| `candidate` | `candidateId=<uuid>` | 指定候选的反馈 |
+| `date-range` | `from=YYYY-MM-DD&to=YYYY-MM-DD` | 按 `updated_at` 日期闭区间筛选 |
+
+```json
+{
+  "scope": "date-range",
+  "from": "2026-07-01",
+  "to": "2026-07-11",
+  "feedbackCount": 7,
+  "affectedPairCount": 11
+}
+```
+
+参数缺失、重复、越权组合、未知参数、无效日期或 `from > to` 返回 400 `VALIDATION_ERROR`。范围内没有反馈时正常返回计数 0。
+
+## DELETE /api/recommendation-feedback
+
+使用与清空预览完全相同的 scope 查询参数删除反馈，并在同一事务中从剩余反馈重算 `outfit_pair_stats`。响应是结构化清理结果：
+
+```json
+{
+  "scope": "date-range",
+  "from": "2026-07-01",
+  "to": "2026-07-11",
+  "feedbackCount": 7,
+  "affectedPairCount": 11,
+  "deletedFeedbackCount": 7,
+  "remainingPairStatsCount": 4,
+  "clearedAt": "2026-07-11T10:00:00.000Z"
+}
+```
+
+产品 UI 必须先调用 clear-preview，展示范围、反馈条数和受影响组合数，只有用户二次点击“确认清空”后才发送 DELETE；范围被修改后必须重新预览。直接调用 API 不会出现 UI 确认，调用方需要自行承担这一确认义务。空范围和重复 DELETE 都成功返回 `deletedFeedbackCount=0`，不会留下由已删除反馈计算出的组合权重。
+
 ## GET /api/export
 
 不传格式（或传 `format=json`）时构建敏感本地 V2 JSON 备份。该接口不采用列表接口的默认条数限制，包含 active 与归档衣物，但不内嵌图片二进制。
@@ -868,12 +991,14 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 ```json
 {
   "version": 2,
-  "schemaVersion": 2,
+  "schemaVersion": 4,
   "exportedAt": "2026-07-11T08:00:00.000Z",
   "features": [
     "versioned-migrations",
     "recommendation-candidates",
-    "garment-assets"
+    "garment-assets",
+    "saved-outfits",
+    "feedback-availability"
   ],
   "profile": {},
   "garments": [],
@@ -910,6 +1035,68 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
       "createdAt": "2026-07-11 08:00:00",
       "archivePath": "assets/3.webp"
     }
+  ],
+  "savedOutfits": [
+    {
+      "id": 7,
+      "name": "2026-07-11 · 通勤",
+      "notes": "",
+      "source": "replacement",
+      "derivedFromOutfitId": 6,
+      "favorite": false,
+      "items": [
+        {
+          "id": 18,
+          "outfitId": 7,
+          "garmentId": 3,
+          "slot": "dress",
+          "position": 0,
+          "garmentSnapshot": {
+            "id": 3,
+            "name": "海军蓝连衣裙",
+            "brand": "",
+            "category": "dress",
+            "imageUrl": ""
+          }
+        }
+      ],
+      "createdAt": "2026-07-11T08:00:00.000Z",
+      "updatedAt": "2026-07-11T08:00:00.000Z"
+    }
+  ],
+  "recommendationFeedback": [
+    {
+      "id": 9,
+      "candidateId": "11111111-1111-4111-8111-111111111111",
+      "verdict": "disliked",
+      "rating": 2,
+      "actuallyWorn": false,
+      "reasonCodes": ["too-warm"],
+      "comment": "室内太热",
+      "createdAt": "2026-07-11T08:00:00.000Z",
+      "updatedAt": "2026-07-11T09:00:00.000Z"
+    }
+  ],
+  "outfitPairStats": [
+    {
+      "garmentAId": 3,
+      "garmentBId": 8,
+      "likes": 0,
+      "dislikes": 1,
+      "wornCount": 0,
+      "totalFeedback": 1,
+      "signal": -2,
+      "updatedAt": "2026-07-11T09:00:00.000Z"
+    }
+  ],
+  "garmentAvailabilityEvents": [
+    {
+      "id": 7,
+      "garmentId": 12,
+      "previousStatus": "available",
+      "status": "laundry",
+      "changedAt": "2026-07-11T09:00:00.000Z"
+    }
   ]
 }
 ```
@@ -917,8 +1104,10 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 说明：
 
 - 前端在请求前会显示敏感备份确认；直接调用 API 不会触发这层 UI 确认，但仍要求有效本地 session。调用方必须自行确认备份的接收方和存放位置可信。
-- JSON 不内嵌图片二进制；`garmentAssets` 包含 active 与 inactive 资产的可移植元数据，但不含 `storage_key`、绝对路径或原始文件名。图片和来源字段不允许绝对文件系统路径、`data:`、`blob:` 或 `file:` 引用。
-- 内部版本校验器仍能识别旧 V1 envelope，但当前没有恢复导入 API。
+- JSON 不内嵌图片二进制；`garmentAssets` 包含 active 与 inactive 资产的可移植元数据，但不含 `storage_key`、绝对路径或原始文件名。`savedOutfits` 包含 active、归档和派生搭配及保存时的衣物快照；即使来源衣物后来改名或归档，快照仍保持不变。
+- `recommendationFeedback`、`outfitPairStats` 与 `garmentAvailabilityEvents` 导出全部记录，不受 UI 列表限制；其中包含用户评价、自由文本评论、实际穿着选择和完整状态变更历史，属于敏感本地数据。三组读取与其余 JSON 数据位于同一个 SQLite 快照，并使用确定性排序；损坏的 `reason_codes_json` 会让导出明确失败，不会静默跳过。
+- 图片、来源字段和搭配快照不允许绝对文件系统路径、`data:`、`blob:` 或 `file:` 引用。损坏的 `garment_snapshot` 会使导出明确失败，不会静默省略记录。
+- 内部版本校验器仍能识别旧 V1，以及缺少 M3 三个可选数组的旧 V2 envelope；当前没有恢复导入 API。
 
 ### GET /api/export?format=zip&preview=1
 
@@ -941,7 +1130,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 }
 ```
 
-前端会把个人画像、淘宝来源与价格、穿着/推荐历史、本地图片、预计大小和警告明确展示给用户；只有再次确认才请求正式 ZIP。
+前端会把个人画像、淘宝来源与价格、穿着/推荐历史、反馈评论、实际穿着选择、衣物状态历史、本地图片、预计大小和警告明确展示给用户；只有再次确认才请求正式 ZIP。
 
 ### GET /api/export?format=zip
 
@@ -955,7 +1144,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## GET /api/insights
 
-读取本地衣橱分析洞察。基础统计、常穿/未穿列表、季节/风格分布、健康度和建议都只基于 `owned=true` 且未归档的 active 衣物；归档衣物不会进入默认洞察。`excluded` 仍属于衣橱分析，但不会进入推荐。
+读取本地衣橱分析洞察。基础统计、常穿/未穿列表、季节/风格分布、健康度和建议都只基于 `owned=true` 且未归档的 active 衣物；归档衣物不会进入默认洞察。`excluded` 仍属于衣橱分析，但不会进入推荐。`feedbackSummary` 汇总全部推荐反馈；接受数按 `verdict=liked` 或 `actuallyWorn=true` 计，拒绝原因只统计 `disliked` 反馈。
 
 响应：`WardrobeInsights`
 
@@ -1011,7 +1200,17 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
     }
   ],
   "mostWorn": [],
-  "neverWorn": []
+  "neverWorn": [],
+  "feedbackSummary": {
+    "totalCount": 8,
+    "acceptedCount": 5,
+    "acceptanceRate": 62.5,
+    "mostCommonRejectionReason": "too-warm",
+    "rejectionReasons": [
+      { "reason": "too-warm", "count": 2 },
+      { "reason": "fit", "count": 1 }
+    ]
+  }
 }
 ```
 
@@ -1044,7 +1243,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/recommendations
 
-生成搭配推荐。服务只使用同时满足 `owned=true`、`confirmed=true`、`excluded=false` 的衣橱条目，替代单品也遵循同一资格规则。请求中的 `recentlyWornGarmentIds` 会与数据库最近穿着记录合并。
+生成搭配推荐。服务只使用同时满足 `owned=true`、未归档、`confirmed=true`、`excluded=false`、`availabilityStatus=available` 的衣橱条目，替代单品也遵循同一资格规则；待洗、维修中、借出和已装箱衣物会在候选池形成前被硬过滤。请求中的 `recentlyWornGarmentIds` 会与数据库最近穿着记录合并。`includeGarmentIds` 是必须出现在每个返回候选中的硬锁定，`excludeGarmentIds` 会在候选池形成前排除衣物。
 
 候选按“核心组合 → 外套 → 鞋履 → 配饰”分层生成。默认一次最多评估 20,000 个中间候选，每层最多保留 120 个 beam 状态；超出预算时使用确定性均匀采样。这是有界启发式计算，不保证遍历大衣橱的全部笛卡尔积。预算计数属于服务内部诊断，不作为响应字段返回。
 
@@ -1063,6 +1262,8 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
   },
   "occasion": "smart-casual",
   "recentlyWornGarmentIds": [1, 2],
+  "includeGarmentIds": [3],
+  "excludeGarmentIds": [9],
   "userProfile": {
     "temperatureSensitivity": "runs-cold",
     "preferredColors": ["red", "white"],
@@ -1071,6 +1272,13 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
   }
 }
 ```
+
+约束规则：
+
+- `includeGarmentIds`、`excludeGarmentIds` 省略时不启用约束；一旦提供，必须是 1-24 个不重复的正安全整数，且同一 ID 不能同时出现于两者。
+- include 中不存在、不再拥有、已归档、未确认或已排除推荐的衣物会返回 HTTP 400；同类别锁定多件非配饰，或同时锁定连衣裙与上装/下装，也会被判定为不可满足。
+- exclude 引用同样必须指向当前可推荐衣物，避免客户端用失效 ID 误以为已生效。
+- 所有结构与数据库状态错误均返回 `VALIDATION_ERROR`，并在 `error.details.issues` 中逐项给出 `field`、可选 `garmentId` 和 `reason`。reason 可能为 `INVALID_ARRAY`、`INVALID_ID`、`TOO_MANY`、`DUPLICATE`、`INCLUDE_EXCLUDE_CONFLICT`、`NOT_FOUND`、`NOT_OWNED`、`ARCHIVED`、`UNCONFIRMED`、`EXCLUDED` 或 `UNSATISFIABLE`。校验失败不会写入 recommendation run/candidate。
 
 响应：`RecommendationResult`
 
@@ -1106,7 +1314,8 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
         "itemConfidence": 7,
         "userPreference": 7,
         "bodyProportion": 0,
-        "colorSuitability": 0
+        "colorSuitability": 0,
+        "learnedPreference": 2.4
       },
       "items": [
         {
@@ -1124,14 +1333,60 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
           "owned": true,
           "confirmed": true,
           "excluded": false,
+          "availabilityStatus": "available",
           "confidence": 1
         }
       ],
       "reasons": ["风格和轻商务场合匹配。"],
-      "alternatives": []
+      "replacements": [
+        {
+          "targetGarmentId": 3,
+          "replacement": {
+            "id": 8,
+            "brand": "",
+            "name": "灰蓝连衣裙",
+            "rawName": "灰蓝连衣裙",
+            "category": "dress",
+            "color": "blue",
+            "warmth": "light",
+            "seasons": ["spring", "summer"],
+            "styles": ["smart-casual"],
+            "formality": "smart-casual",
+            "imageUrl": "",
+            "owned": true,
+            "confirmed": true,
+            "excluded": false,
+            "availabilityStatus": "available",
+            "confidence": 1
+          },
+          "nextItems": [
+            {
+              "id": 8,
+              "brand": "",
+              "name": "灰蓝连衣裙",
+              "rawName": "灰蓝连衣裙",
+              "category": "dress",
+              "color": "blue",
+              "warmth": "light",
+              "seasons": ["spring", "summer"],
+              "styles": ["smart-casual"],
+              "formality": "smart-casual",
+              "imageUrl": "",
+              "owned": true,
+              "confirmed": true,
+              "excluded": false,
+              "availabilityStatus": "available",
+              "confidence": 1
+            }
+          ],
+          "matchPercentDelta": -2,
+          "reasons": ["色彩仍适合当前场合。"]
+        }
+      ]
     }
   ],
-  "missingSlots": []
+  "missingSlots": [],
+  "missingSlotDetails": []
 }
 ```
 
@@ -1141,7 +1396,119 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 - `candidateId` 是候选快照的全局唯一 UUID；兼容字段 `id` 当前与它相同。
 - `outfitSignature` 是完整已选衣物组合的稳定 SHA-256 内容签名。相同组合跨 run 可得到相同 signature，但天气、场合、rank 和评分仍属于各自的 run/candidate 快照。
 - 客户端请求体中的 `runId`、`candidateId`、`outfitSignature` 等未知字段不会进入已保存的推荐输入，也不能影响服务端生成的身份。
-- 无法组成一件连衣裙或“上装＋下装”核心时，返回 `outfits=[]` 和结构化 `missingSlots`。鞋履仍是软缺口，不会单独导致空结果。
+- 无法组成一件连衣裙或“上装＋下装”核心时，返回 `outfits=[]`、结构化 `missingSlots`，并在 `missingSlotDetails[].unavailableCount` 说明该槽位有多少件衣物仅因当前非 `available` 而被过滤。鞋履仍是软缺口，不会单独导致空结果。
+- `scoreBreakdown.learnedPreference` 单列反馈学习贡献；少于 3 条组合证据时为 0，达到阈值后按前述公式计算，整套始终限制在 -8…+8。
+- `replacements` 按替换目标返回结构化建议；每项只替换一件同类别衣物，`nextItems` 是完整新搭配，`matchPercentDelta` 是相对原候选的匹配度变化，`reasons` 解释变化。被 include 锁定的目标不会生成替换建议。
+
+## GET /api/outfits
+
+返回保存的搭配。默认只返回未归档记录；传 `archived=1` 或 `archived=true` 时只返回归档记录。客户端需要完整历史时应分别读取两种 scope。结果按收藏优先、最近更新优先排序。
+
+响应：`SavedOutfit[]`
+
+```json
+[
+  {
+    "id": 6,
+    "name": "2026-07-11 · 通勤",
+    "notes": "会议日",
+    "source": "recommendation",
+    "sourceCandidateId": "11111111-1111-4111-8111-111111111111",
+    "favorite": true,
+    "items": [
+      {
+        "id": 14,
+        "outfitId": 6,
+        "garmentId": 3,
+        "slot": "dress",
+        "position": 0,
+        "garmentSnapshot": {
+          "id": 3,
+          "name": "海军蓝连衣裙",
+          "brand": "",
+          "category": "dress",
+          "imageUrl": ""
+        }
+      }
+    ],
+    "createdAt": "2026-07-11T08:00:00.000Z",
+    "updatedAt": "2026-07-11T08:00:00.000Z"
+  }
+]
+```
+
+`garmentSnapshot` 是保存时的不可变展示事实，不会因当前衣物改名、换图或归档而变化。若来源衣物行后来被物理移除，`garmentId` 可省略，快照仍保留。
+
+## POST /api/outfits
+
+创建手工搭配。响应状态为 HTTP 201。服务端只接受名称、备注、收藏和衣物位置，并从当前数据库衣物生成快照；客户端不能提交 `source`、`sourceCandidateId`、`derivedFromOutfitId`、`garmentSnapshot`、归档或时间字段。
+
+```json
+{
+  "name": "周末散步",
+  "notes": "",
+  "favorite": false,
+  "items": [
+    { "garmentId": 1, "slot": "top", "position": 0 },
+    { "garmentId": 2, "slot": "bottom", "position": 0 },
+    { "garmentId": 5, "slot": "accessory", "position": 0 }
+  ]
+}
+```
+
+规则：
+
+- `name` 为 1-120 个字符，`notes` 最多 2000 个字符，`items` 为 1-24 项。
+- 每件衣物必须仍在当前衣橱、已确认，且 `slot` 与衣物类别一致；同一衣物和同一 `slot+position` 不能重复。
+- 完整核心必须是单件 `dress`，或同时包含 `top` 与 `bottom`；`dress` 不得与 `top`/`bottom` 同时出现。
+- 非配饰位置只能使用 `position=0`；配饰位置必须从 0 连续排列。鞋履、外套和配饰均为可选。
+
+## GET /api/outfits/:id
+
+按正整数 ID 返回单个 active 或归档搭配。不存在时返回 HTTP 404、`NOT_FOUND`。
+
+## PUT /api/outfits/:id
+
+更新名称、备注、收藏和/或全部 items；请求体至少包含一个允许字段。未提供 `items` 时服务端原样保留现有衣物及保存时快照，适合对包含已归档或已删除来源衣物的历史搭配做 metadata-only 更新。替换 items 时重新执行与创建相同的完整性校验，并从当前可用衣物生成新快照；客户端必须显式处理每个不可用历史项，不能静默省略。未提供的字段保持不变，来源与派生关系不可改写。
+
+```json
+{
+  "name": "周末散步 · 轻便版",
+  "favorite": true
+}
+```
+
+## POST /api/outfits/:id/archive
+
+软归档搭配并返回更新后的 `SavedOutfit`。重复调用保持首次 `archivedAt`，不会删除 header、items、snapshot 或派生链路。当前没有物理删除搭配的 API。
+
+## POST /api/recommendation-candidates/:candidateId/save
+
+把已经持久化的推荐候选保存为搭配，响应状态为 HTTP 201。`candidateId` 必须是有效 UUID，服务端会同时核对 candidate 表与所属 run 的历史结果快照，不信任客户端重传的衣物内容。
+
+```json
+{
+  "name": "重要会议",
+  "notes": "可选备注",
+  "favorite": true
+}
+```
+
+三个字段均可省略；省略名称时使用候选历史天气日期与中文场合生成，例如 `2026-07-11 · 通勤`。即使来源衣物后来改名或归档，仍按候选生成当时的快照保存。候选不存在时返回 HTTP 404、`NOT_FOUND`。
+
+## POST /api/outfits/:id/replacements
+
+确认应用一条替换建议时创建新的派生搭配，响应状态为 HTTP 201。原搭配不会被覆盖或归档。
+
+```json
+{
+  "targetGarmentId": 3,
+  "replacementGarmentId": 8,
+  "name": "通勤搭配 · 灰蓝版"
+}
+```
+
+服务端要求目标存在于原搭配快照中，replacement 与目标类别相同、尚未出现在原搭配中，并且当前仍拥有、未归档、已确认、未排除推荐。成功结果固定为 `source="replacement"`、`derivedFromOutfitId=<原搭配 ID>`；未替换项沿用原 snapshot，替换项生成当前 snapshot，默认名称为 `<原名称> · 新版本`。后续修改或归档新版本不会改变原记录。
 
 ## PowerShell 调用示例
 

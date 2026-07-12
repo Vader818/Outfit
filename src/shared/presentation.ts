@@ -1,6 +1,8 @@
 import type {
   CaptureJob,
+  FeedbackReason,
   Garment,
+  GarmentAvailabilityStatus,
   PersonalProfile,
   VisionModelStatus,
   WardrobeInsights,
@@ -20,6 +22,7 @@ export type BusyAction =
   | "refresh-thumbnails"
   | "bulk-confirm"
   | "bulk-update"
+  | "bulk-availability"
   | "download-vision-model"
   | "verify-vision-model"
   | "locate"
@@ -80,6 +83,26 @@ export const COLOR_LABELS: Record<string, string> = {
   yellow: "黄色",
   purple: "紫色",
   unknown: "未知"
+};
+
+export const GARMENT_AVAILABILITY_LABELS: Record<GarmentAvailabilityStatus, string> = {
+  available: "可用",
+  laundry: "待洗",
+  repair: "维修中",
+  loaned: "借出",
+  packed: "已装箱"
+};
+
+export const FEEDBACK_REASON_LABELS: Record<FeedbackReason, string> = {
+  "too-warm": "太热",
+  "too-cold": "太冷",
+  "too-formal": "太正式",
+  "too-casual": "太休闲",
+  color: "颜色",
+  fit: "版型",
+  repeat: "近期重复",
+  unavailable: "衣物不可用",
+  other: "其他"
 };
 
 export const OCCASIONS = ["casual", "smart-casual", "formal", "sport"] as const;
@@ -151,6 +174,8 @@ export const CATEGORY_OPTIONS = toOptions(CATEGORY_LABELS);
 export const WARMTH_OPTIONS = toOptions(WARMTH_LABELS);
 export const COLOR_OPTIONS = Object.entries(COLOR_LABELS).map(([value, label]) => ({ value, label }));
 export const SEASON_OPTIONS = toOptions(SEASON_LABELS);
+export const GARMENT_AVAILABILITY_OPTIONS = toOptions(GARMENT_AVAILABILITY_LABELS);
+export const FEEDBACK_REASON_OPTIONS = toOptions(FEEDBACK_REASON_LABELS);
 const UNSET_OPTION: SelectOption = { value: "", label: "未设置" };
 export const BODY_TYPE_OPTIONS = [UNSET_OPTION, ...toOptions(BODY_TYPE_LABELS)];
 export const SKIN_TONE_OPTIONS = [UNSET_OPTION, ...toOptions(SKIN_TONE_LABELS)];

@@ -17,7 +17,8 @@ function garment(overrides: Partial<Garment> & Pick<Garment, "id" | "name" | "ca
     excluded: false,
     confidence: 0.8,
     rawName: overrides.rawName ?? overrides.name,
-    ...overrides
+    ...overrides,
+    availabilityStatus: overrides.availabilityStatus ?? "available"
   };
 }
 
@@ -171,7 +172,7 @@ describe("recommendOutfits", () => {
       itemIds: outfit.items.map((item) => item.id),
       score: outfit.score,
       reasons: outfit.reasons,
-      alternativeIds: outfit.alternatives.map((item) => item.id)
+      replacementIds: outfit.replacements.map((suggestion) => suggestion.replacement.id)
     }))).toEqual([
       {
         itemIds: [1, 4, 7, 5, 8],
@@ -182,7 +183,7 @@ describe("recommendOutfits", () => {
           "整体风格接近通勤场合。",
           "中性色搭配少量重点色，色彩层次清晰。"
         ],
-        alternativeIds: [2, 3, 6]
+        replacementIds: [2, 3, 6]
       },
       {
         itemIds: [2, 4, 7, 5, 8],
@@ -193,7 +194,7 @@ describe("recommendOutfits", () => {
           "整体风格接近通勤场合。",
           "中性色搭配少量重点色，色彩层次清晰。"
         ],
-        alternativeIds: [1, 3, 6]
+        replacementIds: [1, 3, 6]
       },
       {
         itemIds: [1, 3, 7, 5, 8],
@@ -204,7 +205,7 @@ describe("recommendOutfits", () => {
           "整体风格接近通勤场合。",
           "中性色搭配少量重点色，色彩层次清晰。"
         ],
-        alternativeIds: [4, 2, 6]
+        replacementIds: [2, 4, 6]
       }
     ]);
   });
@@ -349,8 +350,173 @@ describe("recommendOutfits", () => {
     expect(result.outfits.flatMap((outfit) => outfit.items)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 4 })])
     );
-    expect(result.outfits.flatMap((outfit) => outfit.alternatives).every((item) => !forbidden.has(item.id))).toBe(true);
+    expect(result.outfits.flatMap((outfit) => outfit.replacements).every((suggestion) => !forbidden.has(suggestion.replacement.id))).toBe(true);
     expect(result.missingSlots).toEqual([]);
+  });
+
+  it("hard-locks included garments before candidate generation and removes explicit exclusions", () => {
+    const lockedTop = garment({
+      id: 20,
+      name: "必须出现的低分上装",
+      category: "top",
+      color: "red",
+      confidence: 0.1
+    });
+    const excludedBottom = garment({
+      id: 30,
+      name: "本次排除的下装",
+      category: "bottom",
+      color: "white",
+      confidence: 1
+    });
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "高分白上装", category: "top", color: "white", confidence: 1 }),
+        lockedTop,
+        garment({ id: 2, name: "保留下装", category: "bottom", color: "black" }),
+        excludedBottom,
+        garment({ id: 3, name: "黑鞋", category: "shoes" })
+      ],
+      weather: weather({ apparentTemperature: 20 }),
+      occasion: "casual",
+      includeGarmentIds: [lockedTop.id],
+      excludeGarmentIds: [excludedBottom.id]
+    });
+
+    expect(result.outfits.length).toBeGreaterThan(0);
+    expect(result.outfits.every((outfit) => outfit.items.some((item) => item.id === lockedTop.id))).toBe(true);
+    expect(result.outfits.every((outfit) => outfit.items.every((item) => item.id !== excludedBottom.id))).toBe(true);
+    expect(result.outfits.flatMap((outfit) => outfit.replacements).every((suggestion) => suggestion.replacement.id !== excludedBottom.id)).toBe(true);
+  });
+
+  it("forces locked optional layers even when weather or accessory slicing would omit them", () => {
+    const lockedOuterwear = garment({
+      id: 40,
+      name: "指定外套",
+      category: "outerwear",
+      warmth: "heavy",
+      seasons: ["winter"]
+    });
+    const lockedAccessory = garment({ id: 54, name: "第四件指定配饰", category: "accessory" });
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "白上装", category: "top" }),
+        garment({ id: 2, name: "黑下装", category: "bottom" }),
+        lockedOuterwear,
+        garment({ id: 51, name: "配饰一", category: "accessory" }),
+        garment({ id: 52, name: "配饰二", category: "accessory" }),
+        garment({ id: 53, name: "配饰三", category: "accessory" }),
+        lockedAccessory
+      ],
+      weather: summerWeather,
+      occasion: "casual",
+      includeGarmentIds: [lockedOuterwear.id, lockedAccessory.id]
+    });
+
+    expect(result.outfits.length).toBeGreaterThan(0);
+    expect(result.outfits.every((outfit) => {
+      const ids = new Set(outfit.items.map((item) => item.id));
+      return ids.has(lockedOuterwear.id) && ids.has(lockedAccessory.id);
+    })).toBe(true);
+  });
+
+  it("keeps every locked accessory together in every candidate without duplicates", () => {
+    const lockedAccessories = [
+      garment({ id: 60, name: "锁定腰带", category: "accessory", color: "black" }),
+      garment({ id: 61, name: "锁定腕表", category: "accessory", color: "gray" })
+    ];
+    const generated = generateCandidates({
+      garments: [
+        garment({ id: 1, name: "白上装", category: "top", color: "white" }),
+        garment({ id: 2, name: "蓝上装", category: "top", color: "blue" }),
+        garment({ id: 3, name: "黑下装", category: "bottom", color: "black" }),
+        garment({ id: 4, name: "灰下装", category: "bottom", color: "gray" }),
+        garment({ id: 5, name: "黑鞋", category: "shoes", color: "black" }),
+        ...lockedAccessories
+      ],
+      weather: weather({ apparentTemperature: 20 }),
+      occasion: "casual",
+      includeGarmentIds: lockedAccessories.map((item) => item.id)
+    }, { maxEvaluatedCandidates: 40, beamWidth: 8 });
+
+    expect(generated.candidates.length).toBeGreaterThan(0);
+    expect(generated.evaluatedCandidates).toBeLessThanOrEqual(40);
+    expect(generated.candidates.every((candidate) => {
+      const ids = candidate.items.map((item) => item.id);
+      return lockedAccessories.every((item) => ids.includes(item.id)) &&
+        new Set(ids).size === ids.length;
+    })).toBe(true);
+  });
+
+  it("combines multiple locked accessories with core includes and exclusions deterministically", () => {
+    const garments = [
+      garment({ id: 1, name: "锁定上装", category: "top", color: "white" }),
+      garment({ id: 2, name: "候选上装", category: "top", color: "blue" }),
+      garment({ id: 3, name: "保留下装", category: "bottom", color: "black" }),
+      garment({ id: 4, name: "排除下装", category: "bottom", color: "gray" }),
+      garment({ id: 10, name: "替换下装", category: "bottom", color: "blue" }),
+      garment({ id: 5, name: "黑鞋", category: "shoes", color: "black" }),
+      garment({ id: 6, name: "排除鞋履", category: "shoes", color: "white" }),
+      garment({ id: 7, name: "锁定腰带", category: "accessory", color: "black" }),
+      garment({ id: 8, name: "锁定腕表", category: "accessory", color: "gray" }),
+      garment({ id: 9, name: "其他配饰", category: "accessory", color: "red" })
+    ];
+    const input = {
+      garments,
+      weather: weather({ apparentTemperature: 20 }),
+      occasion: "casual",
+      includeGarmentIds: [1, 7, 8],
+      excludeGarmentIds: [4, 6]
+    };
+
+    const first = recommendOutfits(input);
+    const second = recommendOutfits(input);
+
+    expect(second.outfits.map((outfit) => outfit.items.map((item) => item.id))).toEqual(
+      first.outfits.map((outfit) => outfit.items.map((item) => item.id))
+    );
+    expect(first.outfits.length).toBeGreaterThan(0);
+    expect(first.outfits.every((outfit) => {
+      const ids = outfit.items.map((item) => item.id);
+      return [1, 7, 8].every((id) => ids.includes(id)) &&
+        [4, 6].every((id) => !ids.includes(id)) &&
+        new Set(ids).size === ids.length;
+    })).toBe(true);
+    expect(first.outfits.flatMap((outfit) => outfit.replacements).length).toBeGreaterThan(0);
+    expect(first.outfits.flatMap((outfit) => outfit.replacements).every((suggestion) =>
+      suggestion.targetGarmentId !== 7 &&
+      suggestion.targetGarmentId !== 8 &&
+      suggestion.nextItems.some((item) => item.id === 7) &&
+      suggestion.nextItems.some((item) => item.id === 8)
+    )).toBe(true);
+  });
+
+  it("keeps a late locked core item inside a bounded large-wardrobe beam", () => {
+    const garments: Garment[] = [];
+    for (let index = 0; index < 250; index += 1) {
+      garments.push(garment({
+        id: index + 1,
+        name: `上装 ${index + 1}`,
+        category: "top",
+        confidence: index === 249 ? 0.1 : 1
+      }));
+      garments.push(garment({
+        id: index + 1001,
+        name: `下装 ${index + 1}`,
+        category: "bottom"
+      }));
+    }
+    const lockedTopId = 250;
+    const generated = generateCandidates({
+      garments,
+      weather: weather({ apparentTemperature: 20 }),
+      occasion: "casual",
+      includeGarmentIds: [lockedTopId]
+    }, { maxEvaluatedCandidates: 120, beamWidth: 12 });
+
+    expect(generated.candidates.length).toBeGreaterThan(0);
+    expect(generated.candidates.every((candidate) => candidate.items.some((item) => item.id === lockedTopId))).toBe(true);
+    expect(generated.evaluatedCandidates).toBeLessThanOrEqual(120);
   });
 
   it("returns actionable missing slots when confirmed garments cannot form a core outfit", () => {
@@ -374,6 +540,46 @@ describe("recommendOutfits", () => {
     expect(noCore.outfits).toEqual([]);
     expect(noCore.missingSlots).toEqual(["top", "bottom", "dress"]);
   });
+
+  it("reports unavailable garment counts alongside compatible missing slot categories", () => {
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "可用上装", category: "top", availabilityStatus: "available" }),
+        garment({ id: 2, name: "待洗下装", category: "bottom", availabilityStatus: "laundry" }),
+        garment({ id: 3, name: "维修连衣裙", category: "dress", availabilityStatus: "repair" }),
+        garment({ id: 4, name: "可用鞋履", category: "shoes", availabilityStatus: "available" })
+      ],
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "casual"
+    });
+
+    expect(result.outfits).toEqual([]);
+    expect(result.missingSlots).toEqual(["bottom", "dress"]);
+    expect(result.missingSlotDetails).toEqual([
+      { slot: "bottom", unavailableCount: 1 },
+      { slot: "dress", unavailableCount: 1 }
+    ]);
+  });
+
+  it.each(["laundry", "repair", "loaned", "packed"] as const)(
+    "hard filters %s garments from outfits and replacements",
+    (availabilityStatus) => {
+      const result = recommendOutfits({
+        garments: [
+          garment({ id: 1, name: "可用上装", category: "top", availabilityStatus: "available" }),
+          garment({ id: 2, name: "可用下装", category: "bottom", availabilityStatus: "available" }),
+          garment({ id: 3, name: "可用鞋履", category: "shoes", availabilityStatus: "available" }),
+          garment({ id: 4, name: "不可用备选上装", category: "top", availabilityStatus })
+        ],
+        weather: weather({ apparentTemperature: 18 }),
+        occasion: "casual"
+      });
+
+      expect(result.outfits.length).toBeGreaterThan(0);
+      expect(result.outfits.flatMap((outfit) => outfit.items).some((item) => item.id === 4)).toBe(false);
+      expect(result.outfits.flatMap((outfit) => outfit.replacements).some((item) => item.replacement.id === 4)).toBe(false);
+    }
+  );
 
   it("returns three explainable outfits for cold rainy weather", () => {
     const result = recommendOutfits({
@@ -400,7 +606,7 @@ describe("recommendOutfits", () => {
       itemConfidence: expect.any(Number),
       userPreference: expect.any(Number)
     });
-    expect(result.outfits[0].alternatives.length).toBeGreaterThan(0);
+    expect(result.outfits[0].replacements.length).toBeGreaterThan(0);
   });
 
   it("keeps heavy winter outerwear out of the top summer outfit", () => {
@@ -500,6 +706,113 @@ describe("recommendOutfits", () => {
     expect(outfit.reasons.join(" ")).toMatch(/偏好|怕冷|颜色/);
   });
 
+  it("keeps learned preference at zero below three evidence rows and applies the exact bounded formula at threshold", () => {
+    const garments = [
+      garment({ id: 1, name: "上装", category: "top" }),
+      garment({ id: 2, name: "下装", category: "bottom" }),
+      garment({ id: 3, name: "鞋履", category: "shoes" })
+    ];
+    const common = {
+      garments,
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "casual" as const
+    };
+    const belowThreshold = recommendOutfits({
+      ...common,
+      pairStats: [{
+        garmentAId: 1,
+        garmentBId: 2,
+        likes: 2,
+        dislikes: 0,
+        wornCount: 0,
+        totalFeedback: 2,
+        signal: 2,
+        updatedAt: "2026-07-12T00:00:00.000Z"
+      }]
+    });
+    const atThreshold = recommendOutfits({
+      ...common,
+      pairStats: [{
+        garmentAId: 1,
+        garmentBId: 2,
+        likes: 3,
+        dislikes: 0,
+        wornCount: 0,
+        totalFeedback: 3,
+        signal: 3,
+        updatedAt: "2026-07-12T00:00:00.000Z"
+      }]
+    });
+
+    expect(belowThreshold.outfits[0].scoreBreakdown?.learnedPreference).toBe(0);
+    expect(atThreshold.outfits[0].scoreBreakdown?.learnedPreference).toBe(2.4);
+    expect(atThreshold.outfits[0].score - belowThreshold.outfits[0].score).toBeCloseTo(2.4, 5);
+  });
+
+  it("caps the sum of learned pair bonuses to minus eight through plus eight", () => {
+    const garments = [
+      garment({ id: 1, name: "上装", category: "top" }),
+      garment({ id: 2, name: "下装", category: "bottom" }),
+      garment({ id: 3, name: "鞋履", category: "shoes" })
+    ];
+    const stats = [[1, 2], [1, 3], [2, 3]].map(([garmentAId, garmentBId]) => ({
+      garmentAId,
+      garmentBId,
+      likes: 5,
+      dislikes: 0,
+      wornCount: 0,
+      totalFeedback: 5,
+      signal: 5,
+      updatedAt: "2026-07-12T00:00:00.000Z"
+    }));
+    const positive = recommendOutfits({
+      garments,
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "casual",
+      pairStats: stats
+    });
+    const negative = recommendOutfits({
+      garments,
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "casual",
+      pairStats: stats.map((stat) => ({
+        ...stat,
+        likes: 0,
+        dislikes: 5,
+        signal: -10
+      }))
+    });
+
+    expect(positive.outfits[0].scoreBreakdown?.learnedPreference).toBe(8);
+    expect(negative.outfits[0].scoreBreakdown?.learnedPreference).toBe(-8);
+  });
+
+  it("uses learned preference to reorder otherwise equivalent candidate pairs", () => {
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "默认上装", category: "top" }),
+        garment({ id: 2, name: "下装", category: "bottom" }),
+        garment({ id: 3, name: "鞋履", category: "shoes" }),
+        garment({ id: 4, name: "偏好上装", category: "top" })
+      ],
+      weather: weather({ apparentTemperature: 18 }),
+      occasion: "casual",
+      pairStats: [{
+        garmentAId: 2,
+        garmentBId: 4,
+        likes: 3,
+        dislikes: 0,
+        wornCount: 0,
+        totalFeedback: 3,
+        signal: 3,
+        updatedAt: "2026-07-12T00:00:00.000Z"
+      }]
+    });
+
+    expect(result.outfits[0].items.some((item) => item.id === 4)).toBe(true);
+    expect(result.outfits[0].scoreBreakdown?.learnedPreference).toBe(2.4);
+  });
+
   it("uses body proportion and skin tone profile signals in scoring explanations", () => {
     const personalProfile: PersonalProfile = {
       heightCm: 176,
@@ -537,7 +850,7 @@ describe("recommendOutfits", () => {
     expect(result.outfits[0].reasons.join(" ")).toMatch(/瘦高|肤色|黑黄|清爽|对比/);
   });
 
-  it("sorts alternatives by replacement compatibility", () => {
+  it("returns structured replacements with target, next outfit, score delta, and reasons", () => {
     const result = recommendOutfits({
       garments: [
         garment({ id: 1, name: "白色基础T恤", category: "top", color: "white" }),
@@ -551,12 +864,46 @@ describe("recommendOutfits", () => {
       occasion: "casual"
     });
 
-    const alternativeIdsByCategory = result.outfits[0].alternatives.reduce<Record<GarmentCategory, number[]>>((groups, item) => {
-      groups[item.category] = [...(groups[item.category] ?? []), item.id];
+    const outfit = result.outfits[0];
+    const replacementIdsByTargetCategory = outfit.replacements.reduce<Record<GarmentCategory, number[]>>((groups, suggestion) => {
+      const target = outfit.items.find((item) => item.id === suggestion.targetGarmentId);
+      if (!target) throw new Error("replacement target missing from original outfit");
+      groups[target.category] = [...(groups[target.category] ?? []), suggestion.replacement.id];
       return groups;
     }, {} as Record<GarmentCategory, number[]>);
 
-    expect(result.outfits[0].alternatives.some((item) => result.outfits[0].items.some((selected) => selected.id === item.id))).toBe(false);
-    expect(alternativeIdsByCategory.top[0]).toBe(5);
+    expect(outfit.replacements.length).toBeGreaterThan(0);
+    for (const suggestion of outfit.replacements) {
+      const target = outfit.items.find((item) => item.id === suggestion.targetGarmentId);
+      expect(target).toBeDefined();
+      expect(suggestion.replacement.category).toBe(target!.category);
+      expect(outfit.items.some((item) => item.id === suggestion.replacement.id)).toBe(false);
+      expect(suggestion.nextItems).toHaveLength(outfit.items.length);
+      expect(suggestion.nextItems.filter((item, index) => item.id !== outfit.items[index].id)).toEqual([
+        suggestion.replacement
+      ]);
+      expect(suggestion.matchPercentDelta).toEqual(expect.any(Number));
+      expect(suggestion.reasons.length).toBeGreaterThan(0);
+    }
+    expect(replacementIdsByTargetCategory.top[0]).toBe(5);
+  });
+
+  it("does not offer replacing a locked core garment", () => {
+    const result = recommendOutfits({
+      garments: [
+        garment({ id: 1, name: "锁定上装", category: "top" }),
+        garment({ id: 2, name: "替代上装", category: "top", color: "white" }),
+        garment({ id: 3, name: "黑色长裤", category: "bottom" }),
+        garment({ id: 4, name: "灰色长裤", category: "bottom", color: "gray" })
+      ],
+      weather: weather({ apparentTemperature: 20 }),
+      occasion: "casual",
+      includeGarmentIds: [1]
+    });
+
+    expect(result.outfits.every((outfit) => outfit.items.some((item) => item.id === 1))).toBe(true);
+    expect(result.outfits.flatMap((outfit) => outfit.replacements).every((suggestion) =>
+      suggestion.targetGarmentId !== 1 && suggestion.nextItems.some((item) => item.id === 1)
+    )).toBe(true);
   });
 });

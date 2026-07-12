@@ -1,5 +1,116 @@
 # 发现与决策
 
+## 2026-07-11 Outfit M2 保存搭配
+
+### 需求
+- 严格执行 `docs/2026-07-10-outfit-m2-saved-outfits-plan.md`，不漏掉其中任何实施任务或验收标准。
+- 交付保存搭配 CRUD/软归档、推荐候选一键保存、手工搭配编辑、指定核心/排除衣物、结构化替代建议及可追溯派生版本、V2 导出和文档验证。
+- 延续单用户、本地优先及现有 session、同源写保护、结构化错误、严格输入校验边界。
+- 删除任何电脑文件前必须先展示目标和影响并取得用户明确确认；本轮当前不计划删除文件。
+
+### 初始发现
+- 当前分支为 `codex/outfit-m0-foundation`，跟踪同名远端分支。
+- 初始 Git 工作区只有 `docs/2026-07-10-outfit-m2-saved-outfits-plan.md` 被修改；该文件是用户指定执行依据，必须保留。
+- 该计划文件的初始 Git 差异仅为移除文件开头 BOM，正文没有相对 HEAD 的内容差异；不回退此用户改动。
+- M2 硬依赖 M0、不硬依赖 M1；所有可复用契约都必须以当前代码与迁移为准，不能仅依据旧规划记录推断。
+
+### 待审计关键点
+- M0 recommendation candidate 的全局唯一 UUID、持久化和回取接口。
+- 当前数据库迁移编号、事务 helper、active/confirmed garment predicate 和行映射习惯。
+- `findAlternatives()` 当前返回结构及推荐评分/原因生成边界。
+- 历史洞察页、衣物详情/卡片动作、推荐舞台和现有对话框状态管理边界。
+- `OutfitExportV2` 的版本、JSON/ZIP 生成路径与测试 fixture。
+
+### 已确认的后端基线
+- 修改前 `npm run typecheck` 与全量 `npm test` 均通过；基线为 20 个测试文件、274 项测试。
+- 当前编号迁移只有 v1 `recommendation-candidates` 和 v2 `trusted-ingestion`，M2 应新增 v3，不能改写冻结 baseline 或既有迁移。
+- `recommendation_candidates.candidate_id` 为主键 UUID；候选持久化同时保存 `run_id`、稳定 signature、rank、按 canonical slot 排序的衣物 ID 及 score/reasons snapshot。
+- `persistRecommendationSnapshot()` 用 `BEGIN IMMEDIATE` 原子写 recommendation run 与候选，且会校验 candidate UUID、`id === candidateId` 及 signature 与 items 一致。
+- 当前源码尚无 saved outfits 专用服务、路由、组件或测试文件，M2 计划列出的创建项均为真实新增边界。
+
+### 推荐与校验契约
+- `validateRecommendationRequest()` 当前只返回 weather、occasion、recentlyWornGarmentIds、userProfile；其通用 `normalizeGarmentIds()` 会静默丢弃非法值，因此 M2 的 include/exclude 必须使用更严格、具名且有数量上限的正整数数组校验。
+- `/api/recommendations` 当前先取默认 active garments，再合并近期穿着 ID、补用户画像、调用 `recommendOutfits()`，最后用 `persistRecommendationSnapshot()` 原子保存；数据库感知的 include/exclude 状态错误应在持久化前完成。
+- `RecommendInput` 尚无 include/exclude；候选生成先调用 `eligibleGarments()`，因此需在过滤后强制保留 include 集合并在生成组合时约束“全部 include 必须出现”，不能只把它们提高分数。
+- `OutfitRecommendation.alternatives` 当前为 `Garment[]`；`findAlternatives()` 是私有函数，只返回同类候选 Top 4，虽会计算替换后分数但丢弃目标衣物、完整 nextItems、delta 与理由。
+- M2 应把替代建议提升为共享结构类型，并让算法对每个 `targetGarmentId` 生成明确的 replacement、nextItems、matchPercentDelta 与 reasons；旧候选本身保持不变。
+
+### 数据库与路由边界
+- `legacyBaseline0()` 明确冻结；M2 新表必须进入 `NUMBERED_MIGRATIONS` v3。SQLite 已开启外键、defensive、5 秒 busy timeout，非内存库使用 WAL。
+- 衣物默认 active scope 是 `owned = 1 AND archived_at IS NULL`，但不自动要求 `confirmed = 1` 或 `excluded = 0`；推荐服务的 `eligibleGarments()` 仍是最终 recommendable predicate，include 校验必须显式区分未确认、归档、excluded 和不存在。
+- `getGarmentById()` 可读取已归档衣物，适合创建时生成 snapshot；保存搭配回读不应依赖当前 garment JOIN 才能展示，否则归档/历史状态会破坏回看。
+- 衣物归档本身是可重复的 `archived_at` 更新，旧 DELETE 也只软归档；saved outfit 应沿用同样的不物理删除语义。
+- `createApiApp()` 在所有业务 `/api` 路由前统一应用 5MB JSON、同源写保护和 session 校验；新的 `registerOutfitRoutes()` 应挂在认证 middleware 后，从而自动继承这些边界。
+- 当前 DB 模块没有通用事务 helper；推荐候选服务采用显式 `BEGIN IMMEDIATE`/`COMMIT`/保留原错误的 `ROLLBACK` 模式，saved outfits 多表写入可复用这一惯例。
+
+### V2 导出边界
+- `buildOutfitExportV2()` 在单个 deferred read transaction 中读取所有表，随后运行严格 envelope/行级 shape 校验；saved outfits 必须在同一事务内读取，不能从 UI 限长列表复用。
+- 当前 V2 features 为 versioned-migrations、recommendation-candidates、garment-assets；M2 应追加 saved-outfits，并让生成结果包含全部 active/archived saved outfits 及其 items snapshot/派生关系。
+- JSON 与 ZIP 共用 `buildOutfitExportV2()`，因此扩展该 builder 会自动覆盖两种备份，但还需扩展 `validateOutfitExport()` 的 V2 shape 校验和导出损坏数据错误上下文测试。
+- 现有导出测试已验证单快照、全历史、损坏 JSON 显式失败、敏感表排除、资产安全与 ZIP 白名单；M2 fixture 应沿用这些安全断言，并新增来源衣物归档后 snapshot 仍完整的断言。
+
+### 前端接线边界
+- `MainApp` 集中持有衣物、推荐、历史、全局 busy/error/status；启动时并行刷新衣物、画像、历史和模型。M2 可在此新增 saved outfits、builder/replacement dialog 状态，并把 `getSavedOutfits()` 纳入历史刷新。
+- 主导航固定为推荐、衣服库、历史洞察、导入、设置五项；保存搭配应作为历史洞察的二级区域，完全符合“不新增第六个移动端主导航项”。
+- `OutfitStage` 当前展示完整 items、理由、只读 alternatives 和“标记已穿”；应新增“保存搭配”以及逐件“以这件为核心/换这件”动作，替代列表改由结构化 suggestion 驱动。
+- `RecommendationView` 是纯受控组件，所有 OutfitStage 都共用 handler，适合从 MainApp 注入保存、核心、换件动作及相应 busy 状态。
+- `HistoryInsightsView` 目前只接收 insights、wear logs、recommendation runs；`SavedOutfitsPanel` 可作为洞察内容前后的独立二级 section 注入，不需要耦合分析数据为空与否。
+- `WardrobeView`/`GarmentItem` 已有明确动作 prop 链，可增加 `onRecommendWithGarment`，从衣物详情区域触发核心推荐并切回推荐页。
+- 前端 API 统一经过 same-origin credentials 与结构化错误转换；M2 只需新增 typed client 方法，不另建请求层。
+
+### 测试蓝图基线
+- 后端 API 集成测试使用真实内存 SQLite、真实 Express 监听、注册 session cookie 与 same-origin JSON header；新 outfits 路由应继续按此方式验证认证与写保护，而不是只测 service mock。
+- `tests/recommendation.test.ts` 已有可复用 garment/weather fixtures、500 件预算测试、hard eligibility 测试和旧 alternatives 排序测试；M2 先把旧 alternatives 断言迁移为结构化 replacements，再补 include/exclude 硬约束与 delta/reasons。
+- `tests/app.test.tsx` 主要用服务端静态渲染和直接调用受控组件 props 验证行为，现有 `makeOutfit()` fixture 必须同步新的 replacement 类型；新 Panel/Builder/Dialog 可直接导出并进行组件级键盘/按钮回调测试。
+- `tests/frontendApi.test.ts` 用 fetch mock 精确断言 path/method/body，适合集中覆盖 outfits CRUD、candidate save、replacements 与 include/exclude 请求体。
+- `tests/dbMigrations.test.ts` 应新增 v3 的表、索引、FK、CHECK/UNIQUE 失败断言；`dbMigrationRehearsal.test.ts` 的生产 legacy 升级预期表清单/schema version 也必须同步。
+
+### 子 Agent 审计合并决策
+- 三个只读 Agent 已完成数据库/导出、推荐约束/替代算法、前端接线审计，均未修改文件；其结论与主线审计一致。
+- v3 创建 `saved_outfits` 与 `saved_outfit_items`：derived 自外键 RESTRICT、item 到 outfit CASCADE、garment 外键 SET NULL；snapshot JSON 独立保存且回读时绝不被 live garment 覆盖。
+- candidate save 从 `recommendation_runs.result_json` 找到同 UUID 候选，并与 candidate 表 canonical item IDs 交叉核对；默认名使用保存请求中的 weather.date + occasion，避免服务器时区漂移。
+- 手工 CRUD body 只接受 name/notes/favorite/items（garmentId/slot/position）；服务端读取 garment 生成 snapshot，禁止客户端伪造 source、snapshot、派生关系或时间字段。
+- OutfitBuilder 完整性采用现有核心规则：dress，或 top+bottom；dress 不与 top/bottom 混用；slot 匹配 category、同衣物不重复、slot+position 唯一、accessory 顺序连续；不额外强制 shoes。
+- 结构化 replacement 每个建议绑定一个 target，使用完整评分口径生成 nextItems、展示匹配度 delta 和 reasons；确认替换时若父 candidate 尚未保存，先保存父记录，再调用 replacement API 创建派生版本。
+- `SavedOutfitsPanel` 必须置于历史洞察 `insights === null` 分支之外；历史 snapshot 图片失败时显示占位，不能依赖当前衣物仍 active。
+
+### 阶段 15–16 已落地契约
+- migration 3 已通过独立 schema 与生产 legacy rehearsal，saved outfit item snapshot 列名为 `garment_snapshot`；candidate FK 删除时 SET NULL、garment FK 删除时 SET NULL、outfit header 删除才 CASCADE items，而产品路由不提供物理删除。
+- 手工搭配 create/update 均使用服务端衣物生成 snapshot；核心规则为 dress 或 top+bottom、互斥，非配饰 position=0，配饰 position 连续，且一件衣物不能重复。
+- candidate save 只接受 UUID 路径与 name/notes/favorite；联查 candidate/run，从持久化 `result_json` 提取历史衣物，再与 `item_ids_json` 精确交叉核对，不读取 live 字段覆盖 snapshot。
+- candidate 默认名固定使用历史 weather.date + 中文场合；衣物后来改名或归档仍能保存当时推荐，候选快照损坏会整笔回滚。
+- 前端已新增 typed CRUD/candidate-save client，所有请求继续复用 same-origin credentials 与结构化错误处理。
+
+### 推荐约束落地决策
+- `validateRecommendationRequest()` 只对 M2 include/exclude 严格校验，保留 M0 对 recentlyWorn 与未知字段的净化兼容；结构错误统一返回 `details.issues`。
+- 数据库语义校验读取 `listGarments(scope=all)`，按稳定顺序聚合 NOT_FOUND/NOT_OWNED/ARCHIVED/UNCONFIRMED/EXCLUDED，并拒绝单值 slot 多锁定与 dress/top-bottom 冲突；校验失败前不写 recommendation run/candidate。
+- include/exclude 在候选池形成前生效：排除先移出 eligible pool；锁定核心直接缩小 top/bottom/dress 池；锁定 outerwear/shoes/accessory 会移除 optional undefined 分支，避免 beam/slice 提前丢失指定衣物。
+- API 只把用户实际提供的约束持久化到 sanitized input；省略字段不被无条件写成空数组。
+
+### M2 导出落地决策
+- `savedOutfits` 作为 V2 可选字段保留旧 V2 fixture 的向后兼容，但当前 builder 始终输出该字段与 `saved-outfits` feature。
+- 导出在既有 deferred read transaction 内调用 saved outfit 全量读取，并按 id 重新排序，避免 UI 排序或限长影响备份确定性；ZIP 与 JSON 继续只有一个可信 builder。
+- snapshot 是历史事实：导出不 JOIN 当前 garment 覆盖它；来源衣物后续改名、图片变化或归档均不改变备份中的保存时 name/brand/category/imageUrl。
+- snapshot 图片 URL 复用既有可移植引用规则，拒绝盘符路径、反斜杠、file/data/blob、base64、路径穿越和控制字符；损坏 JSON/字段缺失以 `saved_outfit_items` 行级上下文失败。
+
+### M2 文档反查结论
+- `docs/api.md` 旧推荐响应仍写 `alternatives`，旧导出示例仍写 schemaVersion 2；现已按实现改为 `replacements`、schemaVersion 3、`saved-outfits` feature 和完整 `savedOutfits`。
+- `README.md` 的迁移说明还停留在版本 1，且没有保存搭配的用户路径；现已更新为版本 3，并补齐推荐保存、手工 Builder、核心锁定、确认换件、历史归档与父子版本说明。
+- API 文档全部 46 个 JSON 示例均经 `ConvertFrom-Json` 验证，避免新增响应示例出现语法上有效但不可复制的片段。
+
+### M2 真实交互验收结论
+- 历史二级区域独立于洞察内容存在；来源衣物已归档后仍使用 snapshot 名称、品牌、类别和占位图渲染，不依赖 active garment JOIN。
+- “以这件为核心”从衣服库详情切回推荐页并立即生成约束推荐；锁定衣物确实出现在首选和全部备选，且该 target 的换件按钮禁用，清除动作恢复无约束状态。
+- 推荐保存先落可信 candidate snapshot，再立即打开受控 Builder；真实界面默认名来自历史日期和中文场合，用户改名通过普通 update 不改变 recommendation provenance。
+- ReplacementDialog 打开本身不写库；确认后 child 为 replacement/source、指向父 ID，完整新套只替换 target。子记录改名/归档不会改变父记录或父 snapshot。
+- 1280px 和 390px 两种视口的保存卡、Builder、ReplacementDialog 均无页面级横向溢出；移动端五个主导航项保持文字和可访问按钮，未新增第六项。
+
+### M2 最终交付结论
+- 计划中的 v3 数据迁移、保存搭配 CRUD/归档、候选一键保存、手工 Builder、核心/排除硬约束、结构化换件与派生版本、V2 导出、文档和五项验收标准均已完成。
+- 全量回归为 23 个测试文件、320 项测试全部通过；类型检查、差异检查和生产构建全部通过。
+- 真实浏览器验收使用隔离临时 SQLite，覆盖桌面与移动端完整主流程、父子版本不可变性、导出完整性及无横向溢出；项目真实数据库未被打开或修改。
+- 最终审计没有跟踪文件删除，也没有删除源码、用户数据、临时数据库、日志或 QA 证据；生产构建仅按已披露范围重建被忽略的 `dist` 生成物。
+
 ## 需求
 - 执行用户提供的 `suggestion.md` 中的升级建议。
 - 保留 Selenium 的淘宝登录态，尤其是 `output/chrome-taobao-profile`。
@@ -320,3 +431,100 @@
 - 真实浏览器桌面 1280px 手工对话框双列且页面无溢出；390px 视口对话框单列，文档宽度与 clientWidth 同为 375px。导入宽表容器可聚焦并独立横向滚动，页面本身无横向溢出。
 - 真实浏览器用临时内存/临时 SQLite 完成手工建档、批量动作可见性、两候选预览（新增 + 无历史退款 skip）、只提交选中项、归档后洞察排除、恢复和 ZIP 取消确认；未触碰真实衣橱。
 - 最终生产依赖审计发现并修复 archiver 传递的 glob 公告，`npm audit --omit=dev --audit-level=high` 为 0 漏洞。
+
+## 2026-07-11 M1/M2 独立验收
+
+### 验收起点
+- 当前分支为 `codex/outfit-m0-foundation`；M1 已形成提交 `7b5ccde feat(wardrobe): complete trusted ingestion workflow`，M2 主要仍处于工作区未提交状态。
+- Git 工作区包含 M2 的 31 个已跟踪修改以及新的 outfits/constraint 服务、组件、样式和测试；验收必须基于当前工作区，而不能只看提交历史。
+- 两份计划正文的可见差异仅涉及 M2 文件开头 BOM；本次不把该格式差异视为业务实现证据。
+- 既有 `task_plan.md`/`findings.md`/`progress.md` 声称 M1/M2 已完成，但这些记录只能作为待验证线索，不能替代当前代码、测试与独立运行结果。
+- OpenAI code-review provider CLI 检查通过；后续将用结构化验收请求做额外交叉审查。
+
+### 独立动态验证（第一轮）
+- M1 专项：6 个测试文件、79 项测试通过，覆盖迁移/演练、资产、淘宝归一化/数据库导入与导出。
+- M2 专项：5 个测试文件、51 项测试通过，覆盖 saved outfits、UI、推荐约束、推荐与候选。
+- `npm run typecheck` 通过；`npm run build` 通过，Vite 转换 1592 个模块，JS 293.72 kB（gzip 90.31 kB），CSS 84.19 kB（gzip 14.53 kB）。
+- `npm run audit:prod` 返回 0 个已知漏洞。
+- 外部 code-review provider 未产出审查结果：OpenAI provider 被 WindowsApps 子进程权限阻止，GitHub provider 缺少 `gh`/Copilot CLI；主线和两个只读子 Agent 的审查不受影响。
+
+### 已确认的实质缺陷
+- M1 导入审阅前后端契约不一致：`ImportReviewTable` 修改字段后取消勾选仍保留 `overrides`，而服务端拒绝 `include=false + overrides`。真实浏览器已复现：第二项仍选中时提交整批返回 `decisions[0] 未选择时不能包含 overrides`，因此其他已选项也无法提交。
+- M1 `refund-sync` 行仍开放字段编辑，但服务端明确拒绝退款同步项的 overrides，同样可阻断整批提交。
+- M1 旧 `/api/import/taobao-batch` 仍可直接写库，绕过 preview/decision 两阶段；文档明确把它标为兼容旧客户端，但这与“可信写库前逐项审阅”目标存在边界偏离。
+- M2 多配饰硬锁定错误已由主线脚本复现：`includeGarmentIds=[配饰3, 配饰4]` 返回 `[[1,2,3],[1,2,4]]`，没有候选同时包含两件，违反 include 必须出现在每套候选的语义。
+- M2 Builder 编辑含归档或已删除来源衣物的历史搭配时，会把这些 item 判为不可用或直接从 draft 跳过；仅改名/备注也可能无法保存，或在保存时静默丢失非核心历史 snapshot。
+- SavedOutfitsPanel 只渲染 active outfits，归档搭配虽已读取到前端状态但没有 UI 回看入口。
+- 文档仍有偏差：M2 计划状态仍写“停止实施”且任务全未勾选；README 仍称手工建档接口不接收图片；`docs/api.md` 称 restore 可能保持 `owned=false`，实际实现强制 `owned=1`。
+
+### 最终符合度判断
+- M1：核心架构、安全边界、迁移、图片净化、软归档、数据库感知预览/提交、幂等和 ZIP 均真实落地；但导入审阅存在可稳定复现的前后端契约缺陷，旧直接写库 API 仍可绕过两阶段流程，文档有两处过时。结论为“基本按计划实现，但未达到无保留验收”。
+- M2：11 项实施任务均能找到实现与测试，保存/编辑/派生/导出主链完整；但多配饰 include 违反硬锁定语义，历史 snapshot 编辑和归档可见性存在中等风险，且全部 M2 代码尚未形成提交。结论为“主体按计划实现，但未达到无保留验收”。
+- 项目总体质量：工程基础良好，迁移、事务、安全测试和类型边界明显强于普通原型；当前不应宣称 M1/M2 100% 完成。建议修复两项高优先级契约错误并补回归后再正式签收。
+
+## 2026-07-12 验收缺陷修复边界
+- M1 导入前端必须与服务端严格契约对齐：未选择项绝不携带 overrides；refund-sync 只能选择是否同步，不能编辑衣物字段。
+- 旧立即导入接口不再保留可写兼容语义；可信两阶段流程必须成为唯一写库入口。
+- M2 include 是硬约束而非偏好；多个 accessory include 必须全部出现在每套候选中。
+- 历史 saved outfit 的 metadata-only 编辑必须原样保留全部 snapshot；任何组合编辑都不得静默丢弃不可用历史项。
+- 归档 saved outfit 需要在 UI 中可回看，即使不提供恢复，也不能成为不可见数据。
+
+## 2026-07-12 修复后结论
+- M1 导入审阅前后端契约已对齐：未选择项永不携带 overrides，refund-sync 不允许字段修正，且旧直写公共 API 已禁用。
+- M2 include 硬约束已覆盖多个配饰同时锁定；候选生成仍遵守预算、确定性和无重复约束。
+- 历史搭配的元数据更新不会发送 items；组合编辑对不可用快照采用“显式替换或显式移除”，不会再静默丢失。
+- 归档搭配在 UI 中可按保存时快照回看，并展示父子派生关系。
+- 全量 Node/Python 测试、类型检查、生产构建和依赖审计均通过；此前阻止无保留验收的已确认缺陷均有直接回归证据。
+
+## 2026-07-12 M3 实施启动发现
+- 指定计划硬依赖 M2；当前工作区保留了 M1/M2 的 33 个已修改路径及多个未跟踪新增路径，必须在其上增量实施，不能回退或覆盖。
+- session catchup 没有报告未同步上下文；最近提交仍停在 M1，M2 及其修复主要存在于当前未提交工作区。
+- M3 明确要求四张/列数据能力：`garments.availability_status`、`recommendation_feedback`、`outfit_pair_stats`、`garment_availability_events`；反馈写入、实际穿着、状态事件和清空重算均有事务一致性要求。
+- 推荐学习信号必须是可解释且有界的：证据少于 3 条只记录不改排序，单套 pair bonus 合计限制在 -8…+8，并单列 `scoreBreakdown.learnedPreference`。
+- 反馈清空不是直接危险按钮：必须先预览影响范围，由 UI 展示后二次确认；服务端严格验证 all/candidate/date-range，并在同一事务重算 pair stats。
+- 本轮不删除任何文件；所有现有 M1/M2 修改均视为用户应保留成果。
+- 当前推荐候选已使用全局 UUID `candidateId` 并持久化在 `recommendation_candidates`；M3 反馈应以该表外键和现有用户/候选归属边界为基础，不能使用页面序号。
+- 当前穿着写入由 `server/db.ts` 的 `saveWearLog()` 完成，前端从 `OutfitStage` 经 `src/app/App.tsx` 调用独立 `/api/wear-logs`；M3 需要把这条路径收敛到反馈 service 的事务内，同时保留现有显式穿着日志能力。
+- 推荐评分在 `server/services/recommend.ts` 统一构造 `RecommendationScoreBreakdown` 并求和，候选身份由 `recommendationCandidates.ts` 最后附加；learnedPreference 必须在持久化候选之前进入 breakdown，且不能破坏现有 M2 约束。
+- 洞察数据当前由 `getWardrobeInsights()` 和 `/api/insights` 聚合；M3 反馈数量、接受率和拒绝原因应在该共享响应中扩展，前端无需新增第六个主导航。
+- 衣服库已有选中集合与 `bulkUpdate` 框架，可复用为批量 availability 状态切换；现有 API 更新与 Garment 类型需先增加状态字段。
+- 导出响应使用数据库当前 migration 版本作为 `schemaVersion`，并已有推荐候选、穿着日志、saved outfits 的严格解析/验证模式；M3 应沿用同一 builder 与 feature 清单扩展。
+- M3 修改前基线通过：`npm run typecheck` 成功，全量 Vitest 为 24 个文件、330 项全部通过。
+- `dist` 已存在 6 个生成文件；标准 Vite 构建默认会清空该目录。依据“删除前明确确认”约束，修改前基线暂不运行 `npm run build`，实现与测试不受影响，最终构建需在明确处理该生成目录后执行。
+- 当前编号迁移到 v3；M3 应作为 v4 单一迁移加入，不能修改 frozen legacy baseline，也不能改写既有 v1–v3。
+- `recommendation_candidates` 已保存 candidate UUID、run、signature、排序、衣物 ID 和 score snapshot；反馈可用外键核验候选存在并从 item_ids_json 计算无序衣物 pair。项目是单用户模型，现有业务表没有 user_id，因此“候选归属”在首版等价于当前本地数据库中候选存在。
+- `wear_logs` 目前没有 candidateId 唯一键；为了让同一候选重复提交 `actuallyWorn=true` 不产生重复日志，事务 service 需要在反馈状态从非 true 变为 true 时写一次，后续更新不再追加，并在 true→false 时保留历史穿着事实。
+- M3 计划接口的 `woreInsteadOutfitId?: number` 可关联现有 `saved_outfits.id`；应在服务端校验存在，避免只做形状校验。
+- Garment 当前推荐 eligibility 只处理 owned/confirmed/excluded/archive 与显式 exclude；availability 必须成为统一硬过滤条件，并同步到 M2 constraint 校验，使被锁定的非 available 衣物返回结构化不可满足错误。
+- `RecommendationResult.missingSlots` 当前仅是类别数组，无法承载“不可用数量”；要严格完成计划需升级为兼容的结构化缺槽提示或新增并列详情字段，前端和旧测试需同步迁移。
+- 前端“标记已穿”现在直接写 `/api/wear-logs`；M3 实施后推荐卡上的该动作应通过 feedback API 原子写入反馈与 wear log，独立穿着日志 API可保留给非候选场景。
+- 现有迁移测试多处精确断言 v0–v3 和 schemaVersion=3；新增 v4 后必须同步 `dbMigrations`、`dbMigrationRehearsal`、API/export fixture，而不是为了少改测试隐藏新版本。
+- 项目测试 helper 的 Garment fixture 普遍省略新字段；`availabilityStatus` 应在共享类型中先设为必填、再机械补 fixture，或在映射边界提供默认。为保证业务不把缺省误判为不可用，推荐 fixture helper 应显式设 `available`。
+- 推荐测试当前把 `missingSlots` 精确断言为类别数组。为兼容现有消费者且新增不可用数量，首选保留 `missingSlots` 数组并新增 `missingSlotDetails`，其中每项包含 slot 与 unavailableCount；这满足提示要求且避免破坏已有 M2 API。
+- API 测试已有注册/session、Origin、结构化错误和推荐候选持久化 helper，可在同一测试风格中覆盖反馈 route、清空预览/确认、availability route 与跨候选错误。
+- `tests/app.test.tsx` 以静态渲染/组件树遍历为主，不是完整浏览器交互；M3 需要新增组件级纯 helper/标记测试，并在最后补真实浏览器桌面与移动验收。
+- Garment 写路由已拆在 `server/routes/garments.ts`，反馈应同样创建独立 `server/routes/feedback.ts`；availability route 可注册在 garments 模块但业务事务必须位于新 service。
+- 现有 `updateGarment()` 是通用字段覆盖且不写事件，不能把 availability 混入普通 PUT；必须只允许 `POST /api/garments/:id/availability` 经专用 service，避免绕过历史。
+- 前后端都有 eligibility helper：服务端 `recommend.ts`/`recommendationConstraints.ts` 与前端 `src/lib/garments.ts`。三处都要纳入 `availabilityStatus === "available"`，避免 UI 把不可用衣物仍显示为可推荐。
+- 推荐 API 在认证中间件之后统一读取 `listGarments({scope:"all"})` 并做约束验证，新增 feedback/availability 路由只要在相同认证 middleware 之后注册，即自动继承 session 与 Origin/Sec-Fetch-Site 保护。
+- 只读审计确认真实 `data/outfit.sqlite` 仍是没有 `schema_migrations` 的 8 表 legacy 数据库；绝不能为验证直接用新代码打开它。本轮只使用内存库与临时副本迁移演练，未来真实启动将一次执行 baseline 0 与 v1–v4。
+- 导出 envelope 必须继续保持 `version: 2`，只把数据库 `schemaVersion` 升为 4；M3 feature 采用 `feedback-availability`，旧 V2 缺少新可选数组仍需兼容。
+- 日期范围清空按反馈 `updated_at` 解释，以符合“同候选更新而非叠加”的模型；空范围和重放都是成功的 no-op。
+- `actuallyWorn=true` 与 `woreInsteadOutfitId` 被定义为冲突输入；推荐穿着只信任服务端 candidate 的 item_ids_json，不再信任客户端 garmentIds。
+- 推荐学习公式已由纯函数和推荐排序测试锁定：2 条证据为 0，3 条全喜欢为 +2.4，5 条全喜欢单 pair 为 +4；三 pair 的整套贡献会从 +12 截断为 +8，负向同理截断为 -8。
+- availability 缺省仅作为旧内存 fixture/旧快照兼容解释为 available；数据库 v4、API 与新 Garment 响应始终显式提供五态之一。
+- 根 `MainApp` 已有单一对话框挂载区、候选级 recording ID、衣物级更新队列和统一历史刷新；M3 接线应只新增一个 FeedbackDialog 状态、一个 availability busy ID，并复用 `refreshHistoryData()` 更新反馈洞察。
+- 反馈清空不能只用原生 confirm：洞察页需要范围表单 → 只读预览 → 明示反馈数/pair 数 → 第二次确认的对话框状态机，清空成功后刷新洞察并清空当前 recommendations，防止页面继续展示已失效权重。
+- 反馈摘要应作为独立 Surface 放在四格 `.insight-facts` 之后，不能把第五项塞进写死四列及 nth-child 的现有事实条。
+- 现有新增 API 测试已覆盖反馈/availability 的认证、Origin、严格校验、幂等、三种清空范围和重放；主线仍需补一条“3 个持久化候选反馈→下一次推荐 learnedPreference 生效→洞察同步”的端到端证据，以及推荐 actualWorn 路由只写一次 wear log。
+- 浏览器 QA 必须通过应用内浏览器运行时完成；会使用推断的本地 URL 选择浏览器、读取其完整文档，并保持一个浏览器绑定贯穿桌面/移动检查。
+
+## 2026-07-12 M3 最终验收发现
+- 稳定 candidateId、同候选幂等更新、实际穿着单次写入、pair stats 阈值/有界公式与清空后重算均有 service、API 和端到端测试证据；3 条正向反馈端到端产生 `learnedPreference=7.2`，清空后恢复为 0。
+- 五态 availability 由专用事务路由更新并保留事件；四种非 available 状态在统一 eligibility 与 M2 include 约束中均被硬过滤，缺槽详情保留兼容 `missingSlots` 并补充 unavailable 数量。
+- 桌面真实交互确认 availability 变化会刷新衣橱可穿计数并失效旧推荐；重新生成的候选不含待洗衣物。
+- 反馈清理 UI 符合“范围表单 → 影响预览 → 二次确认”：预览前没有最终确认按钮，零影响不会开放危险确认；隔离数据实测清空后洞察同步归零。
+- 390×844 移动视口无文档级横向溢出，反馈弹层采用可滚动窄屏布局且保存操作可达；默认桌面视口已恢复。
+- 浏览器控制台在业务验收期间无新增应用 warning/error；唯一旧错误是应用内浏览器初开时的扩展消息接收端不存在，不来自仓库业务代码。
+- 最终自动化复验全部通过：TypeScript 类型检查、365 项 Vitest、25 项 unittest、33 项 pytest、两种 npm 审计及差异检查。
+- 用户已明确授权标准构建清理并重建列明的 6 个 `dist` 生成文件；`npm run build` 成功，旧哈希 JS/CSS 已由新哈希产物替换，源码与数据库未受影响。

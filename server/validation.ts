@@ -1,4 +1,4 @@
-import type { BodyType, CaptureEngine, ColorDisposition, Formality, GarmentCategory, GarmentWarmth, ImportDecision, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, Season, SkinTone, TaobaoCapturedBatch, TaobaoImportCommitRequest, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, CaptureEngine, ColorDisposition, FeedbackReason, FeedbackVerdict, Formality, GarmentAvailabilityStatus, GarmentCategory, GarmentWarmth, ImportDecision, ImportGarmentOverrides, ManualGarmentCreate, OutfitSlot, PersonalProfile, RecommendationConstraintField, RecommendationConstraintIssue, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, SaveRecommendationCandidateInput, SavedOutfitCreateInput, SavedOutfitItemInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, Season, SkinTone, TaobaoCapturedBatch, TaobaoImportCommitRequest, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -32,6 +32,25 @@ export const TEMPERATURE_SENSITIVITIES = ["runs-cold", "neutral", "runs-hot"] as
 export const BODY_TYPES = ["slim-tall", "average", "athletic", "stocky"] as const satisfies readonly BodyType[];
 export const SKIN_TONES = ["dark-yellow", "medium-yellow", "fair", "deep"] as const satisfies readonly SkinTone[];
 export const COLOR_DISPOSITIONS = ["cool-clean", "neutral", "warm-soft"] as const satisfies readonly ColorDisposition[];
+export const FEEDBACK_VERDICTS = ["liked", "disliked", "skipped"] as const satisfies readonly FeedbackVerdict[];
+export const FEEDBACK_REASONS = [
+  "too-warm",
+  "too-cold",
+  "too-formal",
+  "too-casual",
+  "color",
+  "fit",
+  "repeat",
+  "unavailable",
+  "other"
+] as const satisfies readonly FeedbackReason[];
+export const GARMENT_AVAILABILITY_STATUSES = [
+  "available",
+  "laundry",
+  "repair",
+  "loaned",
+  "packed"
+] as const satisfies readonly GarmentAvailabilityStatus[];
 
 const COLOR_PATTERN = /^[a-z][a-z-]{1,30}$/i;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,32}$/;
@@ -81,6 +100,27 @@ const IMPORT_OVERRIDE_FIELDS = new Set([
   "tags",
   "notes"
 ]);
+const SAVED_OUTFIT_CREATE_FIELDS = new Set(["name", "notes", "favorite", "items"]);
+const SAVED_OUTFIT_UPDATE_FIELDS = new Set(["name", "notes", "favorite", "items"]);
+const SAVED_OUTFIT_ITEM_FIELDS = new Set(["garmentId", "slot", "position"]);
+const SAVE_RECOMMENDATION_CANDIDATE_FIELDS = new Set(["name", "notes", "favorite"]);
+const SAVED_OUTFIT_REPLACEMENT_FIELDS = new Set(["targetGarmentId", "replacementGarmentId", "name"]);
+const RECOMMENDATION_FEEDBACK_FIELDS = new Set([
+  "candidateId",
+  "verdict",
+  "rating",
+  "actuallyWorn",
+  "reasonCodes",
+  "comment",
+  "woreInsteadOutfitId"
+]);
+const GARMENT_AVAILABILITY_FIELDS = new Set(["status"]);
+const FEEDBACK_COMMENT_MAX_LENGTH = 2000;
+const SAVED_OUTFIT_NAME_MAX_LENGTH = 120;
+const SAVED_OUTFIT_NOTES_MAX_LENGTH = 2000;
+const SAVED_OUTFIT_MAX_ITEMS = 24;
+const RECOMMENDATION_CONSTRAINT_MAX_IDS = 24;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function assertRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -287,20 +327,177 @@ export function validatePositiveIntegerParam(value: unknown, name = "id"): numbe
   return parsed;
 }
 
-export function validateRecommendationRequest(value: unknown): {
-  weather: WeatherSnapshot;
-  occasion: Formality;
-  recentlyWornGarmentIds: number[];
-  userProfile?: PersonalProfile;
-} {
+export function validateUuidParam(value: unknown, name = "id"): string {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+    throw new ValidationError(`${name} 必须是有效 UUID`);
+  }
+  return value.toLowerCase();
+}
+
+export function validateRecommendationFeedbackInput(value: unknown): RecommendationFeedbackInput {
+  const record = assertRecord(value, "推荐反馈必须是 JSON 对象");
+  assertOnlyFields(record, RECOMMENDATION_FEEDBACK_FIELDS, "推荐反馈");
+  const candidateId = validateUuidParam(record.candidateId, "candidateId");
+  if (!Array.isArray(record.reasonCodes)) {
+    throw new ValidationError("reasonCodes 必须是数组");
+  }
+  const reasonCodes = record.reasonCodes.map((reason) =>
+    enumValue(reason, FEEDBACK_REASONS, "reasonCodes")
+  );
+  if (new Set(reasonCodes).size !== reasonCodes.length) {
+    throw new ValidationError("reasonCodes 不能包含重复值");
+  }
+  const input: RecommendationFeedbackInput = { candidateId, reasonCodes };
+  if ("verdict" in record) {
+    input.verdict = enumValue(record.verdict, FEEDBACK_VERDICTS, "verdict");
+  }
+  if ("rating" in record) {
+    input.rating = strictBoundedInteger(record.rating, "rating", 1, 5) as 1 | 2 | 3 | 4 | 5;
+  }
+  if ("actuallyWorn" in record) {
+    input.actuallyWorn = booleanValue(record.actuallyWorn, "actuallyWorn");
+  }
+  if ("comment" in record) {
+    const comment = stringValue(record.comment, "comment").trim();
+    if (comment.length > FEEDBACK_COMMENT_MAX_LENGTH) {
+      throw new ValidationError(`comment 不能超过 ${FEEDBACK_COMMENT_MAX_LENGTH} 个字符`);
+    }
+    input.comment = comment;
+  }
+  if ("woreInsteadOutfitId" in record) {
+    input.woreInsteadOutfitId = positiveSafeInteger(record.woreInsteadOutfitId, "woreInsteadOutfitId");
+  }
+  if (input.actuallyWorn && input.woreInsteadOutfitId !== undefined) {
+    throw new ValidationError("actuallyWorn 与 woreInsteadOutfitId 不能同时提交");
+  }
+  const hasMeaningfulSignal = input.verdict !== undefined ||
+    input.rating !== undefined ||
+    input.actuallyWorn === true ||
+    input.reasonCodes.length > 0 ||
+    Boolean(input.comment) ||
+    input.woreInsteadOutfitId !== undefined;
+  if (!hasMeaningfulSignal) {
+    throw new ValidationError("推荐反馈至少需要一个有效反馈字段");
+  }
+  return input;
+}
+
+export function validateRecommendationFeedbackClearScope(
+  value: unknown
+): RecommendationFeedbackClearScope {
+  const record = assertRecord(value, "反馈清空范围必须是查询对象");
+  const scope = enumValue(record.scope, ["all", "candidate", "date-range"] as const, "scope");
+  if (scope === "all") {
+    assertOnlyFields(record, new Set(["scope"]), "全部反馈清空范围");
+    return { scope };
+  }
+  if (scope === "candidate") {
+    assertOnlyFields(record, new Set(["scope", "candidateId"]), "候选反馈清空范围");
+    return {
+      scope,
+      candidateId: validateUuidParam(record.candidateId, "candidateId")
+    };
+  }
+  assertOnlyFields(record, new Set(["scope", "from", "to"]), "日期反馈清空范围");
+  const from = isoDateValue(record.from, "from");
+  const to = isoDateValue(record.to, "to");
+  if (from > to) {
+    throw new ValidationError("from 不能晚于 to");
+  }
+  return { scope, from, to };
+}
+
+export function validateGarmentAvailabilityRequest(
+  value: unknown
+): { status: GarmentAvailabilityStatus } {
+  const record = assertRecord(value, "衣物可用状态必须是 JSON 对象");
+  assertOnlyFields(record, GARMENT_AVAILABILITY_FIELDS, "衣物可用状态");
+  return {
+    status: enumValue(record.status, GARMENT_AVAILABILITY_STATUSES, "status")
+  };
+}
+
+export function validateSavedOutfitCreate(value: unknown): SavedOutfitCreateInput {
+  const record = assertRecord(value, "保存搭配内容必须是 JSON 对象");
+  assertOnlyFields(record, SAVED_OUTFIT_CREATE_FIELDS, "保存搭配");
+  return {
+    name: savedOutfitName(record.name),
+    ...(record.notes === undefined ? {} : { notes: savedOutfitNotes(record.notes) }),
+    ...(record.favorite === undefined ? {} : { favorite: booleanValue(record.favorite, "favorite") }),
+    items: validateSavedOutfitItems(record.items)
+  };
+}
+
+export function validateSavedOutfitUpdate(value: unknown): SavedOutfitUpdateInput {
+  const record = assertRecord(value, "搭配更新内容必须是 JSON 对象");
+  assertOnlyFields(record, SAVED_OUTFIT_UPDATE_FIELDS, "搭配更新");
+  if (!Object.keys(record).length) {
+    throw new ValidationError("搭配更新至少需要一个字段");
+  }
+  return {
+    ...(record.name === undefined ? {} : { name: savedOutfitName(record.name) }),
+    ...(record.notes === undefined ? {} : { notes: savedOutfitNotes(record.notes) }),
+    ...(record.favorite === undefined ? {} : { favorite: booleanValue(record.favorite, "favorite") }),
+    ...(record.items === undefined ? {} : { items: validateSavedOutfitItems(record.items) })
+  };
+}
+
+export function validateSaveRecommendationCandidate(
+  value: unknown
+): SaveRecommendationCandidateInput {
+  const record = assertRecord(value, "保存推荐内容必须是 JSON 对象");
+  assertOnlyFields(record, SAVE_RECOMMENDATION_CANDIDATE_FIELDS, "保存推荐");
+  return {
+    ...(record.name === undefined ? {} : { name: savedOutfitName(record.name) }),
+    ...(record.notes === undefined ? {} : { notes: savedOutfitNotes(record.notes) }),
+    ...(record.favorite === undefined ? {} : { favorite: booleanValue(record.favorite, "favorite") })
+  };
+}
+
+export function validateSavedOutfitReplacement(value: unknown): SavedOutfitReplacementInput {
+  const record = assertRecord(value, "替换搭配内容必须是 JSON 对象");
+  assertOnlyFields(record, SAVED_OUTFIT_REPLACEMENT_FIELDS, "替换搭配");
+  const targetGarmentId = positiveSafeInteger(record.targetGarmentId, "targetGarmentId");
+  const replacementGarmentId = positiveSafeInteger(record.replacementGarmentId, "replacementGarmentId");
+  if (targetGarmentId === replacementGarmentId) {
+    throw new ValidationError("replacementGarmentId 必须与 targetGarmentId 不同");
+  }
+  return {
+    targetGarmentId,
+    replacementGarmentId,
+    ...(record.name === undefined ? {} : { name: savedOutfitName(record.name) })
+  };
+}
+
+export function validateRecommendationRequest(value: unknown): RecommendationRequest {
   const record = assertRecord(value, "推荐请求必须是 JSON 对象");
   const weather = validateWeather(record.weather);
   const occasion = "occasion" in record ? enumValue(record.occasion, FORMALITIES, "occasion") : "casual";
+  const issues: RecommendationConstraintIssue[] = [];
+  const includeGarmentIds = recommendationConstraintIds(record, "includeGarmentIds", issues);
+  const excludeGarmentIds = recommendationConstraintIds(record, "excludeGarmentIds", issues);
+  if (includeGarmentIds && excludeGarmentIds) {
+    const excludedIds = new Set(excludeGarmentIds);
+    for (const garmentId of new Set(includeGarmentIds)) {
+      if (excludedIds.has(garmentId)) {
+        issues.push({
+          field: "includeGarmentIds",
+          garmentId,
+          reason: "INCLUDE_EXCLUDE_CONFLICT"
+        });
+      }
+    }
+  }
+  if (issues.length) {
+    throw new ValidationError("推荐衣物约束无效", { issues });
+  }
   return {
     weather,
     occasion,
     recentlyWornGarmentIds: normalizeGarmentIds(record.recentlyWornGarmentIds),
-    userProfile: validateRecommendationProfile(record.userProfile)
+    userProfile: validateRecommendationProfile(record.userProfile),
+    ...(includeGarmentIds === undefined ? {} : { includeGarmentIds }),
+    ...(excludeGarmentIds === undefined ? {} : { excludeGarmentIds })
   };
 }
 
@@ -352,6 +549,107 @@ function validateWeather(value: unknown): WeatherSnapshot {
 function validateRecommendationProfile(value: unknown): PersonalProfile | undefined {
   if (value == null) return undefined;
   return validatePersonalProfile(value);
+}
+
+function recommendationConstraintIds(
+  record: Record<string, unknown>,
+  field: RecommendationConstraintField,
+  issues: RecommendationConstraintIssue[]
+): number[] | undefined {
+  if (!(field in record)) return undefined;
+  const value = record[field];
+  if (!Array.isArray(value) || value.length === 0) {
+    issues.push({ field, reason: "INVALID_ARRAY" });
+    return undefined;
+  }
+  if (value.length > RECOMMENDATION_CONSTRAINT_MAX_IDS) {
+    issues.push({ field, reason: "TOO_MANY" });
+    return undefined;
+  }
+
+  const result: number[] = [];
+  const seen = new Set<number>();
+  const duplicateIds = new Set<number>();
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isSafeInteger(item) || item <= 0) {
+      issues.push({
+        field,
+        ...(typeof item === "number" && Number.isFinite(item) ? { garmentId: item } : {}),
+        reason: "INVALID_ID"
+      });
+      continue;
+    }
+    result.push(item);
+    if (seen.has(item)) duplicateIds.add(item);
+    else seen.add(item);
+  }
+  for (const garmentId of duplicateIds) {
+    issues.push({ field, garmentId, reason: "DUPLICATE" });
+  }
+  return result;
+}
+
+function validateSavedOutfitItems(value: unknown): SavedOutfitItemInput[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ValidationError("items 必须是非空数组");
+  }
+  if (value.length > SAVED_OUTFIT_MAX_ITEMS) {
+    throw new ValidationError(`items 最多包含 ${SAVED_OUTFIT_MAX_ITEMS} 项`);
+  }
+  const garmentIds = new Set<number>();
+  const positions = new Set<string>();
+  return value.map((item, index) => {
+    const record = assertRecord(item, `items[${index}] 必须是 JSON 对象`);
+    assertOnlyFields(record, SAVED_OUTFIT_ITEM_FIELDS, `items[${index}]`);
+    const garmentId = positiveSafeInteger(record.garmentId, `items[${index}].garmentId`);
+    const slot = enumValue(record.slot, GARMENT_CATEGORIES, `items[${index}].slot`) as OutfitSlot;
+    const position = nonNegativeSafeInteger(record.position, `items[${index}].position`);
+    if (position >= SAVED_OUTFIT_MAX_ITEMS) {
+      throw new ValidationError(`items[${index}].position 必须小于 ${SAVED_OUTFIT_MAX_ITEMS}`);
+    }
+    if (garmentIds.has(garmentId)) {
+      throw new ValidationError(`items 中衣物 ${garmentId} 不能重复`);
+    }
+    const positionKey = `${slot}:${position}`;
+    if (positions.has(positionKey)) {
+      throw new ValidationError(`items 中 ${slot}+${position} 位置不能重复`);
+    }
+    garmentIds.add(garmentId);
+    positions.add(positionKey);
+    return { garmentId, slot, position };
+  });
+}
+
+function savedOutfitName(value: unknown): string {
+  const name = stringValue(value, "name").trim();
+  if (!name) throw new ValidationError("name 不能为空");
+  if (name.length > SAVED_OUTFIT_NAME_MAX_LENGTH) {
+    throw new ValidationError(`name 不能超过 ${SAVED_OUTFIT_NAME_MAX_LENGTH} 个字符`);
+  }
+  return name;
+}
+
+function savedOutfitNotes(value: unknown): string {
+  const notes = stringValue(value, "notes").trim();
+  if (notes.length > SAVED_OUTFIT_NOTES_MAX_LENGTH) {
+    throw new ValidationError(`notes 不能超过 ${SAVED_OUTFIT_NOTES_MAX_LENGTH} 个字符`);
+  }
+  return notes;
+}
+
+function assertOnlyFields(record: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) {
+      throw new ValidationError(`${label}不允许字段 ${key}`);
+    }
+  }
+}
+
+function positiveSafeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new ValidationError(`${name} 必须是正安全整数`);
+  }
+  return value;
 }
 
 function copyOptionalString<T extends Record<string, unknown>, K extends keyof GarmentUpdate>(
@@ -428,6 +726,13 @@ function boundedInteger(value: unknown, name: string, min: number, max: number):
     throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的整数`);
   }
   return parsed;
+}
+
+function strictBoundedInteger(value: unknown, name: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new ValidationError(`${name} 必须是 ${min}-${max} 之间的整数`);
+  }
+  return value;
 }
 
 function boundedNumber(value: unknown, name: string, min: number, max: number): number {

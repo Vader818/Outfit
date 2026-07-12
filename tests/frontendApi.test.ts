@@ -1,5 +1,53 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUTH_REQUIRED_EVENT, ApiClientError, analyzeGarmentVisionTags, archiveGarment, commitTaobaoImport, createGarment, createGarmentCutout, downloadCompleteBackup, downloadVisionModel, exportLocalData, getAuthStatus, getCaptureJob, getCaptureJobArtifact, getGarmentThumbnailCandidates, getGarments, getInsights, getPersonalProfile, getRecommendationRuns, getVisionModels, getWearLogs, login, logout, previewCompleteBackup, previewTaobaoImport, readLatestTaobaoCapture, register, restoreGarment, savePersonalProfile, selectGarmentThumbnail, startCaptureJob, startTaobaoItemCapture, startTaobaoOrderCapture, uploadGarmentImage, verifyVisionModel } from "../src/api";
+import {
+  AUTH_REQUIRED_EVENT,
+  ApiClientError,
+  analyzeGarmentVisionTags,
+  applySavedOutfitReplacement,
+  archiveGarment,
+  archiveSavedOutfit,
+  clearRecommendationFeedback,
+  commitTaobaoImport,
+  createGarment,
+  createGarmentCutout,
+  createSavedOutfit,
+  downloadCompleteBackup,
+  downloadVisionModel,
+  exportLocalData,
+  getAuthStatus,
+  getCaptureJob,
+  getCaptureJobArtifact,
+  getGarmentThumbnailCandidates,
+  getGarments,
+  getInsights,
+  getPersonalProfile,
+  getRecommendationRuns,
+  getRecommendations,
+  getSavedOutfit,
+  getSavedOutfits,
+  getVisionModels,
+  getWearLogs,
+  login,
+  logout,
+  previewCompleteBackup,
+  previewRecommendationFeedbackClear,
+  previewTaobaoImport,
+  readLatestTaobaoCapture,
+  register,
+  restoreGarment,
+  savePersonalProfile,
+  saveRecommendationCandidate,
+  selectGarmentThumbnail,
+  setGarmentAvailability,
+  startCaptureJob,
+  startTaobaoItemCapture,
+  startTaobaoOrderCapture,
+  submitRecommendationFeedback,
+  updateGarmentAvailability,
+  updateSavedOutfit,
+  uploadGarmentImage,
+  verifyVisionModel
+} from "../src/api";
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -549,6 +597,222 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/recommendation-runs", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/insights", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/export", expect.objectContaining({ method: "GET" }));
+  });
+
+  it("uses saved outfit CRUD, archive, and trusted recommendation save endpoints", async () => {
+    const saved = {
+      id: 9,
+      name: "周一通勤",
+      notes: "",
+      source: "manual",
+      favorite: false,
+      items: [],
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:00.000Z"
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([saved]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ ...saved, archivedAt: "2026-07-12T00:00:00.000Z" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...saved, favorite: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...saved, archivedAt: "2026-07-12T00:00:00.000Z" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...saved,
+        id: 10,
+        source: "recommendation",
+        sourceCandidateId: "11111111-1111-4111-8111-111111111111"
+      }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSavedOutfits()).resolves.toHaveLength(1);
+    await expect(getSavedOutfits({ archived: true })).resolves.toHaveLength(1);
+    await expect(getSavedOutfit(9)).resolves.toMatchObject({ name: "周一通勤" });
+    await expect(createSavedOutfit({
+      name: "周一通勤",
+      items: [
+        { garmentId: 1, slot: "top", position: 0 },
+        { garmentId: 2, slot: "bottom", position: 0 }
+      ]
+    })).resolves.toMatchObject({ id: 9 });
+    await expect(updateSavedOutfit(9, { favorite: true })).resolves.toMatchObject({ favorite: true });
+    await expect(archiveSavedOutfit(9)).resolves.toMatchObject({ archivedAt: expect.any(String) });
+    await expect(saveRecommendationCandidate("11111111-1111-4111-8111-111111111111", {
+      name: "保存推荐"
+    })).resolves.toMatchObject({ source: "recommendation" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/outfits", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/outfits?archived=1", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/outfits/9", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/outfits", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        name: "周一通勤",
+        items: [
+          { garmentId: 1, slot: "top", position: 0 },
+          { garmentId: 2, slot: "bottom", position: 0 }
+        ]
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/outfits/9", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ favorite: true })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/outfits/9/archive", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(7, "/api/recommendation-candidates/11111111-1111-4111-8111-111111111111/save", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ name: "保存推荐" })
+    }));
+  });
+
+  it("posts explicit recommendation include and exclude constraints", async () => {
+    const response = {
+      runId: 1,
+      weather: {
+        date: "2026-07-11",
+        temperature: 25,
+        apparentTemperature: 26,
+        precipitationProbability: 10,
+        windSpeed: 8,
+        weatherCode: 1,
+        summary: "晴"
+      },
+      occasion: "casual",
+      outfits: [],
+      missingSlots: []
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getRecommendations({
+      weather: response.weather,
+      occasion: "casual",
+      includeGarmentIds: [11],
+      excludeGarmentIds: [22]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/recommendations", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        weather: response.weather,
+        occasion: "casual",
+        includeGarmentIds: [11],
+        excludeGarmentIds: [22]
+      })
+    }));
+  });
+
+  it("applies a saved outfit replacement using only trusted garment IDs", async () => {
+    const derived = {
+      id: 12,
+      name: "新版本",
+      notes: "",
+      source: "replacement",
+      derivedFromOutfitId: 9,
+      favorite: false,
+      items: [],
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:00.000Z"
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(derived), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(applySavedOutfitReplacement(9, {
+      targetGarmentId: 11,
+      replacementGarmentId: 22,
+      name: "新版本"
+    })).resolves.toMatchObject({ derivedFromOutfitId: 9 });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/outfits/9/replacements", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        targetGarmentId: 11,
+        replacementGarmentId: 22,
+        name: "新版本"
+      })
+    }));
+  });
+
+  it("uses recommendation feedback clear and garment availability endpoints", async () => {
+    const candidateId = "11111111-1111-4111-8111-111111111111";
+    const feedbackResponse = {
+      feedback: {
+        id: 1,
+        candidateId,
+        verdict: "liked",
+        rating: 5,
+        actuallyWorn: false,
+        reasonCodes: [],
+        comment: "",
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z"
+      },
+      pairStatsRecomputed: 3
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(feedbackResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        scope: "candidate",
+        candidateId,
+        feedbackCount: 1,
+        affectedPairCount: 3
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        scope: "date-range",
+        from: "2026-07-01",
+        to: "2026-07-12",
+        feedbackCount: 1,
+        affectedPairCount: 3,
+        deletedFeedbackCount: 1,
+        remainingPairStatsCount: 0,
+        clearedAt: "2026-07-12T01:00:00.000Z"
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        changed: true,
+        garment: { id: 9, availabilityStatus: "repair" },
+        event: { id: 2, garmentId: 9, previousStatus: "available", status: "repair" }
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(submitRecommendationFeedback({
+      candidateId,
+      verdict: "liked",
+      rating: 5,
+      reasonCodes: []
+    })).resolves.toMatchObject({ feedback: { candidateId }, pairStatsRecomputed: 3 });
+    await expect(previewRecommendationFeedbackClear({
+      scope: "candidate",
+      candidateId
+    })).resolves.toMatchObject({ scope: "candidate", feedbackCount: 1 });
+    await expect(clearRecommendationFeedback({
+      scope: "date-range",
+      from: "2026-07-01",
+      to: "2026-07-12"
+    })).resolves.toMatchObject({ deletedFeedbackCount: 1 });
+    await expect(updateGarmentAvailability(9, "repair")).resolves.toMatchObject({
+      changed: true,
+      garment: { availabilityStatus: "repair" }
+    });
+
+    expect(setGarmentAvailability).toBe(updateGarmentAvailability);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/recommendation-feedback", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ candidateId, verdict: "liked", rating: 5, reasonCodes: [] })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/recommendation-feedback/clear-preview?scope=candidate&candidateId=${candidateId}`,
+      expect.objectContaining({ method: "GET" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/recommendation-feedback?scope=date-range&from=2026-07-01&to=2026-07-12",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/garments/9/availability", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ status: "repair" })
+    }));
   });
 
   it("previews a complete backup before downloading the ZIP blob", async () => {

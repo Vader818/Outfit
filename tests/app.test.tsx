@@ -2,10 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { existsSync, readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, AuthView, HistoryInsightsView, ImportView, MainApp, RecommendationView, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
+import { App, AuthView, HistoryInsightsView, ImportView, MainApp, OutfitBuilder, RecommendationView, SavedOutfitsPanel, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
 import { ImportReviewTable } from "../src/features/import/ImportReviewTable";
 import { ManualGarmentDialog, yuanToCents } from "../src/features/wardrobe/ManualGarmentDialog";
+import { moveAccessoryItem, validateOutfitBuilderDraft } from "../src/features/outfits/OutfitBuilder";
 import { fitImageDimensions, prepareGarmentImageForUpload } from "../src/lib/imageSanitization";
 import {
   BACKUP_EXPORT_CONFIRMATION,
@@ -28,7 +29,7 @@ import {
   DEFAULT_PROFILE,
   parseLocationCoordinates
 } from "../src/shared/presentation";
-import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, SavedOutfit, SavedOutfitItemInput, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
 
 const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
 const TEST_OUTFIT_SIGNATURE = "a".repeat(64);
@@ -470,7 +471,7 @@ describe("App", () => {
     const markup = renderToStaticMarkup(<>{tree}</>);
     const stages = findElementsByComponentName(tree, "OutfitStage");
 
-    expect(markup).toContain("标记已穿");
+    expect(markup).toContain("实际穿了");
     expect(stages).toHaveLength(1);
     expect(stages[0].props.outfit).toBe(outfit);
     expect(stages[0].props.onRecordWearLog).toBe(onRecordWearLog);
@@ -1626,7 +1627,16 @@ describe("App", () => {
     const outfit: OutfitRecommendation = {
       ...makeOutfit(),
       reasons: ["体感温度适合", "颜色协调", "第三条理由"],
-      alternatives: [makeGarment(404, "灰色夹克", "outerwear", { brand: "COS" })]
+      replacements: [{
+        targetGarmentId: 101,
+        replacement: makeGarment(404, "灰色夹克", "top", { brand: "COS" }),
+        nextItems: [
+          makeGarment(404, "灰色夹克", "top", { brand: "COS" }),
+          makeGarment(202, "黑长裤", "bottom", { brand: "优衣库" })
+        ],
+        matchPercentDelta: 2,
+        reasons: ["替换后更适合当前天气"]
+      }]
     };
     const appModule = await import("../src/App");
     const RecommendationView = (appModule as {
@@ -1811,7 +1821,7 @@ describe("App", () => {
     expectClassTokens(markup, ["outfit-stage", "outfit-stage--featured"]);
     expectClassTokens(markup, ["outfit-stage__garments"]);
     expect(markup).toContain("今天先穿这一套");
-    expect(markup).toContain("标记已穿");
+    expect(markup).toContain("实际穿了");
     expect(markup).not.toContain("liquid-");
   });
 
@@ -2364,6 +2374,166 @@ describe("App", () => {
     expect(manualMarkup).toContain("本地照片（可选）");
     expect(manualMarkup).toContain("image/jpeg,image/png,image/webp");
   });
+
+  it("renders active and archived saved outfits from immutable snapshots and wires management actions", () => {
+    const parent = makeSavedOutfit(41, "周一通勤", [
+      { id: 1, garmentId: 101, slot: "top", position: 0, name: "白衬衫", brand: "无印良品" },
+      { id: 2, garmentId: 202, slot: "bottom", position: 0, name: "黑长裤", brand: "优衣库" }
+    ]);
+    const derived = makeSavedOutfit(42, "周一通勤 · 换鞋", [
+      { id: 3, garmentId: 101, slot: "top", position: 0, name: "白衬衫", brand: "无印良品" },
+      { id: 4, garmentId: 303, slot: "shoes", position: 0, name: "乐福鞋", brand: "Clarks" }
+    ], { source: "replacement", derivedFromOutfitId: parent.id, favorite: true });
+    const archived = makeSavedOutfit(43, "已经归档的搭配", [], { archivedAt: "2026-07-11T00:00:00.000Z" });
+    const onCreate = vi.fn();
+    const onOpen = vi.fn();
+    const onFavorite = vi.fn();
+    const onArchive = vi.fn();
+
+    const tree = SavedOutfitsPanel({
+      outfits: [parent, derived, archived],
+      busy: false,
+      onCreate,
+      onOpen,
+      onFavorite,
+      onArchive
+    });
+    const markup = renderToStaticMarkup(<>{tree}</>);
+
+    expect(markup).toContain("保存的搭配");
+    expect(markup).toContain("周一通勤 · 换鞋");
+    expect(markup).toContain("已归档的搭配");
+    expect(markup).toContain("已经归档的搭配");
+    expect(markup).toContain('aria-label="查看或编辑资料 已经归档的搭配"');
+    expect(markup).toContain("源自「周一通勤」");
+    expect(markup).toContain("无印良品");
+    expect(markup).toContain("白衬衫 暂无本地图片");
+    expect(markup).toContain('aria-label="取消收藏 周一通勤 · 换鞋"');
+    expect(markup).toContain('aria-pressed="true"');
+
+    findButtonsByText(tree, "新建搭配")[0].props.onClick();
+    const activeCardTree = renderFunctionElement(findElementsByComponentName(tree, "SavedOutfitCard")[0]);
+    findButtonsByText(activeCardTree, "打开编辑")[0].props.onClick();
+    findButtonsByText(activeCardTree, "归档")[0].props.onClick();
+    const favoriteButtons = findElementsByComponentName(activeCardTree, "IconButton")
+      .filter((button) => String(button.props["aria-label"] ?? "").includes("收藏"));
+    favoriteButtons[0].props.onClick();
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledWith(parent);
+    expect(onArchive).toHaveBeenCalledWith(parent);
+    expect(onFavorite).toHaveBeenCalledWith(parent, true);
+  });
+
+  it("opens an existing outfit in safe metadata-only mode with composition controls disabled", () => {
+    const top = makeGarment(101, "白衬衫", "top");
+    const bottom = makeGarment(202, "黑长裤", "bottom");
+    const scarf = makeGarment(301, "羊毛围巾", "accessory");
+    const watch = makeGarment(302, "银色腕表", "accessory");
+    const pending = makeGarment(401, "待确认上衣", "top", { confirmed: false });
+    const archived = makeGarment(402, "归档上衣", "top", { archivedAt: "2026-07-11T00:00:00.000Z" });
+    const outfit = makeSavedOutfit(51, "冬日通勤", [
+      { id: 11, garmentId: top.id, slot: "top", position: 0, name: top.name },
+      { id: 12, garmentId: bottom.id, slot: "bottom", position: 0, name: bottom.name },
+      { id: 13, garmentId: scarf.id, slot: "accessory", position: 0, name: scarf.name },
+      { id: 14, garmentId: watch.id, slot: "accessory", position: 1, name: watch.name }
+    ], { notes: "室内外温差大", favorite: true });
+
+    const markup = renderToStaticMarkup(
+      <OutfitBuilder
+        open
+        outfit={outfit}
+        garments={[top, bottom, scarf, watch, pending, archived]}
+        busy={false}
+        error="保存搭配失败"
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />
+    );
+
+    expectClassTokens(markup, ["ui-dialog", "outfit-builder"]);
+    expect(markup).toContain("编辑保存的搭配");
+    expect(markup).toContain('aria-labelledby="');
+    expect(markup).toContain('aria-describedby="');
+    expect(markup).toContain('value="冬日通勤"');
+    expect(markup).toContain("室内外温差大");
+    expect(markup).toContain("收藏这套搭配");
+    expect(markup).toContain("白衬衫");
+    expect(markup).toContain("黑长裤");
+    expect(markup).not.toContain("待确认上衣");
+    expect(markup).not.toContain("归档上衣");
+    expect(markup).toContain('aria-label="上移 羊毛围巾"');
+    expect(markup).toContain('aria-label="下移 羊毛围巾"');
+    expect(markup).toContain('aria-label="上移 银色腕表"');
+    expect(markup).toContain("当前只编辑名称、备注和收藏状态");
+    expect(markup).toContain("调整搭配内容");
+    expect(markup).toContain('draggable="false"');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("保存搭配失败");
+  });
+
+  it("validates outfit builder completeness, item identity, slot category, and position uniqueness", () => {
+    const garments = [
+      makeGarment(101, "白衬衫", "top"),
+      makeGarment(202, "黑长裤", "bottom"),
+      makeGarment(303, "针织连衣裙", "dress"),
+      makeGarment(404, "羊毛围巾", "accessory")
+    ];
+    const topBottom: SavedOutfitItemInput[] = [
+      { garmentId: 101, slot: "top", position: 0 },
+      { garmentId: 202, slot: "bottom", position: 0 }
+    ];
+
+    expect(validateOutfitBuilderDraft("周一通勤", topBottom, garments)).toEqual({ items: [] });
+    expect(validateOutfitBuilderDraft("", [], garments)).toMatchObject({
+      name: "请输入搭配名称",
+      items: expect.arrayContaining([expect.stringContaining("上装和下装")])
+    });
+    expect(validateOutfitBuilderDraft("冲突搭配", [
+      ...topBottom,
+      { garmentId: 303, slot: "dress", position: 0 }
+    ], garments).items).toContain("连衣裙不能与上装或下装同时使用");
+    expect(validateOutfitBuilderDraft("重复衣物", [
+      ...topBottom,
+      { garmentId: 101, slot: "top", position: 1 }
+    ], garments).items).toEqual(expect.arrayContaining([
+      expect.stringContaining("同一件衣物只能使用一次"),
+      expect.stringContaining("位置")
+    ]));
+    expect(validateOutfitBuilderDraft("类别错误", [
+      { garmentId: 101, slot: "bottom", position: 0 },
+      { garmentId: 202, slot: "bottom", position: 0 }
+    ], garments).items).toEqual(expect.arrayContaining([
+      expect.stringContaining("衣物类别与搭配位置不一致"),
+      expect.stringContaining("位置")
+    ]));
+  });
+
+  it("moves accessories deterministically while normalizing every position", () => {
+    const items: SavedOutfitItemInput[] = [
+      { garmentId: 301, slot: "accessory", position: 0 },
+      { garmentId: 302, slot: "accessory", position: 1 },
+      { garmentId: 303, slot: "accessory", position: 2 }
+    ];
+
+    expect(moveAccessoryItem(items, 302, -1)).toEqual([
+      { garmentId: 302, slot: "accessory", position: 0 },
+      { garmentId: 301, slot: "accessory", position: 1 },
+      { garmentId: 303, slot: "accessory", position: 2 }
+    ]);
+    expect(moveAccessoryItem(items, 301, -1)).toEqual(items);
+    expect(moveAccessoryItem(items, 303, 1)).toEqual(items);
+  });
+
+  it("lays out saved outfit cards and builder controls responsively without adding mobile navigation", () => {
+    const styles = readAppStyles();
+
+    expect(cssRule(styles, ".saved-outfits-grid")).toMatch(/display:\s*grid;/);
+    expect(cssRule(styles, ".outfit-builder__accessory-actions")).toMatch(/display:\s*flex;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*640px\)[\s\S]*\.saved-outfits-grid\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+    expect(styles).toMatch(/@media\s+\(max-width:\s*640px\)[\s\S]*\.outfit-builder__footer \.ui-button[\s\S]*min-height:\s*2\.75rem;/);
+    expect(styles).toMatch(/\.mobile-nav[\s\S]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
+  });
 });
 
 function cssRule(styles: string, selector: string): string {
@@ -2405,7 +2575,7 @@ function makeOutfit(): OutfitRecommendation {
       makeGarment(202, "黑长裤", "bottom", { brand: "优衣库", rawName: "优衣库黑长裤长标题" })
     ],
     reasons: ["适合通勤"],
-    alternatives: []
+    replacements: []
   };
 }
 
@@ -2434,6 +2604,46 @@ function makeGarment(
     ...overrides
   };
   return garment as Garment;
+}
+
+function makeSavedOutfit(
+  id: number,
+  name: string,
+  items: Array<{
+    id: number;
+    garmentId?: number;
+    slot: SavedOutfit["items"][number]["slot"];
+    position: number;
+    name: string;
+    brand?: string;
+    imageUrl?: string;
+  }>,
+  overrides: Partial<SavedOutfit> = {}
+): SavedOutfit {
+  return {
+    id,
+    name,
+    notes: "",
+    source: "manual",
+    favorite: false,
+    items: items.map((item) => ({
+      id: item.id,
+      outfitId: id,
+      garmentId: item.garmentId,
+      slot: item.slot,
+      position: item.position,
+      garmentSnapshot: {
+        id: item.garmentId ?? item.id,
+        name: item.name,
+        brand: item.brand ?? "",
+        category: item.slot,
+        imageUrl: item.imageUrl ?? ""
+      }
+    })),
+    createdAt: "2026-07-11T08:00:00.000Z",
+    updatedAt: "2026-07-11T08:00:00.000Z",
+    ...overrides
+  };
 }
 
 function findButtonsByText(node: ReactNode, text: string): ReactElement[] {

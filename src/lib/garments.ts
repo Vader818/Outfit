@@ -1,4 +1,4 @@
-import type { Garment, VisionTagSuggestion } from "../shared/types";
+import type { Garment, GarmentAvailabilityStatus, VisionTagSuggestion } from "../shared/types";
 import type { WardrobeFilters } from "../shared/presentation";
 
 export type GarmentWithMeta = Garment & { brand?: string | null; rawName?: string | null };
@@ -72,7 +72,15 @@ export function isTrustedTaobaoImageUrl(value: string): boolean {
 }
 
 export function isRecommendationEligibleGarment(item: Garment): boolean {
-  return item.owned && !item.archivedAt && item.confirmed && !item.excluded;
+  return item.owned && !item.archivedAt && item.confirmed && !item.excluded && isGarmentAvailable(item);
+}
+
+export function garmentAvailabilityStatus(item: Garment): GarmentAvailabilityStatus {
+  return item.availabilityStatus || "available";
+}
+
+export function isGarmentAvailable(item: Garment): boolean {
+  return garmentAvailabilityStatus(item) === "available";
 }
 
 export function isWardrobeReviewPendingGarment(item: Garment): boolean {

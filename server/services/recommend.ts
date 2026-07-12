@@ -1,5 +1,6 @@
-import type { Formality, Garment, GarmentCategory, GarmentWarmth, PersonalProfile, RecommendationDraftResult, RecommendationOutfitDraft, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
+import type { Formality, Garment, GarmentCategory, GarmentWarmth, OutfitPairStat, OutfitReplacementSuggestion, PersonalProfile, RecommendationDraftResult, RecommendationOutfitDraft, RecommendationScoreBreakdown, Season, WeatherScenario, WeatherSnapshot } from "../../src/shared/types";
 import { attachCandidateIdentities, type CandidateIdFactory } from "./recommendationCandidates";
+import { calculateLearnedPreferenceBonus } from "./recommendationFeedback";
 
 export interface RecommendInput {
   garments: Garment[];
@@ -7,6 +8,9 @@ export interface RecommendInput {
   occasion: string;
   recentlyWornGarmentIds?: number[];
   userProfile?: PersonalProfile;
+  includeGarmentIds?: number[];
+  excludeGarmentIds?: number[];
+  pairStats?: OutfitPairStat[];
 }
 
 export interface RecommendationIdentityOptions {
@@ -65,7 +69,7 @@ export function recommendOutfits(
   input: RecommendInput,
   identityOptions: RecommendationIdentityOptions = {}
 ): RecommendationDraftResult {
-  const available = eligibleGarments(input.garments);
+  const available = eligibleGarments(input.garments, input.excludeGarmentIds);
   const generated = generateCandidates({ ...input, garments: available });
   const candidates = generated.candidates;
   const sorted = candidates.sort(compareCandidates);
@@ -75,16 +79,21 @@ export function recommendOutfits(
     scoreBreakdown: normalizeBreakdown(candidate.scoreBreakdown),
     items: candidate.items,
     reasons: candidate.reasons,
-    alternatives: findAlternatives(available, candidate.items, input)
+    replacements: findReplacements(available, candidate.items, input, candidate.score)
   }));
   const outfits = attachCandidateIdentities(outfitDrafts, identityOptions.candidateIdFactory);
 
+  const missingSlots = missingCoreSlots(available);
   return {
     weather: input.weather,
     weatherScenario: classifyWeatherScenario(input.weather),
     occasion: input.occasion,
     outfits,
-    missingSlots: missingCoreSlots(available)
+    missingSlots,
+    missingSlotDetails: missingSlots.map((slot) => ({
+      slot,
+      unavailableCount: countUnavailableGarments(input.garments, slot, input.excludeGarmentIds)
+    }))
   };
 }
 
@@ -92,13 +101,32 @@ export function generateCandidates(
   input: RecommendInput,
   options: CandidateGenerationOptions = {}
 ): CandidateGenerationResult {
-  const available = eligibleGarments(input.garments);
-  const tops = available.filter((item) => item.category === "top");
-  const dresses = available.filter((item) => item.category === "dress");
-  const bottoms = available.filter((item) => item.category === "bottom");
-  const outerwear = available.filter((item) => item.category === "outerwear");
-  const shoes = available.filter((item) => item.category === "shoes");
-  const accessories = available.filter((item) => item.category === "accessory");
+  const available = eligibleGarments(input.garments, input.excludeGarmentIds);
+  const includedIds = new Set(input.includeGarmentIds ?? []);
+  const included = available.filter((item) => includedIds.has(item.id));
+  const includedByCategory = (category: GarmentCategory) =>
+    included.filter((item) => item.category === category);
+  const availableByCategory = (category: GarmentCategory) =>
+    available.filter((item) => item.category === category);
+  const includedTops = includedByCategory("top");
+  const includedBottoms = includedByCategory("bottom");
+  const includedDresses = includedByCategory("dress");
+  const hasLockedSeparateCore = includedTops.length > 0 || includedBottoms.length > 0;
+  const tops = includedDresses.length
+    ? []
+    : includedTops.length ? includedTops : availableByCategory("top");
+  const bottoms = includedDresses.length
+    ? []
+    : includedBottoms.length ? includedBottoms : availableByCategory("bottom");
+  const dresses = hasLockedSeparateCore
+    ? []
+    : includedDresses.length ? includedDresses : availableByCategory("dress");
+  const outerwear = availableByCategory("outerwear");
+  const shoes = availableByCategory("shoes");
+  const accessories = availableByCategory("accessory");
+  const includedOuterwear = includedByCategory("outerwear");
+  const includedShoes = includedByCategory("shoes");
+  const includedAccessories = includedByCategory("accessory");
   const maxEvaluatedCandidates = normalizeCandidateLimit(options.maxEvaluatedCandidates);
   const beamWidth = normalizeBeamWidth(options.beamWidth);
   const layerBudgets = candidateLayerBudgets(maxEvaluatedCandidates);
@@ -135,21 +163,27 @@ export function generateCandidates(
   const withOuterwear = scoreLayer(
     expandCandidates(
       coreCandidates,
-      outerwearOptions(outerwear, input.weather),
+      includedOuterwear.length ? includedOuterwear : outerwearOptions(outerwear, input.weather),
       layerBudgets.outerwear
     ),
     layerBudgets.outerwear
   );
   const withShoes = scoreLayer(
-    expandCandidates(withOuterwear, shoes.length ? shoes : [undefined], layerBudgets.shoes),
+    expandCandidates(
+      withOuterwear,
+      includedShoes.length ? includedShoes : shoes.length ? shoes : [undefined],
+      layerBudgets.shoes
+    ),
     layerBudgets.shoes
   );
   const withAccessories = scoreLayer(
-    expandCandidates(
-      withShoes,
-      [undefined, ...accessories.slice(0, 3)],
-      layerBudgets.accessories
-    ),
+    includedAccessories.length
+      ? appendRequiredItems(withShoes, includedAccessories, layerBudgets.accessories)
+      : expandCandidates(
+        withShoes,
+        [undefined, ...accessories.slice(0, 3)],
+        layerBudgets.accessories
+      ),
     layerBudgets.accessories
   );
 
@@ -160,8 +194,33 @@ export function generateCandidates(
   };
 }
 
-function eligibleGarments(garments: Garment[]): Garment[] {
-  return garments.filter((item) => item.owned && !item.archivedAt && item.confirmed && !item.excluded);
+function eligibleGarments(garments: Garment[], excludeGarmentIds: readonly number[] = []): Garment[] {
+  const excludedIds = new Set(excludeGarmentIds);
+  return garments.filter((item) =>
+    item.owned &&
+    !item.archivedAt &&
+    item.confirmed &&
+    !item.excluded &&
+    (item.availabilityStatus ?? "available") === "available" &&
+    !excludedIds.has(item.id)
+  );
+}
+
+function countUnavailableGarments(
+  garments: readonly Garment[],
+  slot: GarmentCategory,
+  excludeGarmentIds: readonly number[] = []
+): number {
+  const excludedIds = new Set(excludeGarmentIds);
+  return garments.filter((item) =>
+    item.category === slot &&
+    item.owned &&
+    !item.archivedAt &&
+    item.confirmed &&
+    !item.excluded &&
+    (item.availabilityStatus ?? "available") !== "available" &&
+    !excludedIds.has(item.id)
+  ).length;
 }
 
 function missingCoreSlots(garments: Garment[]): GarmentCategory[] {
@@ -267,6 +326,28 @@ function* expandCandidates(
   }
 }
 
+function* appendRequiredItems(
+  parents: Candidate[],
+  requiredItems: readonly Garment[],
+  layerBudget: number
+): Generator<Garment[]> {
+  const parentIndices = evenlySpacedIndices(
+    parents.length,
+    Math.min(parents.length, layerBudget)
+  );
+  for (const parentIndex of parentIndices) {
+    const parent = parents[parentIndex];
+    const itemIds = new Set(parent.items.map((item) => item.id));
+    const items = [...parent.items];
+    for (const requiredItem of requiredItems) {
+      if (itemIds.has(requiredItem.id)) continue;
+      items.push(requiredItem);
+      itemIds.add(requiredItem.id);
+    }
+    yield items;
+  }
+}
+
 function evenlySpacedIndices(totalCount: number, sampleCount: number): number[] {
   if (totalCount <= 0 || sampleCount <= 0) return [];
   if (sampleCount >= totalCount) return Array.from({ length: totalCount }, (_, index) => index);
@@ -344,8 +425,17 @@ function scoreCandidate(items: Garment[], input: RecommendInput, sequence = 0): 
     itemConfidence: itemConfidenceScore(items),
     userPreference: userPreferenceScore(items, input.userProfile, input.weather, reasons),
     bodyProportion: bodyProportionScore(items, input.userProfile, reasons),
-    colorSuitability: colorSuitabilityScore(items, input.userProfile, reasons)
+    colorSuitability: colorSuitabilityScore(items, input.userProfile, reasons),
+    learnedPreference: calculateLearnedPreferenceBonus(
+      items.map((item) => item.id),
+      input.pairStats ?? []
+    )
   };
+  if (scoreBreakdown.learnedPreference > 0) {
+    addReason(reasons, `学习偏好为这套搭配增加 ${scoreBreakdown.learnedPreference} 分。`);
+  } else if (scoreBreakdown.learnedPreference < 0) {
+    addReason(reasons, `学习偏好为这套搭配减少 ${Math.abs(scoreBreakdown.learnedPreference)} 分。`);
+  }
   const score = 50 + Object.values(scoreBreakdown).reduce((total, value) => total + value, 0);
 
   return { items, score, reasons: reasons.slice(0, 6), scoreBreakdown, sequence };
@@ -670,46 +760,48 @@ function shouldUseOuterwear(weather: WeatherSnapshot): boolean {
   return weather.apparentTemperature <= 16 || weather.precipitationProbability >= 50 || weather.windSpeed >= 20;
 }
 
-function findAlternatives(available: Garment[], selected: Garment[], input: RecommendInput): Garment[] {
+function findReplacements(
+  available: Garment[],
+  selected: Garment[],
+  input: RecommendInput,
+  originalScore: number
+): OutfitReplacementSuggestion[] {
   const selectedIds = new Set(selected.map((item) => item.id));
-  const selectedCategories = new Set<GarmentCategory>(selected.map((item) => item.category));
-  return available
-    .filter((item) => !selectedIds.has(item.id) && selectedCategories.has(item.category))
-    .map((item) => ({
-      item,
-      score: bestReplacementScore(item, selected, input)
-    }))
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 4)
-    .map(({ item }) => item);
-}
+  const lockedIds = new Set(input.includeGarmentIds ?? []);
+  const originalMatchPercent = normalizeMatchPercent(originalScore);
+  const suggestions: OutfitReplacementSuggestion[] = [];
 
-function bestReplacementScore(replacement: Garment, selected: Garment[], input: RecommendInput): number {
-  const matchingIndexes = selected
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.category === replacement.category);
-  if (!matchingIndexes.length) return -Infinity;
-
-  return Math.max(
-    ...matchingIndexes.map(({ index }) => {
-      const nextItems = selected.map((item, itemIndex) => (itemIndex === index ? replacement : item));
-      const score = scoreCandidateForReplacement(nextItems, input);
-      return score;
-    })
-  );
-}
-
-function scoreCandidateForReplacement(items: Garment[], input: RecommendInput): number {
-  const reasons: string[] = [];
-  return (
-    slotCompletenessScore(items, reasons) +
-    weatherComfortScore(items, input.weather, reasons) +
-    seasonScore(items, input.weather, reasons) +
-    occasionScore(items, input.occasion as Formality, reasons) +
-    pairwiseCompatibilityScore(items) +
-    colorHarmonyScore(items, reasons) +
-    recentWearScore(items, input.recentlyWornGarmentIds ?? [], reasons)
-  );
+  selected.forEach((target, targetIndex) => {
+    if (lockedIds.has(target.id)) return;
+    const targetSuggestions = available
+      .filter((replacement) =>
+        replacement.category === target.category &&
+        !selectedIds.has(replacement.id)
+      )
+      .map((replacement) => {
+        const nextItems = selected.map((item, itemIndex) =>
+          itemIndex === targetIndex ? replacement : item
+        );
+        const scored = scoreCandidate(nextItems, input);
+        return {
+          score: scored.score,
+          suggestion: {
+            targetGarmentId: target.id,
+            replacement,
+            nextItems,
+            matchPercentDelta: normalizeMatchPercent(scored.score) - originalMatchPercent,
+            reasons: scored.reasons.length
+              ? scored.reasons
+              : [`用${replacement.name}替换${target.name}后，整套仍符合当前天气和场合。`]
+          } satisfies OutfitReplacementSuggestion
+        };
+      })
+      .sort((left, right) => right.score - left.score || left.suggestion.replacement.id - right.suggestion.replacement.id)
+      .slice(0, 2)
+      .map(({ suggestion }) => suggestion);
+    suggestions.push(...targetSuggestions);
+  });
+  return suggestions;
 }
 
 function coreSignature(items: Garment[]): string {

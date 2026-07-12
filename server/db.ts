@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Formality, Garment, GarmentThumbnailCandidatesResponse, ImportDecision, ImportDisposition, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoImportPreviewItem, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, ImportDecision, ImportDisposition, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoImportPreviewItem, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, computeLegacyTaobaoSourceItemKey, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type NormalizedTaobaoBatch, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -106,6 +106,148 @@ const NUMBERED_MIGRATIONS: readonly Migration[] = [
         CREATE UNIQUE INDEX idx_garment_assets_active_kind
         ON garment_assets(garment_id, kind)
         WHERE active = 1;
+      `);
+    }
+  },
+  {
+    version: 3,
+    name: "saved-outfits",
+    up(db) {
+      db.exec(`
+        CREATE TABLE saved_outfits (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL CHECK (
+            length(trim(name)) BETWEEN 1 AND 120
+          ),
+          notes TEXT NOT NULL DEFAULT '' CHECK (
+            length(notes) <= 4000
+          ),
+          source TEXT NOT NULL CHECK (
+            source IN ('recommendation', 'manual', 'replacement')
+          ),
+          source_candidate_id TEXT,
+          derived_from_outfit_id INTEGER,
+          favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
+          archived_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (source_candidate_id)
+            REFERENCES recommendation_candidates(candidate_id) ON DELETE SET NULL,
+          FOREIGN KEY (derived_from_outfit_id)
+            REFERENCES saved_outfits(id) ON DELETE RESTRICT,
+          CHECK (
+            derived_from_outfit_id IS NULL OR derived_from_outfit_id <> id
+          ),
+          CHECK (
+            source <> 'replacement' OR derived_from_outfit_id IS NOT NULL
+          )
+        ) STRICT;
+
+        CREATE INDEX idx_saved_outfits_archived_at
+        ON saved_outfits(archived_at);
+
+        CREATE INDEX idx_saved_outfits_source_candidate_id
+        ON saved_outfits(source_candidate_id);
+
+        CREATE INDEX idx_saved_outfits_derived_from_outfit_id
+        ON saved_outfits(derived_from_outfit_id);
+
+        CREATE TABLE saved_outfit_items (
+          id INTEGER PRIMARY KEY,
+          outfit_id INTEGER NOT NULL,
+          garment_id INTEGER,
+          slot TEXT NOT NULL CHECK (
+            slot IN ('top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessory')
+          ),
+          position INTEGER NOT NULL CHECK (position >= 0),
+          garment_snapshot TEXT NOT NULL CHECK (
+            json_valid(garment_snapshot) AND
+            json_type(garment_snapshot) = 'object'
+          ),
+          FOREIGN KEY (outfit_id)
+            REFERENCES saved_outfits(id) ON DELETE CASCADE,
+          FOREIGN KEY (garment_id)
+            REFERENCES garments(id) ON DELETE SET NULL,
+          UNIQUE (outfit_id, slot, position)
+        ) STRICT;
+
+        CREATE INDEX idx_saved_outfit_items_outfit_id
+        ON saved_outfit_items(outfit_id);
+      `);
+    }
+  },
+  {
+    version: 4,
+    name: "feedback-availability",
+    up(db) {
+      db.exec(`
+        ALTER TABLE garments
+        ADD COLUMN availability_status TEXT NOT NULL DEFAULT 'available'
+          CHECK (availability_status IN ('available', 'laundry', 'repair', 'loaned', 'packed'));
+
+        CREATE TABLE recommendation_feedback (
+          id INTEGER PRIMARY KEY,
+          candidate_id TEXT NOT NULL UNIQUE,
+          verdict TEXT CHECK (
+            verdict IS NULL OR verdict IN ('liked', 'disliked', 'skipped')
+          ),
+          rating INTEGER CHECK (
+            rating IS NULL OR (typeof(rating) = 'integer' AND rating BETWEEN 1 AND 5)
+          ),
+          actually_worn INTEGER NOT NULL DEFAULT 0 CHECK (actually_worn IN (0, 1)),
+          reason_codes_json TEXT NOT NULL DEFAULT '[]' CHECK (
+            json_valid(reason_codes_json) AND json_type(reason_codes_json) = 'array'
+          ),
+          comment TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 2000),
+          wore_instead_outfit_id INTEGER,
+          wear_log_id INTEGER UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (candidate_id)
+            REFERENCES recommendation_candidates(candidate_id) ON DELETE CASCADE,
+          FOREIGN KEY (wore_instead_outfit_id)
+            REFERENCES saved_outfits(id) ON DELETE RESTRICT,
+          FOREIGN KEY (wear_log_id)
+            REFERENCES wear_logs(id) ON DELETE RESTRICT
+        ) STRICT;
+
+        CREATE INDEX idx_recommendation_feedback_created_at
+        ON recommendation_feedback(created_at);
+
+        CREATE INDEX idx_recommendation_feedback_verdict
+        ON recommendation_feedback(verdict);
+
+        CREATE TABLE outfit_pair_stats (
+          garment_a_id INTEGER NOT NULL,
+          garment_b_id INTEGER NOT NULL,
+          likes INTEGER NOT NULL CHECK (likes >= 0),
+          dislikes INTEGER NOT NULL CHECK (dislikes >= 0),
+          worn_count INTEGER NOT NULL CHECK (worn_count >= 0),
+          total_feedback INTEGER NOT NULL CHECK (total_feedback >= 0),
+          signal INTEGER NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (garment_a_id, garment_b_id),
+          CHECK (garment_a_id > 0 AND garment_b_id > 0 AND garment_a_id < garment_b_id),
+          FOREIGN KEY (garment_a_id) REFERENCES garments(id) ON DELETE CASCADE,
+          FOREIGN KEY (garment_b_id) REFERENCES garments(id) ON DELETE CASCADE
+        ) STRICT;
+
+        CREATE TABLE garment_availability_events (
+          id INTEGER PRIMARY KEY,
+          garment_id INTEGER NOT NULL,
+          previous_status TEXT NOT NULL CHECK (
+            previous_status IN ('available', 'laundry', 'repair', 'loaned', 'packed')
+          ),
+          status TEXT NOT NULL CHECK (
+            status IN ('available', 'laundry', 'repair', 'loaned', 'packed')
+          ),
+          changed_at TEXT NOT NULL,
+          CHECK (previous_status <> status),
+          FOREIGN KEY (garment_id) REFERENCES garments(id) ON DELETE RESTRICT
+        ) STRICT;
+
+        CREATE INDEX idx_garment_availability_events_garment_id
+        ON garment_availability_events(garment_id, changed_at, id);
       `);
     }
   }
@@ -1487,11 +1629,16 @@ function garmentNotFoundError(): ApiError {
   return new ApiError("NOT_FOUND", "衣服不存在", 404);
 }
 
-export function saveWearLog(db: AppDatabase, garmentIds: number[], context: unknown = null): void {
-  db.prepare("INSERT INTO wear_logs (garment_ids, context) VALUES (?, ?)").run(
+export function saveWearLog(db: AppDatabase, garmentIds: number[], context: unknown = null): number {
+  const result = db.prepare("INSERT INTO wear_logs (garment_ids, context) VALUES (?, ?)").run(
     JSON.stringify(garmentIds),
     context == null ? null : JSON.stringify(context)
   );
+  const id = Number(result.lastInsertRowid);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("SQLite returned an invalid wear log id");
+  }
+  return id;
 }
 
 export function listRecentlyWornGarmentIds(db: AppDatabase, limit = 8): number[] {
@@ -1934,6 +2081,7 @@ interface GarmentRow {
   owned: number;
   confirmed: number;
   excluded: number;
+  availability_status: GarmentAvailabilityStatus;
   confidence: number;
   notes: string | null;
   acquired_at: string | null;
@@ -1973,6 +2121,7 @@ function rowToGarment(row: GarmentRow): Garment {
     owned: Boolean(row.owned),
     confirmed: Boolean(row.confirmed),
     excluded: Boolean(row.excluded),
+    availabilityStatus: row.availability_status,
     confidence: row.confidence,
     notes: row.notes ?? "",
     acquiredAt: row.acquired_at ?? undefined,

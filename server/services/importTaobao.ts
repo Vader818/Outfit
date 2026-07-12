@@ -142,6 +142,7 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
       owned: true,
       confirmed: false,
       excluded: false,
+      availabilityStatus: "available",
       confidence: classification.confidence,
       notes: ""
     });

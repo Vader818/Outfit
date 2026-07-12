@@ -114,6 +114,18 @@
   align-content: end;
 }
 
+.wardrobe-batch-controls__group--availability {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.wardrobe-batch-controls__group--availability > .availability-menu {
+  grid-column: auto;
+  min-width: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 .wardrobe-archive {
   display: grid;
   gap: var(--space-4);
@@ -434,6 +446,7 @@
 .garment-library-item--review .garment-library-item__header,
 .garment-library-item--review .garment-library-item__attributes,
 .garment-library-item--review .garment-library-item__wear,
+.garment-library-item--review .availability-menu,
 .garment-library-item--review .garment-library-item__review-note,
 .garment-library-item--review .garment-library-item__details {
   grid-column: 1;
@@ -450,6 +463,35 @@
   align-items: start;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+.garment-library-item__statuses {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.availability-menu {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.availability-menu__label {
+  overflow: hidden;
+  color: var(--color-ink-soft);
+  font-size: 0.72rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.availability-menu__select {
+  min-height: 2.35rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.82rem;
 }
 
 .garment-library-item__identity {

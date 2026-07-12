@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { createDatabase, savePersonalProfile, type AppDatabase } from "../server/db";
+import { archiveGarment, createDatabase, savePersonalProfile, type AppDatabase } from "../server/db";
 import {
   OUTFIT_EXPORT_V2_FEATURES,
   buildOutfitExportV2,
@@ -15,6 +15,11 @@ import {
   validateOutfitExport
 } from "../server/services/export";
 import { saveGarmentImageAsset } from "../server/services/garmentAssets";
+import {
+  applySavedOutfitReplacement,
+  archiveSavedOutfit,
+  createSavedOutfit
+} from "../server/services/savedOutfits";
 import {
   attachCandidateIdentities,
   persistRecommendationSnapshot
@@ -42,7 +47,8 @@ const scoreBreakdown: RecommendationScoreBreakdown = {
   itemConfidence: 8,
   userPreference: 0,
   bodyProportion: 0,
-  colorSuitability: 0
+  colorSuitability: 0,
+  learnedPreference: 0
 };
 
 function garment(id: number, category: Garment["category"]): Garment {
@@ -62,6 +68,7 @@ function garment(id: number, category: Garment["category"]): Garment {
     owned: true,
     confirmed: true,
     excluded: false,
+    availabilityStatus: "available",
     confidence: 0.8
   };
 }
@@ -111,6 +118,54 @@ describe("OutfitExportV2", () => {
       recommendationCandidates: []
     };
     expect(validateOutfitExport(legacyV2WithoutAssets)).toBe(legacyV2WithoutAssets);
+    const m3V2 = {
+      ...legacyV2WithoutAssets,
+      schemaVersion: 4,
+      features: [...legacyV2WithoutAssets.features, "feedback-availability"],
+      recommendationFeedback: [{
+        id: 1,
+        candidateId: "candidate",
+        verdict: "liked",
+        rating: 5,
+        actuallyWorn: true,
+        reasonCodes: [],
+        comment: "",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }],
+      outfitPairStats: [{
+        garmentAId: 1,
+        garmentBId: 2,
+        likes: 1,
+        dislikes: 0,
+        wornCount: 1,
+        totalFeedback: 1,
+        signal: 3,
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }],
+      garmentAvailabilityEvents: [{
+        id: 1,
+        garmentId: 1,
+        previousStatus: "available",
+        status: "laundry",
+        changedAt: "2026-01-01T00:00:00.000Z"
+      }]
+    };
+    expect(validateOutfitExport(m3V2)).toBe(m3V2);
+    expect(() => validateOutfitExport({
+      ...m3V2,
+      recommendationFeedback: [{
+        ...m3V2.recommendationFeedback[0],
+        reasonCodes: ["invented"]
+      }]
+    })).toThrow(/recommendationFeedback/i);
+    expect(() => validateOutfitExport({
+      ...m3V2,
+      garmentAvailabilityEvents: [{
+        ...m3V2.garmentAvailabilityEvents[0],
+        status: "lost"
+      }]
+    })).toThrow(/garmentAvailabilityEvents/i);
     const v2WithAsset = {
       ...legacyV2WithoutAssets,
       schemaVersion: 2,
@@ -167,7 +222,7 @@ describe("OutfitExportV2", () => {
       scoreBreakdown,
       items,
       reasons: ["测试理由"],
-      alternatives: []
+      replacements: []
     }], () => "11111111-1111-4111-8111-111111111111");
     const result = persistRecommendationSnapshot(db, { occasion: "casual" }, {
       weather,
@@ -181,7 +236,7 @@ describe("OutfitExportV2", () => {
 
     expect(exported).toEqual({
       version: 2,
-      schemaVersion: 2,
+      schemaVersion: 4,
       exportedAt: FIXED_NOW.toISOString(),
       features: OUTFIT_EXPORT_V2_FEATURES,
       profile,
@@ -208,9 +263,315 @@ describe("OutfitExportV2", () => {
         },
         createdAt: expect.any(String)
       }],
-      garmentAssets: []
+      garmentAssets: [],
+      savedOutfits: [],
+      recommendationFeedback: [],
+      outfitPairStats: [],
+      garmentAvailabilityEvents: []
     });
     expect(JSON.stringify(again, null, 2)).toBe(JSON.stringify(exported, null, 2));
+  });
+
+  it("exports every feedback, pair stat, and availability event in deterministic order", () => {
+    const db = createDatabase(":memory:");
+    const firstGarmentId = insertAssetGarment(db, "第一件");
+    const secondGarmentId = insertAssetGarment(db, "第二件");
+    const thirdGarmentId = insertAssetGarment(db, "第三件");
+    const runId = Number(db.prepare(`
+      INSERT INTO recommendation_runs (input_json, result_json, created_at)
+      VALUES ('{}', '{}', '2026-07-11T05:00:00.000Z')
+    `).run().lastInsertRowid);
+    const insertCandidate = db.prepare(`
+      INSERT INTO recommendation_candidates (
+        candidate_id, run_id, signature, rank, item_ids_json, score_snapshot, created_at
+      ) VALUES (?, ?, ?, ?, ?, '{}', ?)
+    `);
+    insertCandidate.run(
+      "candidate-later",
+      runId,
+      "signature-later",
+      1,
+      JSON.stringify([secondGarmentId, thirdGarmentId]),
+      "2026-07-11T05:01:00.000Z"
+    );
+    insertCandidate.run(
+      "candidate-earlier",
+      runId,
+      "signature-earlier",
+      2,
+      JSON.stringify([firstGarmentId, thirdGarmentId]),
+      "2026-07-11T05:02:00.000Z"
+    );
+
+    const insertFeedback = db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const laterFeedbackId = Number(insertFeedback.run(
+      "candidate-later",
+      "disliked",
+      2,
+      0,
+      JSON.stringify(["too-warm", "color"]),
+      "太热",
+      "2026-07-11T07:00:00.000Z",
+      "2026-07-11T07:01:00.000Z"
+    ).lastInsertRowid);
+    const earlierFeedbackId = Number(insertFeedback.run(
+      "candidate-earlier",
+      "liked",
+      5,
+      1,
+      "[]",
+      "",
+      "2026-07-11T06:00:00.000Z",
+      "2026-07-11T06:01:00.000Z"
+    ).lastInsertRowid);
+
+    const insertPairStat = db.prepare(`
+      INSERT INTO outfit_pair_stats (
+        garment_a_id, garment_b_id, likes, dislikes, worn_count,
+        total_feedback, signal, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertPairStat.run(secondGarmentId, thirdGarmentId, 0, 1, 0, 1, -2, "2026-07-11T07:01:00.000Z");
+    insertPairStat.run(firstGarmentId, thirdGarmentId, 1, 0, 1, 1, 3, "2026-07-11T06:01:00.000Z");
+
+    db.prepare("UPDATE garments SET availability_status = 'laundry' WHERE id = ?")
+      .run(secondGarmentId);
+    const insertAvailability = db.prepare(`
+      INSERT INTO garment_availability_events (
+        garment_id, previous_status, status, changed_at
+      ) VALUES (?, ?, ?, ?)
+    `);
+    const laterEventId = Number(insertAvailability.run(
+      secondGarmentId,
+      "available",
+      "laundry",
+      "2026-07-11T09:00:00.000Z"
+    ).lastInsertRowid);
+    db.prepare("UPDATE garments SET availability_status = 'repair' WHERE id = ?")
+      .run(firstGarmentId);
+    const earlierEventId = Number(insertAvailability.run(
+      firstGarmentId,
+      "available",
+      "repair",
+      "2026-07-11T08:00:00.000Z"
+    ).lastInsertRowid);
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+
+    expect(exported.schemaVersion).toBe(4);
+    expect(exported.features).toContain("feedback-availability");
+    expect(exported.recommendationFeedback).toEqual([
+      {
+        id: earlierFeedbackId,
+        candidateId: "candidate-earlier",
+        verdict: "liked",
+        rating: 5,
+        actuallyWorn: true,
+        reasonCodes: [],
+        comment: "",
+        createdAt: "2026-07-11T06:00:00.000Z",
+        updatedAt: "2026-07-11T06:01:00.000Z"
+      },
+      {
+        id: laterFeedbackId,
+        candidateId: "candidate-later",
+        verdict: "disliked",
+        rating: 2,
+        actuallyWorn: false,
+        reasonCodes: ["too-warm", "color"],
+        comment: "太热",
+        createdAt: "2026-07-11T07:00:00.000Z",
+        updatedAt: "2026-07-11T07:01:00.000Z"
+      }
+    ]);
+    expect(exported.outfitPairStats).toEqual([
+      {
+        garmentAId: firstGarmentId,
+        garmentBId: thirdGarmentId,
+        likes: 1,
+        dislikes: 0,
+        wornCount: 1,
+        totalFeedback: 1,
+        signal: 3,
+        updatedAt: "2026-07-11T06:01:00.000Z"
+      },
+      {
+        garmentAId: secondGarmentId,
+        garmentBId: thirdGarmentId,
+        likes: 0,
+        dislikes: 1,
+        wornCount: 0,
+        totalFeedback: 1,
+        signal: -2,
+        updatedAt: "2026-07-11T07:01:00.000Z"
+      }
+    ]);
+    expect(exported.garmentAvailabilityEvents).toEqual([
+      {
+        id: earlierEventId,
+        garmentId: firstGarmentId,
+        previousStatus: "available",
+        status: "repair",
+        changedAt: "2026-07-11T08:00:00.000Z"
+      },
+      {
+        id: laterEventId,
+        garmentId: secondGarmentId,
+        previousStatus: "available",
+        status: "laundry",
+        changedAt: "2026-07-11T09:00:00.000Z"
+      }
+    ]);
+    expect(validateOutfitExport(exported)).toBe(exported);
+  });
+
+  it("rejects damaged feedback reason JSON with table, row, and column context", () => {
+    const db = createDatabase(":memory:");
+    const firstGarmentId = insertAssetGarment(db, "反馈衣物一");
+    const secondGarmentId = insertAssetGarment(db, "反馈衣物二");
+    const runId = Number(db.prepare(`
+      INSERT INTO recommendation_runs (input_json, result_json)
+      VALUES ('{}', '{}')
+    `).run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO recommendation_candidates (
+        candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
+      ) VALUES ('damaged-feedback', ?, 'signature', 1, ?, '{}')
+    `).run(runId, JSON.stringify([firstGarmentId, secondGarmentId]));
+    const feedbackId = Number(db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, reason_codes_json, comment, created_at, updated_at
+      ) VALUES ('damaged-feedback', '[]', '', ?, ?)
+    `).run(FIXED_NOW.toISOString(), FIXED_NOW.toISOString()).lastInsertRowid);
+
+    db.exec("PRAGMA ignore_check_constraints = ON");
+    db.prepare("UPDATE recommendation_feedback SET reason_codes_json = 'not-json' WHERE id = ?")
+      .run(feedbackId);
+    db.exec("PRAGMA ignore_check_constraints = OFF");
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      new RegExp(`recommendation_feedback.*${feedbackId}.*reason_codes_json`, "i")
+    );
+
+    db.exec("PRAGMA ignore_check_constraints = ON");
+    db.prepare("UPDATE recommendation_feedback SET reason_codes_json = '[\"invented\"]' WHERE id = ?")
+      .run(feedbackId);
+    db.exec("PRAGMA ignore_check_constraints = OFF");
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      new RegExp(`recommendation_feedback.*${feedbackId}.*reason_codes_json.*FeedbackReason`, "i")
+    );
+  });
+
+  it("exports active, archived, and derived saved outfits with immutable snapshots", () => {
+    const db = createDatabase(":memory:");
+    const insertGarment = db.prepare(`
+      INSERT INTO garments (
+        brand, name, raw_name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes, origin
+      ) VALUES (?, ?, ?, ?, 'black', 'medium', '["spring","autumn"]', '["casual"]',
+        'casual', ?, 1, 1, 0, 1, '', 'manual')
+    `);
+    const originalTopId = Number(insertGarment.run(
+      "原品牌",
+      "原白衬衫",
+      "原白衬衫",
+      "top",
+      "/api/garment-assets/11/content"
+    ).lastInsertRowid);
+    const replacementTopId = Number(insertGarment.run(
+      "新品牌",
+      "蓝衬衫",
+      "蓝衬衫",
+      "top",
+      "/api/garment-assets/12/content"
+    ).lastInsertRowid);
+    const bottomId = Number(insertGarment.run(
+      "",
+      "黑长裤",
+      "黑长裤",
+      "bottom",
+      ""
+    ).lastInsertRowid);
+    const original = createSavedOutfit(db, {
+      name: "原始搭配",
+      items: [
+        { garmentId: originalTopId, slot: "top", position: 0 },
+        { garmentId: bottomId, slot: "bottom", position: 0 }
+      ]
+    });
+    const derived = applySavedOutfitReplacement(db, original.id, {
+      targetGarmentId: originalTopId,
+      replacementGarmentId: replacementTopId,
+      name: "蓝衬衫版本"
+    });
+    archiveSavedOutfit(db, original.id);
+    db.prepare("UPDATE garments SET name = '后来改名', image_url = '' WHERE id = ?").run(originalTopId);
+    archiveGarment(db, originalTopId);
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+    expect(exported.savedOutfits).toHaveLength(2);
+    const exportedOriginal = exported.savedOutfits!.find((outfit) => outfit.id === original.id);
+    const exportedDerived = exported.savedOutfits!.find((outfit) => outfit.id === derived.id);
+    expect(exportedOriginal).toMatchObject({
+      id: original.id,
+      archivedAt: expect.any(String),
+      items: [
+        expect.objectContaining({
+          garmentId: originalTopId,
+          garmentSnapshot: {
+            id: originalTopId,
+            name: "原白衬衫",
+            brand: "原品牌",
+            category: "top",
+            imageUrl: "/api/garment-assets/11/content"
+          }
+        }),
+        expect.objectContaining({ garmentId: bottomId })
+      ]
+    });
+    expect(exportedDerived).toMatchObject({
+      id: derived.id,
+      source: "replacement",
+      derivedFromOutfitId: original.id,
+      items: [
+        expect.objectContaining({ garmentId: replacementTopId }),
+        expect.objectContaining({ garmentId: bottomId })
+      ]
+    });
+    expect(validateOutfitExport(exported)).toBe(exported);
+    expect(exported.features).toContain("saved-outfits");
+  });
+
+  it("rejects damaged or non-portable saved outfit snapshots", () => {
+    const db = createDatabase(":memory:");
+    const outfitId = Number(db.prepare(`
+      INSERT INTO saved_outfits (name, notes, source, favorite)
+      VALUES ('unsafe snapshot', '', 'manual', 0)
+    `).run().lastInsertRowid);
+    const item = db.prepare(`
+      INSERT INTO saved_outfit_items (outfit_id, garment_id, slot, position, garment_snapshot)
+      VALUES (?, NULL, 'top', 0, ?)
+    `);
+    const itemId = Number(item.run(outfitId, JSON.stringify({
+      id: 99,
+      name: "私密路径",
+      brand: "",
+      category: "top",
+      imageUrl: "C:\\Users\\owner\\secret.webp"
+    })).lastInsertRowid);
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      /saved_outfit_items.*garment_snapshot.*imageUrl.*portable/i
+    );
+
+    db.prepare("UPDATE saved_outfit_items SET garment_snapshot = ? WHERE id = ?")
+      .run(JSON.stringify({ id: 99, name: "缺少字段", category: "top", imageUrl: "" }), itemId);
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      /saved_outfit_items.*garment_snapshot.*shape|saved_outfit_items.*invalid/i
+    );
   });
 
   it("exports all history instead of reusing UI list limits", () => {

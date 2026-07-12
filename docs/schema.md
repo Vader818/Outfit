@@ -17,7 +17,7 @@ legacyBaseline0 → 登记 schema_migrations baseline 0 → 顺序执行编号�
 ```
 
 - baseline 0 的名称为 `legacy-baseline`，负责把项目支持的未版本化历史数据库归一到 M0 之前的 schema，并在同一事务中登记版本 0。已经存在 `schema_migrations` 的数据库不会再次运行 baseline，而是校验已应用记录后继续编号迁移。
-- 当前编号迁移版本为 2：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`。
+- 当前编号迁移版本为 4：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`。
 - 编号必须是正整数并严格递增；数据库中的已应用记录必须是当前迁移列表的精确前缀。由更新版本应用过未知迁移的数据库会拒绝由旧代码继续写入。
 - 每个迁移使用独立的 `BEGIN IMMEDIATE` 事务。失败时 schema 修改和版本登记一起回滚；重复启动不会重复应用已登记迁移。
 - 生产代码只提供前向迁移，不提供 down migration。
@@ -30,6 +30,11 @@ type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 type Season = "spring" | "summer" | "autumn" | "winter";
 type Formality = "casual" | "smart-casual" | "formal" | "sport";
 type GarmentOrigin = "taobao" | "manual" | "backup";
+type GarmentAvailabilityStatus = "available" | "laundry" | "repair" | "loaned" | "packed";
+type FeedbackVerdict = "liked" | "disliked" | "skipped";
+type FeedbackReason =
+  | "too-warm" | "too-cold" | "too-formal" | "too-casual"
+  | "color" | "fit" | "repeat" | "unavailable" | "other";
 type ImportDisposition = "create" | "update" | "refund-sync" | "unchanged" | "skip";
 type TaobaoPageType = "order-list" | "item-detail";
 type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
@@ -40,6 +45,8 @@ type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
 type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
 type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
 type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
+type SavedOutfitSource = "recommendation" | "manual" | "replacement";
+type OutfitSlot = GarmentCategory;
 ```
 
 说明：
@@ -75,6 +82,7 @@ interface Garment {
   owned: boolean;
   confirmed: boolean;
   excluded: boolean;
+  availabilityStatus: GarmentAvailabilityStatus;
   confidence: number;
   notes?: string;
   acquiredAt?: string;
@@ -114,6 +122,7 @@ interface Garment {
 | `owned` | 是否仍拥有 |
 | `confirmed` | 是否经过用户确认或手动编辑 |
 | `excluded` | 是否从推荐中排除 |
+| `availabilityStatus` | 当前可用状态；只有 `available` 会进入推荐，其他状态仍保留在衣服库与历史中 |
 | `confidence` | 自动分类置信度 |
 | `acquiredAt` | 可选购入日期，`YYYY-MM-DD` |
 | `purchasePriceCents` / `currency` | 可选非负整数分与 `CNY` |
@@ -149,7 +158,7 @@ interface ManualGarmentCreate {
 }
 ```
 
-服务端不接受来源、图片或状态字段，并固定写入 `source_order_item_id=NULL`、`origin=manual`、`raw_name=name`、空图片、`owned=1`、`confirmed=1`、`excluded=0`、`confidence=1`。
+服务端不接受来源、图片或状态字段，并固定写入 `source_order_item_id=NULL`、`origin=manual`、`raw_name=name`、空图片、`owned=1`、`confirmed=1`、`excluded=0`、`availability_status=available`、`confidence=1`。
 
 ### PersonalProfile
 
@@ -225,6 +234,7 @@ interface WardrobeInsights {
   bodySuggestions: WardrobeSuggestion[];
   mostWorn: WornGarmentInsight[];
   neverWorn: WornGarmentInsight[];
+  feedbackSummary?: RecommendationFeedbackInsights;
 }
 ```
 
@@ -290,6 +300,43 @@ interface WeatherSnapshot {
 ### OutfitRecommendation
 
 ```ts
+interface RecommendationRequest {
+  weather: WeatherSnapshot;
+  occasion: Formality;
+  recentlyWornGarmentIds?: number[];
+  userProfile?: PersonalProfile;
+  includeGarmentIds?: number[];
+  excludeGarmentIds?: number[];
+}
+
+type RecommendationConstraintField = "includeGarmentIds" | "excludeGarmentIds";
+type RecommendationConstraintReason =
+  | "INVALID_ARRAY"
+  | "INVALID_ID"
+  | "TOO_MANY"
+  | "DUPLICATE"
+  | "INCLUDE_EXCLUDE_CONFLICT"
+  | "NOT_FOUND"
+  | "NOT_OWNED"
+  | "ARCHIVED"
+  | "UNCONFIRMED"
+  | "EXCLUDED"
+  | "UNSATISFIABLE";
+
+interface RecommendationConstraintIssue {
+  field: RecommendationConstraintField;
+  garmentId?: number;
+  reason: RecommendationConstraintReason;
+}
+
+interface OutfitReplacementSuggestion {
+  targetGarmentId: number;
+  replacement: Garment;
+  nextItems: Garment[];
+  matchPercentDelta: number;
+  reasons: string[];
+}
+
 interface OutfitRecommendation {
   id: string;
   candidateId: string;
@@ -299,7 +346,7 @@ interface OutfitRecommendation {
   scoreBreakdown?: RecommendationScoreBreakdown;
   items: Garment[];
   reasons: string[];
-  alternatives: Garment[];
+  replacements: OutfitReplacementSuggestion[];
 }
 
 interface RecommendationResult {
@@ -309,6 +356,10 @@ interface RecommendationResult {
   occasion: string;
   outfits: OutfitRecommendation[];
   missingSlots: GarmentCategory[];
+  missingSlotDetails?: Array<{
+    slot: GarmentCategory;
+    unavailableCount: number;
+  }>;
 }
 
 interface RecommendationScoreBreakdown {
@@ -323,6 +374,7 @@ interface RecommendationScoreBreakdown {
   userPreference: number;
   bodyProportion: number;
   colorSuitability: number;
+  learnedPreference: number;
 }
 
 interface UserPreferenceProfile {
@@ -337,13 +389,172 @@ interface UserPreferenceProfile {
 
 - `score` 保留算法内部排序分，前端展示优先使用 `matchPercent`。
 - `matchPercent` 是 `0-100` 的用户可理解匹配度。
-- `scoreBreakdown` 是归一化后的可解释维度分，方便展示天气舒适度、场合匹配、近期穿着惩罚和用户偏好贡献。
+- `scoreBreakdown` 是归一化后的可解释维度分，方便展示天气舒适度、场合匹配、近期穿着惩罚、用户偏好和反馈学习贡献；`learnedPreference` 始终限制在 -8…+8。
 - `weatherScenario` 是天气归一化层，用于解释推荐依据。
 - `runId` 指向保存本次请求与结果的 `recommendation_runs.id`。
 - `candidateId` 是全局唯一候选 UUID；`id === candidateId` 是当前兼容约定。
 - `outfitSignature` 是按固定 slot 顺序和衣物 ID 计算的完整组合 SHA-256 签名。它可跨 run 识别相同组合，但不代替天气、场合、rank 或评分上下文。
-- `missingSlots` 只表达无法构成连衣裙或“上装＋下装”核心时的结构化缺口；鞋履是软缺口。
+- `missingSlots` 只表达无法构成连衣裙或“上装＋下装”核心时的结构化缺口；`missingSlotDetails[].unavailableCount` 说明对应槽位因非 `available` 被硬过滤的数量；鞋履是软缺口。
 - 候选按核心、外套、鞋履、配饰分层生成，默认总评估上限 20,000，每层 beam width 上限 120；超限时采用确定性均匀采样。
+- `includeGarmentIds` 与 `excludeGarmentIds` 是最多 24 项的严格硬约束；约束在持久化 run 前完成结构和数据库状态校验，错误通过 `RecommendationConstraintIssue[]` 返回。
+- `replacements` 对每个可替换目标给出同类别 replacement、完整 `nextItems`、相对匹配度变化和理由；include 锁定的目标不生成替换建议。
+
+### 推荐反馈与衣物可用状态
+
+```ts
+interface RecommendationFeedbackInput {
+  candidateId: string;
+  verdict?: FeedbackVerdict;
+  rating?: 1 | 2 | 3 | 4 | 5;
+  actuallyWorn?: boolean;
+  reasonCodes: FeedbackReason[];
+  comment?: string;
+  woreInsteadOutfitId?: number;
+}
+
+interface RecommendationFeedback extends RecommendationFeedbackInput {
+  id: number;
+  actuallyWorn: boolean;
+  comment: string;
+  wearLogId?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface OutfitPairStat {
+  garmentAId: number;
+  garmentBId: number;
+  likes: number;
+  dislikes: number;
+  wornCount: number;
+  totalFeedback: number;
+  signal: number;
+  updatedAt: string;
+}
+
+interface RecommendationFeedbackInsights {
+  totalCount: number;
+  acceptedCount: number;
+  acceptanceRate: number;
+  mostCommonRejectionReason?: FeedbackReason;
+  rejectionReasons: Array<{ reason: FeedbackReason; count: number }>;
+}
+
+type RecommendationFeedbackClearScope =
+  | { scope: "all" }
+  | { scope: "candidate"; candidateId: string }
+  | { scope: "date-range"; from: string; to: string };
+
+interface RecommendationFeedbackClearPreview {
+  scope: RecommendationFeedbackClearScope["scope"];
+  candidateId?: string;
+  from?: string;
+  to?: string;
+  feedbackCount: number;
+  affectedPairCount: number;
+}
+
+interface RecommendationFeedbackClearResult extends RecommendationFeedbackClearPreview {
+  deletedFeedbackCount: number;
+  remainingPairStatsCount: number;
+  clearedAt: string;
+}
+
+interface GarmentAvailabilityEvent {
+  id: number;
+  garmentId: number;
+  previousStatus: GarmentAvailabilityStatus;
+  status: GarmentAvailabilityStatus;
+  changedAt: string;
+}
+
+interface GarmentAvailabilityChangeResult {
+  changed: boolean;
+  garment: Garment;
+  event?: GarmentAvailabilityEvent;
+}
+```
+
+同一 `candidateId` 只保留一条反馈，后续提交更新而不是累加。输入必须至少包含 verdict、rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId` 中的一个有效信号。`totalFeedback` 计入该衣物对出现过的每一条候选反馈，包括 `skipped`、仅评分或没有 verdict 的反馈；`likes`、`dislikes`、`wornCount` 分别按 verdict 与 `actuallyWorn` 计数，同一反馈可同时贡献 verdict 与 worn。接受率使用满足 `verdict=liked` 或 `actuallyWorn=true` 的去重反馈数除以总反馈数。
+
+反馈学习公式为：
+
+```text
+signal = likes + 2*wornCount - 2*dislikes
+confidence = min(1, totalFeedback / 5)
+pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
+```
+
+`totalFeedback < 3` 的衣物对只记录、不调权；达到阈值后每对最多贡献 -4…+4，整套组合最终 clamp 到 -8…+8。`actuallyWorn=true` 与 `woreInsteadOutfitId` 互斥。日期清空范围按反馈 `updatedAt` 的日期闭区间匹配；UI 必须先获取 `RecommendationFeedbackClearPreview` 并展示影响，再允许最终确认。
+
+### SavedOutfit
+
+```ts
+interface SavedOutfitGarmentSnapshot {
+  id: number;
+  name: string;
+  brand: string;
+  category: GarmentCategory;
+  imageUrl: string;
+}
+
+interface SavedOutfitItem {
+  id: number;
+  outfitId: number;
+  garmentId?: number;
+  slot: OutfitSlot;
+  position: number;
+  garmentSnapshot: SavedOutfitGarmentSnapshot;
+}
+
+interface SavedOutfit {
+  id: number;
+  name: string;
+  notes: string;
+  source: SavedOutfitSource;
+  sourceCandidateId?: string;
+  derivedFromOutfitId?: number;
+  favorite: boolean;
+  archivedAt?: string;
+  items: SavedOutfitItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SavedOutfitItemInput {
+  garmentId: number;
+  slot: OutfitSlot;
+  position: number;
+}
+
+interface SavedOutfitCreateInput {
+  name: string;
+  notes?: string;
+  favorite?: boolean;
+  items: SavedOutfitItemInput[];
+}
+
+interface SavedOutfitUpdateInput {
+  name?: string;
+  notes?: string;
+  favorite?: boolean;
+  items?: SavedOutfitItemInput[];
+}
+
+interface SaveRecommendationCandidateInput {
+  name?: string;
+  notes?: string;
+  favorite?: boolean;
+}
+
+interface SavedOutfitReplacementInput {
+  targetGarmentId: number;
+  replacementGarmentId: number;
+  name?: string;
+}
+```
+
+`garmentSnapshot` 是保存时的不可变展示快照，不会在读取时与当前 garment 合并。手工 create/update 的 item DTO 不接受 snapshot 或 provenance；候选保存从持久化 run 读取历史快照；replacement 总是新建派生记录而不覆盖父记录。
 
 ### OutfitExport
 
@@ -391,12 +602,18 @@ interface OutfitExportV2 extends OutfitExportBase {
   features: string[];
   recommendationCandidates: RecommendationCandidateExport[];
   garmentAssets?: GarmentAssetMetadata[];
+  savedOutfits?: SavedOutfit[];
+  recommendationFeedback?: RecommendationFeedback[];
+  outfitPairStats?: OutfitPairStat[];
+  garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
 }
 
 type OutfitExport = OutfitExportV1 | OutfitExportV2;
 ```
 
-`GET /api/export` 当前只生成 V2；内部校验器仍识别没有 `garmentAssets` 的旧 V2 与 V1。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
+`GET /api/export` 当前只生成 V2，envelope 继续使用 `version=2`，数据库迁移自动报告 `schemaVersion=4`。当前 builder 始终输出 `saved-outfits`、`feedback-availability` feature，以及完整 `savedOutfits`、`recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`；反馈按 `createdAt,id`、组合统计按衣物 ID 对、状态事件按 `changedAt,id` 确定排序，所有表都在同一个 SQLite 读快照中取得。反馈评论、实际穿着选择、拒绝原因和衣物状态历史属于敏感本地数据；损坏或含未知值的 `reason_codes_json` 会使导出失败，不会静默漏行。
+
+内部校验器仍识别 V1，以及没有 `garmentAssets`、`savedOutfits` 或 M3 三个新数组的旧 V2。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 还导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
 
 ### 淘宝采集类型
 
@@ -586,6 +803,8 @@ interface TaobaoImportPreview {
 | 0 | `legacy-baseline` |
 | 1 | `recommendation-candidates` |
 | 2 | `trusted-ingestion` |
+| 3 | `saved-outfits` |
+| 4 | `feedback-availability` |
 
 ### users
 
@@ -688,6 +907,7 @@ ON source_order_items(item_id);
 | `owned` | INTEGER | NOT NULL DEFAULT 1 | 是否拥有 |
 | `confirmed` | INTEGER | NOT NULL DEFAULT 0 | 是否确认 |
 | `excluded` | INTEGER | NOT NULL DEFAULT 0 | 是否排除推荐 |
+| `availability_status` | TEXT | NOT NULL DEFAULT `available`，枚举 CHECK | `available`、`laundry`、`repair`、`loaned`、`packed` |
 | `confidence` | REAL | NOT NULL DEFAULT 0 | 自动分类置信度 |
 | `notes` | TEXT |  | 用户备注 |
 | `acquired_at` | TEXT |  | 可选购入日期 |
@@ -700,7 +920,7 @@ ON source_order_items(item_id);
 
 - legacy 表定义中的 `confirmed` 默认值仍为 `0`。淘宝导入显式写入 `0`，手工创建接口显式写入 `1`；不能用表默认值推断衣物来源。
 - 淘宝重复导入不会覆盖用户已经确认的状态。
-- 默认衣橱与洞察只使用 `owned=1 AND archived_at IS NULL` 的 active 衣物；推荐和替代单品再叠加 `confirmed=1 AND excluded=0`。
+- 默认衣橱与洞察只使用 `owned=1 AND archived_at IS NULL` 的 active 衣物；推荐和替代单品再叠加 `confirmed=1 AND excluded=0 AND availability_status='available'`。非可用状态不等于归档或不再拥有。
 - `PUT /api/garments/:id` 会更新展示字段和 `updated_at`。
 - 用户确认过的名称在迁移回填时会尽量保留，避免被自动清洗覆盖。
 - archive 与弃用 DELETE 都只设置 `archived_at`；restore 清除它。两者都不删除衣物、来源记录、图片资产或采集文件。
@@ -812,6 +1032,115 @@ CREATE INDEX idx_recommendation_candidates_signature ON recommendation_candidate
 ```
 
 `signature` 不唯一：同一组合可以在多个 run 中再次出现；`candidate_id` 才是单次候选快照的全局身份。
+
+### saved_outfits
+
+保存搭配 header、来源、收藏、软归档和派生关系。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 保存搭配 ID |
+| `name` | TEXT | NOT NULL，trim 后 1-120 字符 CHECK | 展示名称 |
+| `notes` | TEXT | NOT NULL DEFAULT `''`，最多 4000 字符 CHECK | 备注；当前 API 上限为 2000 字符 |
+| `source` | TEXT | NOT NULL CHECK | `recommendation`、`manual` 或 `replacement` |
+| `source_candidate_id` | TEXT | FK SET NULL | 推荐来源 UUID，关联 `recommendation_candidates.candidate_id` |
+| `derived_from_outfit_id` | INTEGER | 自 FK RESTRICT | replacement 的父搭配；禁止引用自身 |
+| `favorite` | INTEGER | NOT NULL DEFAULT 0，0/1 CHECK | 收藏状态 |
+| `archived_at` | TEXT |  | 软归档时间 |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+| `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 最近更新时间 |
+
+约束与索引：
+
+```sql
+CHECK (derived_from_outfit_id IS NULL OR derived_from_outfit_id <> id);
+CHECK (source <> 'replacement' OR derived_from_outfit_id IS NOT NULL);
+CREATE INDEX idx_saved_outfits_archived_at ON saved_outfits(archived_at);
+CREATE INDEX idx_saved_outfits_source_candidate_id ON saved_outfits(source_candidate_id);
+CREATE INDEX idx_saved_outfits_derived_from_outfit_id ON saved_outfits(derived_from_outfit_id);
+```
+
+产品只提供软归档，不提供物理删除端点。replacement 必须新建一行并指向父记录；修改或归档子记录不会改变父记录。若推荐候选被物理删除，`source_candidate_id` 置空但搭配继续存在；存在子记录时父记录受 RESTRICT 保护。
+
+### saved_outfit_items
+
+保存搭配内的 slot/顺序和不可变衣物快照。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | item ID |
+| `outfit_id` | INTEGER | NOT NULL，FK CASCADE | 关联 `saved_outfits.id` |
+| `garment_id` | INTEGER | FK SET NULL | 当前衣物的可选引用；来源行不存在时允许为空 |
+| `slot` | TEXT | NOT NULL CHECK | `GarmentCategory`/`OutfitSlot` |
+| `position` | INTEGER | NOT NULL，`>= 0` CHECK | slot 内顺序；配饰使用连续顺序 |
+| `garment_snapshot` | TEXT | NOT NULL，合法 JSON object CHECK | `{id,name,brand,category,imageUrl}` 保存时快照 |
+
+约束与索引：
+
+```sql
+UNIQUE (outfit_id, slot, position);
+CREATE INDEX idx_saved_outfit_items_outfit_id ON saved_outfit_items(outfit_id);
+```
+
+服务层还强制同一搭配衣物不重复、slot 与 category 一致、非配饰 position 为 0、配饰从 0 连续、核心为 dress 或 top+bottom 且互斥。读取历史时只使用 `garment_snapshot` 展示，不 JOIN 当前衣物覆盖它；因此衣物改名、归档或外键置空不会破坏历史搭配。只有内部物理删除 header 时 items 才按 FK 级联，当前 API 不执行该操作。
+
+### recommendation_feedback
+
+按稳定候选 UUID 保存一条可更新反馈。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 反馈 ID |
+| `candidate_id` | TEXT | NOT NULL UNIQUE，FK CASCADE | 关联 `recommendation_candidates.candidate_id`；保证同一候选幂等更新 |
+| `verdict` | TEXT | 可空，枚举 CHECK | `liked`、`disliked`、`skipped` |
+| `rating` | INTEGER | 可空，1–5 整数 CHECK | 可选评分 |
+| `actually_worn` | INTEGER | NOT NULL DEFAULT 0，0/1 CHECK | 是否实际穿着该候选 |
+| `reason_codes_json` | TEXT | NOT NULL DEFAULT `[]`，合法 JSON array CHECK | `FeedbackReason[]`；服务层继续校验枚举与去重 |
+| `comment` | TEXT | NOT NULL DEFAULT `''`，最多 2000 字符 CHECK | 自由文本反馈 |
+| `wore_instead_outfit_id` | INTEGER | 可空，FK RESTRICT | 实际改穿的保存搭配；与 `actually_worn=1` 互斥由服务层保证 |
+| `wear_log_id` | INTEGER | 可空 UNIQUE，FK RESTRICT | `actually_worn` 首次写入时同事务创建的穿着记录 |
+| `created_at` | TEXT | NOT NULL | 首次反馈时间 |
+| `updated_at` | TEXT | NOT NULL | 最近更新与日期范围清理依据 |
+
+```sql
+CREATE INDEX idx_recommendation_feedback_created_at
+ON recommendation_feedback(created_at);
+CREATE INDEX idx_recommendation_feedback_verdict
+ON recommendation_feedback(verdict);
+```
+
+upsert 后从全部现存反馈重算组合统计。清空先按 `all`、`candidate` 或 `updated_at` 日期闭区间预览；实际 DELETE 与重算 `outfit_pair_stats` 在同一事务中提交，空范围和重放不会留下旧权重。
+
+### outfit_pair_stats
+
+保存规范化衣物 ID 对的派生反馈统计；可由 `recommendation_feedback` 与候选 `item_ids_json` 完整重建。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `garment_a_id` | INTEGER | PK，FK CASCADE，正整数 | 较小的衣物 ID |
+| `garment_b_id` | INTEGER | PK，FK CASCADE，正整数且大于 A | 较大的衣物 ID |
+| `likes` | INTEGER | NOT NULL，非负 CHECK | `verdict=liked` 数量 |
+| `dislikes` | INTEGER | NOT NULL，非负 CHECK | `verdict=disliked` 数量 |
+| `worn_count` | INTEGER | NOT NULL，非负 CHECK | `actually_worn=1` 数量，可与 verdict 同时计数 |
+| `total_feedback` | INTEGER | NOT NULL，非负 CHECK | 包含 liked、disliked、skipped、仅评分等每条候选反馈 |
+| `signal` | INTEGER | NOT NULL | `likes + 2*worn_count - 2*dislikes` |
+| `updated_at` | TEXT | NOT NULL | 最近一次整表重算时间 |
+
+主键为 `(garment_a_id, garment_b_id)`，并有 `garment_a_id < garment_b_id` CHECK。评分时 `total_feedback < 3` 不产生 bonus；达到阈值后使用 `confidence=min(1,total_feedback/5)`，每对贡献限制为 -4…+4，整套限制为 -8…+8。
+
+### garment_availability_events
+
+保存衣物可用状态的只追加历史。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 事件 ID |
+| `garment_id` | INTEGER | NOT NULL，FK RESTRICT | 关联衣物；保留历史时禁止物理删除来源衣物 |
+| `previous_status` | TEXT | NOT NULL，枚举 CHECK | 变更前 `GarmentAvailabilityStatus` |
+| `status` | TEXT | NOT NULL，枚举 CHECK | 变更后 `GarmentAvailabilityStatus` |
+| `changed_at` | TEXT | NOT NULL | 变更时间 |
+
+`previous_status <> status` 由 CHECK 保证；重复提交当前状态不写事件。`garments.availability_status` 更新与事件插入位于同一事务。索引为 `(garment_id, changed_at, id)`，导出按 `changed_at,id` 确定排序并保留全部历史。
 
 ## 数据目录
 

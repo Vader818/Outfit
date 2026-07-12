@@ -3,6 +3,7 @@ export type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 export type Season = "spring" | "summer" | "autumn" | "winter";
 export type Formality = "casual" | "smart-casual" | "formal" | "sport";
 export type GarmentOrigin = "taobao" | "manual" | "backup";
+export type GarmentAvailabilityStatus = "available" | "laundry" | "repair" | "loaned" | "packed";
 export type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
 export type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
 export type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
@@ -39,6 +40,7 @@ export interface Garment {
   owned: boolean;
   confirmed: boolean;
   excluded: boolean;
+  availabilityStatus: GarmentAvailabilityStatus;
   confidence: number;
   notes?: string;
   acquiredAt?: string;
@@ -51,6 +53,72 @@ export interface Garment {
   cutoutImageUrl?: string;
   visionTags?: VisionTagSuggestion;
   visionUpdatedAt?: string;
+}
+
+export type SavedOutfitSource = "recommendation" | "manual" | "replacement";
+export type OutfitSlot = GarmentCategory;
+
+export interface SavedOutfitGarmentSnapshot {
+  id: number;
+  name: string;
+  brand: string;
+  category: GarmentCategory;
+  imageUrl: string;
+}
+
+export interface SavedOutfitItem {
+  id: number;
+  outfitId: number;
+  garmentId?: number;
+  slot: OutfitSlot;
+  position: number;
+  garmentSnapshot: SavedOutfitGarmentSnapshot;
+}
+
+export interface SavedOutfit {
+  id: number;
+  name: string;
+  notes: string;
+  source: SavedOutfitSource;
+  sourceCandidateId?: string;
+  derivedFromOutfitId?: number;
+  favorite: boolean;
+  archivedAt?: string;
+  items: SavedOutfitItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SavedOutfitItemInput {
+  garmentId: number;
+  slot: OutfitSlot;
+  position: number;
+}
+
+export interface SavedOutfitCreateInput {
+  name: string;
+  notes?: string;
+  favorite?: boolean;
+  items: SavedOutfitItemInput[];
+}
+
+export interface SavedOutfitUpdateInput {
+  name?: string;
+  notes?: string;
+  favorite?: boolean;
+  items?: SavedOutfitItemInput[];
+}
+
+export interface SaveRecommendationCandidateInput {
+  name?: string;
+  notes?: string;
+  favorite?: boolean;
+}
+
+export interface SavedOutfitReplacementInput {
+  targetGarmentId: number;
+  replacementGarmentId: number;
+  name?: string;
 }
 
 export interface ManualGarmentCreate {
@@ -82,6 +150,44 @@ export interface WeatherSnapshot {
   summary: string;
 }
 
+export interface RecommendationRequest {
+  weather: WeatherSnapshot;
+  occasion: Formality;
+  recentlyWornGarmentIds?: number[];
+  userProfile?: PersonalProfile;
+  includeGarmentIds?: number[];
+  excludeGarmentIds?: number[];
+}
+
+export type RecommendationConstraintField = "includeGarmentIds" | "excludeGarmentIds";
+export type RecommendationConstraintReason =
+  | "INVALID_ARRAY"
+  | "INVALID_ID"
+  | "TOO_MANY"
+  | "DUPLICATE"
+  | "INCLUDE_EXCLUDE_CONFLICT"
+  | "NOT_FOUND"
+  | "NOT_OWNED"
+  | "ARCHIVED"
+  | "UNCONFIRMED"
+  | "EXCLUDED"
+  | "UNAVAILABLE"
+  | "UNSATISFIABLE";
+
+export interface RecommendationConstraintIssue {
+  field: RecommendationConstraintField;
+  garmentId?: number;
+  reason: RecommendationConstraintReason;
+}
+
+export interface OutfitReplacementSuggestion {
+  targetGarmentId: number;
+  replacement: Garment;
+  nextItems: Garment[];
+  matchPercentDelta: number;
+  reasons: string[];
+}
+
 export interface OutfitRecommendation {
   id: string;
   candidateId: string;
@@ -91,7 +197,7 @@ export interface OutfitRecommendation {
   scoreBreakdown?: RecommendationScoreBreakdown;
   items: Garment[];
   reasons: string[];
-  alternatives: Garment[];
+  replacements: OutfitReplacementSuggestion[];
 }
 
 export interface RecommendationResult {
@@ -101,6 +207,12 @@ export interface RecommendationResult {
   occasion: string;
   outfits: OutfitRecommendation[];
   missingSlots: GarmentCategory[];
+  missingSlotDetails?: RecommendationMissingSlotDetail[];
+}
+
+export interface RecommendationMissingSlotDetail {
+  slot: GarmentCategory;
+  unavailableCount: number;
 }
 
 export type RecommendationDraftResult = Omit<RecommendationResult, "runId">;
@@ -123,6 +235,91 @@ export interface RecommendationScoreBreakdown {
   userPreference: number;
   bodyProportion: number;
   colorSuitability: number;
+  learnedPreference: number;
+}
+
+export type FeedbackVerdict = "liked" | "disliked" | "skipped";
+export type FeedbackReason =
+  | "too-warm"
+  | "too-cold"
+  | "too-formal"
+  | "too-casual"
+  | "color"
+  | "fit"
+  | "repeat"
+  | "unavailable"
+  | "other";
+
+export interface RecommendationFeedbackInput {
+  candidateId: string;
+  verdict?: FeedbackVerdict;
+  rating?: 1 | 2 | 3 | 4 | 5;
+  actuallyWorn?: boolean;
+  reasonCodes: FeedbackReason[];
+  comment?: string;
+  woreInsteadOutfitId?: number;
+}
+
+export interface RecommendationFeedback extends RecommendationFeedbackInput {
+  id: number;
+  actuallyWorn: boolean;
+  comment: string;
+  wearLogId?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OutfitPairStat {
+  garmentAId: number;
+  garmentBId: number;
+  likes: number;
+  dislikes: number;
+  wornCount: number;
+  totalFeedback: number;
+  signal: number;
+  updatedAt: string;
+}
+
+export interface RecommendationFeedbackInsights {
+  totalCount: number;
+  acceptedCount: number;
+  acceptanceRate: number;
+  mostCommonRejectionReason?: FeedbackReason;
+  rejectionReasons: Array<{ reason: FeedbackReason; count: number }>;
+}
+
+export type RecommendationFeedbackClearScope =
+  | { scope: "all" }
+  | { scope: "candidate"; candidateId: string }
+  | { scope: "date-range"; from: string; to: string };
+
+export interface RecommendationFeedbackClearPreview {
+  scope: RecommendationFeedbackClearScope["scope"];
+  candidateId?: string;
+  from?: string;
+  to?: string;
+  feedbackCount: number;
+  affectedPairCount: number;
+}
+
+export interface RecommendationFeedbackClearResult extends RecommendationFeedbackClearPreview {
+  deletedFeedbackCount: number;
+  remainingPairStatsCount: number;
+  clearedAt: string;
+}
+
+export interface GarmentAvailabilityEvent {
+  id: number;
+  garmentId: number;
+  previousStatus: GarmentAvailabilityStatus;
+  status: GarmentAvailabilityStatus;
+  changedAt: string;
+}
+
+export interface GarmentAvailabilityChangeResult {
+  changed: boolean;
+  garment: Garment;
+  event?: GarmentAvailabilityEvent;
 }
 
 export type TemperatureSensitivity = "runs-cold" | "neutral" | "runs-hot";
@@ -219,6 +416,7 @@ export interface WardrobeInsights {
   bodySuggestions: WardrobeSuggestion[];
   mostWorn: WornGarmentInsight[];
   neverWorn: WornGarmentInsight[];
+  feedbackSummary?: RecommendationFeedbackInsights;
 }
 
 export interface OutfitExportBase {
@@ -264,6 +462,10 @@ export interface OutfitExportV2 extends OutfitExportBase {
   features: string[];
   recommendationCandidates: RecommendationCandidateExport[];
   garmentAssets?: GarmentAssetMetadata[];
+  savedOutfits?: SavedOutfit[];
+  recommendationFeedback?: RecommendationFeedback[];
+  outfitPairStats?: OutfitPairStat[];
+  garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
 }
 
 export type OutfitExport = OutfitExportV1 | OutfitExportV2;

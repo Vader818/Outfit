@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationResult, RecommendationRunEntry, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -65,6 +65,11 @@ export interface DownloadedBackup {
   fileName: string;
 }
 
+export interface RecommendationFeedbackSubmitResult {
+  feedback: RecommendationFeedback;
+  pairStatsRecomputed: number;
+}
+
 export async function getAuthStatus(): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/status", {
     method: "GET"
@@ -93,13 +98,6 @@ export async function logout(): Promise<{ ok: true }> {
 
 export async function previewTaobaoImport(payload: unknown): Promise<TaobaoImportPreview> {
   return request<TaobaoImportPreview>("/api/import/taobao-preview", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
-}
-
-export async function importTaobaoBatch(payload: unknown): Promise<ImportSummary> {
-  return request<ImportSummary>("/api/import/taobao-batch", {
     method: "POST",
     body: JSON.stringify(payload)
   });
@@ -214,6 +212,69 @@ export async function restoreGarment(id: number): Promise<Garment> {
   });
 }
 
+export async function updateGarmentAvailability(
+  id: number,
+  status: GarmentAvailabilityStatus
+): Promise<GarmentAvailabilityChangeResult> {
+  return request<GarmentAvailabilityChangeResult>(`/api/garments/${id}/availability`, {
+    method: "POST",
+    body: JSON.stringify({ status })
+  });
+}
+
+export const setGarmentAvailability = updateGarmentAvailability;
+
+export async function getSavedOutfits(options: { archived?: boolean } = {}): Promise<SavedOutfit[]> {
+  return request<SavedOutfit[]>(options.archived ? "/api/outfits?archived=1" : "/api/outfits", {
+    method: "GET"
+  });
+}
+
+export async function getSavedOutfit(id: number): Promise<SavedOutfit> {
+  return request<SavedOutfit>(`/api/outfits/${id}`, { method: "GET" });
+}
+
+export async function createSavedOutfit(input: SavedOutfitCreateInput): Promise<SavedOutfit> {
+  return request<SavedOutfit>("/api/outfits", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateSavedOutfit(
+  id: number,
+  input: SavedOutfitUpdateInput
+): Promise<SavedOutfit> {
+  return request<SavedOutfit>(`/api/outfits/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function archiveSavedOutfit(id: number): Promise<SavedOutfit> {
+  return request<SavedOutfit>(`/api/outfits/${id}/archive`, { method: "POST" });
+}
+
+export async function saveRecommendationCandidate(
+  candidateId: string,
+  input: SaveRecommendationCandidateInput = {}
+): Promise<SavedOutfit> {
+  return request<SavedOutfit>(`/api/recommendation-candidates/${candidateId}/save`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function applySavedOutfitReplacement(
+  outfitId: number,
+  input: SavedOutfitReplacementInput
+): Promise<SavedOutfit> {
+  return request<SavedOutfit>(`/api/outfits/${outfitId}/replacements`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function uploadGarmentImage(id: number, image: Blob): Promise<Garment> {
   return request<Garment>(`/api/garments/${id}/image`, {
     method: "PUT",
@@ -276,16 +337,38 @@ export async function getWeather(latitude: number, longitude: number): Promise<W
   return request<WeatherSnapshot>(`/api/weather?latitude=${latitude}&longitude=${longitude}`);
 }
 
-export async function getRecommendations(input: {
-  weather: WeatherSnapshot;
-  occasion: string;
-  recentlyWornGarmentIds?: number[];
-  userProfile?: PersonalProfile;
-}): Promise<RecommendationResult> {
+export async function getRecommendations(input: RecommendationRequest): Promise<RecommendationResult> {
   return request<RecommendationResult>("/api/recommendations", {
     method: "POST",
     body: JSON.stringify(input)
   });
+}
+
+export async function submitRecommendationFeedback(
+  input: RecommendationFeedbackInput
+): Promise<RecommendationFeedbackSubmitResult> {
+  return request<RecommendationFeedbackSubmitResult>("/api/recommendation-feedback", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function previewRecommendationFeedbackClear(
+  scope: RecommendationFeedbackClearScope
+): Promise<RecommendationFeedbackClearPreview> {
+  return request<RecommendationFeedbackClearPreview>(
+    `/api/recommendation-feedback/clear-preview?${recommendationFeedbackClearQuery(scope)}`,
+    { method: "GET" }
+  );
+}
+
+export async function clearRecommendationFeedback(
+  scope: RecommendationFeedbackClearScope
+): Promise<RecommendationFeedbackClearResult> {
+  return request<RecommendationFeedbackClearResult>(
+    `/api/recommendation-feedback?${recommendationFeedbackClearQuery(scope)}`,
+    { method: "DELETE" }
+  );
 }
 
 export async function recordWearLog(input: {
@@ -343,6 +426,17 @@ export async function downloadCompleteBackup(): Promise<DownloadedBackup> {
     ? serverName
     : `outfit-complete-backup-${new Date().toISOString().slice(0, 10)}.zip`;
   return { blob: await response.blob(), fileName };
+}
+
+function recommendationFeedbackClearQuery(scope: RecommendationFeedbackClearScope): string {
+  const query = new URLSearchParams({ scope: scope.scope });
+  if (scope.scope === "candidate") {
+    query.set("candidateId", scope.candidateId);
+  } else if (scope.scope === "date-range") {
+    query.set("from", scope.from);
+    query.set("to", scope.to);
+  }
+  return query.toString();
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -24,7 +24,8 @@ import {
   type WardrobeOwnedFilter,
   type WardrobeStatusFilter
 } from "../../shared/presentation";
-import type { Garment, Season } from "../../shared/types";
+import type { Garment, GarmentAvailabilityStatus, Season } from "../../shared/types";
+import { AvailabilityMenu } from "./AvailabilityMenu";
 import { GarmentItem } from "./GarmentItem";
 
 export interface WardrobeViewProps {
@@ -47,6 +48,10 @@ export interface WardrobeViewProps {
   onBulkExcluded?: (excluded: boolean) => void;
   onRefreshThumbnails?: () => void;
   onOpenThumbnailPicker?: (garment: Garment) => void;
+  onUseGarmentAsCore?: (garment: Garment) => void;
+  availabilityBusyGarmentId?: number | null;
+  onAvailabilityChange?: (id: number, status: GarmentAvailabilityStatus) => void;
+  onBulkAvailability?: (status: GarmentAvailabilityStatus) => void;
   onCutoutGarment?: (id: number) => void;
   onAnalyzeGarmentVision?: (id: number) => void;
   visionEnabled?: boolean;
@@ -194,12 +199,13 @@ export function WardrobeView(props: WardrobeViewProps) {
               {props.busyAction === "bulk-confirm" ? "确认中" : "批量确认"}
             </Button>
           </div>
-          {props.onBulkSeasons || props.onBulkTags || props.onBulkExcluded ? (
+          {props.onBulkSeasons || props.onBulkTags || props.onBulkExcluded || props.onBulkAvailability ? (
             <WardrobeBatchControls
-              disabled={props.busyAction === "bulk-update"}
+              disabled={props.busyAction === "bulk-update" || props.busyAction === "bulk-availability"}
               onSeasons={props.onBulkSeasons}
               onTags={props.onBulkTags}
               onExcluded={props.onBulkExcluded}
+              onAvailability={props.onBulkAvailability}
             />
           ) : null}
         </Surface>
@@ -243,6 +249,9 @@ export function WardrobeView(props: WardrobeViewProps) {
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}
                     onOpenThumbnailPicker={props.onOpenThumbnailPicker}
+                    onUseGarmentAsCore={props.onUseGarmentAsCore}
+                    availabilityBusyGarmentId={props.availabilityBusyGarmentId}
+                    onAvailabilityChange={props.onAvailabilityChange}
                     onCutoutGarment={props.onCutoutGarment}
                     onAnalyzeGarmentVision={props.onAnalyzeGarmentVision}
                   />
@@ -275,6 +284,9 @@ export function WardrobeView(props: WardrobeViewProps) {
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}
                     onOpenThumbnailPicker={props.onOpenThumbnailPicker}
+                    onUseGarmentAsCore={props.onUseGarmentAsCore}
+                    availabilityBusyGarmentId={props.availabilityBusyGarmentId}
+                    onAvailabilityChange={props.onAvailabilityChange}
                     onCutoutGarment={props.onCutoutGarment}
                     onAnalyzeGarmentVision={props.onAnalyzeGarmentVision}
                   />
@@ -318,15 +330,18 @@ function WardrobeBatchControls({
   disabled,
   onSeasons,
   onTags,
-  onExcluded
+  onExcluded,
+  onAvailability
 }: {
   disabled: boolean;
   onSeasons?: (seasons: Season[]) => void;
   onTags?: (tags: string[]) => void;
   onExcluded?: (excluded: boolean) => void;
+  onAvailability?: (status: GarmentAvailabilityStatus) => void;
 }) {
   const [season, setSeason] = useState<Season | "all">("all");
   const [tags, setTags] = useState("");
+  const [availability, setAvailability] = useState<GarmentAvailabilityStatus>("available");
   const parsedTags = tags.split(/[，,]/).map((value) => value.trim()).filter(Boolean);
   return (
     <div className="wardrobe-batch-controls">
@@ -353,6 +368,25 @@ function WardrobeBatchControls({
         <div className="wardrobe-batch-controls__group wardrobe-batch-controls__group--actions">
           <Button size="sm" variant="secondary" disabled={disabled} onClick={() => onExcluded(true)}>批量排除推荐</Button>
           <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onExcluded(false)}>取消批量排除</Button>
+        </div>
+      ) : null}
+      {onAvailability ? (
+        <div className="wardrobe-batch-controls__group wardrobe-batch-controls__group--availability">
+          <AvailabilityMenu
+            id="wardrobe-bulk-availability"
+            label="批量可用状态"
+            value={availability}
+            disabled={disabled}
+            onChange={setAvailability}
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={disabled}
+            onClick={() => onAvailability(availability)}
+          >
+            应用状态
+          </Button>
         </div>
       ) : null}
     </div>

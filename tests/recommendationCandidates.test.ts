@@ -24,6 +24,7 @@ function garment(id: number, category: Garment["category"], name = `${category}-
     owned: true,
     confirmed: true,
     excluded: false,
+    availabilityStatus: "available",
     confidence: 0.8
   };
 }
@@ -49,7 +50,8 @@ const scoreBreakdown: RecommendationScoreBreakdown = {
   itemConfidence: 8,
   userPreference: 0,
   bodyProportion: 0,
-  colorSuitability: 0
+  colorSuitability: 0,
+  learnedPreference: 0
 };
 
 function draft(items: Garment[], score = 90) {
@@ -59,7 +61,7 @@ function draft(items: Garment[], score = 90) {
     scoreBreakdown,
     items,
     reasons: ["测试理由"],
-    alternatives: []
+    replacements: []
   };
 }
 

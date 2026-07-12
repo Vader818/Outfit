@@ -7,8 +7,8 @@ import {
   type BusyAction,
   type WearLogFeedback
 } from "../../shared/presentation";
-import type { OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "../../shared/types";
-import { OutfitStage } from "./OutfitStage";
+import type { Garment, OutfitRecommendation, RecommendationResult, WeatherSnapshot } from "../../shared/types";
+import { OutfitStage, type RecommendationFeedbackAction } from "./OutfitStage";
 
 export type RecommendationViewProps = {
   weather: WeatherSnapshot | null;
@@ -20,27 +20,45 @@ export type RecommendationViewProps = {
   longitude: string;
   busy: boolean;
   busyAction?: BusyAction | null;
+  savingOutfitId?: string | null;
+  feedbackBusyCandidateId?: string | null;
+  coreGarments?: Garment[];
   recordingOutfitId: string | null;
   wearLogFeedback: WearLogFeedback | null;
   onOccasion: (value: string) => void;
   onFetchWeather: () => void;
   onGenerate: () => void;
   onRecordWearLog: (outfit: OutfitRecommendation) => void;
+  onSaveOutfit?: (outfit: OutfitRecommendation) => void;
+  onUseGarmentAsCore?: (garment: Garment) => void;
+  onReplaceGarment?: (outfit: OutfitRecommendation, garment: Garment) => void;
+  onRecommendationFeedback?: (outfit: OutfitRecommendation, verdict: RecommendationFeedbackAction) => void;
+  onClearGarmentConstraints?: () => void;
   onOpenImport?: () => void;
   onOpenSettings?: () => void;
   onOpenWardrobe?: () => void;
   allowRemoteTaobaoImages?: boolean;
 };
 
-function missingSlotsDescription(slots: RecommendationResult["missingSlots"]): string {
+function missingSlotsDescription(
+  slots: RecommendationResult["missingSlots"],
+  details: RecommendationResult["missingSlotDetails"] = []
+): string {
   const missing = new Set(slots);
+  let description: string;
   if (missing.size === 2 && missing.has("bottom") && missing.has("dress")) {
-    return "缺少已确认的下装或连衣裙；请先在衣服库确认或补齐。";
+    description = "缺少已确认的下装或连衣裙；请先在衣服库确认或补齐。";
+  } else if (missing.size === 2 && missing.has("top") && missing.has("dress")) {
+    description = "缺少已确认的上装或连衣裙；请先在衣服库确认或补齐。";
+  } else {
+    description = "需要已确认的“上装＋下装”或一件连衣裙，才能组成完整核心搭配。";
   }
-  if (missing.size === 2 && missing.has("top") && missing.has("dress")) {
-    return "缺少已确认的上装或连衣裙；请先在衣服库确认或补齐。";
-  }
-  return "需要已确认的“上装＋下装”或一件连衣裙，才能组成完整核心搭配。";
+  const unavailableCount = details
+    .filter((detail) => missing.has(detail.slot))
+    .reduce((total, detail) => total + detail.unavailableCount, 0);
+  return unavailableCount > 0
+    ? `${description} ${unavailableCount} 件衣物因待洗、维修、借出或已装箱暂不可用。`
+    : description;
 }
 
 export function RecommendationView(props: RecommendationViewProps) {
@@ -53,6 +71,7 @@ export function RecommendationView(props: RecommendationViewProps) {
   const missingSlots = props.recommendations?.missingSlots ?? [];
   const generating = props.busyAction === "recommend";
   const fetchingWeather = props.busyAction === "weather";
+  const coreGarments = props.coreGarments ?? [];
 
   const emptyAction = missingSlots.length > 0 && pendingCount > 0 && props.onOpenWardrobe ? (
     <Button variant="primary" onClick={props.onOpenWardrobe}>
@@ -87,7 +106,7 @@ export function RecommendationView(props: RecommendationViewProps) {
   );
 
   const emptyDescription = missingSlots.length > 0
-    ? missingSlotsDescription(missingSlots)
+    ? missingSlotsDescription(missingSlots, props.recommendations?.missingSlotDetails)
     : availableCount === 0 && pendingCount > 0
       ? `${pendingCount} 件衣物等待确认，确认后才能参与推荐。`
       : availableCount === 0
@@ -121,6 +140,20 @@ export function RecommendationView(props: RecommendationViewProps) {
               <h2 id="decision-context-title">今天的条件</h2>
               <p>先选场合，天气会参与体感和单品判断。</p>
             </div>
+
+            {coreGarments.length ? (
+              <div className="recommendation-constraints" role="status">
+                <div>
+                  <strong>已锁定核心单品</strong>
+                  <span>{coreGarments.map((garment) => garment.name).join("、")}</span>
+                </div>
+                {props.onClearGarmentConstraints ? (
+                  <Button variant="ghost" size="sm" onClick={props.onClearGarmentConstraints}>
+                    清除核心单品
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className={cx("weather-context", props.weather && "weather-context--ready")}>
               <div className="weather-context__lead">
@@ -180,8 +213,14 @@ export function RecommendationView(props: RecommendationViewProps) {
                 featured
                 outfit={outfits[0]}
                 recordingOutfitId={props.recordingOutfitId}
+                savingOutfitId={props.savingOutfitId}
+                feedbackBusyCandidateId={props.feedbackBusyCandidateId}
                 wearLogFeedback={props.wearLogFeedback}
                 onRecordWearLog={props.onRecordWearLog}
+                onSaveOutfit={props.onSaveOutfit}
+                onUseGarmentAsCore={props.onUseGarmentAsCore}
+                onReplaceGarment={props.onReplaceGarment}
+                onRecommendationFeedback={props.onRecommendationFeedback}
                 allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
               />
               {outfits.length > 1 ? (
@@ -193,8 +232,14 @@ export function RecommendationView(props: RecommendationViewProps) {
                         key={outfit.id}
                         outfit={outfit}
                         recordingOutfitId={props.recordingOutfitId}
+                        savingOutfitId={props.savingOutfitId}
+                        feedbackBusyCandidateId={props.feedbackBusyCandidateId}
                         wearLogFeedback={props.wearLogFeedback}
                         onRecordWearLog={props.onRecordWearLog}
+                        onSaveOutfit={props.onSaveOutfit}
+                        onUseGarmentAsCore={props.onUseGarmentAsCore}
+                        onReplaceGarment={props.onReplaceGarment}
+                        onRecommendationFeedback={props.onRecommendationFeedback}
                         allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                       />
                     ))}
