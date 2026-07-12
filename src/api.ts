@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, GarmentUpdateInput, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -187,7 +187,7 @@ export async function savePersonalProfile(profile: PersonalProfile): Promise<Per
   });
 }
 
-export async function updateGarment(id: number, update: Partial<Garment>): Promise<Garment> {
+export async function updateGarment(id: number, update: GarmentUpdateInput): Promise<Garment> {
   return request<Garment>(`/api/garments/${id}`, {
     method: "PUT",
     body: JSON.stringify(update)
@@ -351,6 +351,15 @@ export async function submitRecommendationFeedback(
     method: "POST",
     body: JSON.stringify(input)
   });
+}
+
+export async function getRecommendationFeedback(
+  candidateId: string
+): Promise<RecommendationFeedback | null> {
+  return request<RecommendationFeedback | null>(
+    `/api/recommendation-feedback/${encodeURIComponent(candidateId)}`,
+    { method: "GET" }
+  );
 }
 
 export async function previewRecommendationFeedbackClear(

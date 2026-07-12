@@ -596,3 +596,125 @@
   - `npm run build` 通过：TypeScript 编译成功，Vite 8.0.16 转换 1595 个模块；产物为 JS 316.33 kB（gzip 96.63 kB）、CSS 90.96 kB（gzip 15.32 kB）。
   - 标准构建按授权清理旧哈希产物并重建全部 6 个 `dist` 文件；未删除源码、真实数据库、QA 临时目录或其他文件。
   - 以显式 UTF-8 执行规划技能的 `check-complete.ps1`，最终确认 `task_plan.md` 36/36 阶段全部完成。
+
+## 会话：2026-07-12（M1–M3 独立质量复验）
+
+### 阶段 37：独立复验基线与证据重建
+- **状态：** in_progress
+- 执行的操作：
+  - 沿用系统已建立的同名 active goal；重复创建请求返回已有活动目标，随后通过 `get_goal` 确认目标一致。
+  - 完整读取 `planning-with-files-zh` 技能，恢复现有 `task_plan.md`、`findings.md`、`progress.md`；session catchup 无未同步输出。
+  - Git 工作区基线为空；本轮不修改产品代码，不删除任何文件。
+  - 在 `task_plan.md` 新增阶段 37–40，覆盖静态审计、动态验证、质量评级和最终结论。
+  - 启动 3 个只读子 Agent，分别独立审计 M1、M2、M3 的计划符合度、实现、测试与文档；主 Agent 继续全量验证。
+  - 完整读取 M1 与 M2 原计划，提取 27 项实施任务和 12 条验收标准；不采信文件中的自报完成状态，后续逐条映射当前证据。
+  - 完整读取 M3 原计划，提取 12 项实施任务和 5 条验收标准。
+  - 盘点 package scripts、近期提交及 server/src/tests/docs 文件树；确认三里程碑具备对应代码与专项测试骨架，动态验证需覆盖 Vitest、Python、类型检查、依赖审计和构建边界。
+  - 确认 Node v24.15.0 符合 engines；`npm run typecheck` 独立复验通过。
+  - `git diff --check` 无空白错误，只有规划记录文件的行尾转换提示；产品代码仍未修改。
+  - 全量 `npm test`：27 个测试文件、365 项全部通过。
+  - Python：unittest 25 项、pytest 33 项全部通过；淘宝登录重试日志属于测试 fixture 的预期输出。
+  - npm 生产/全量依赖审计均为 0 vulnerabilities。
+  - `pip-audit` 未安装，遵守只验收不改变环境的边界而跳过；记录为证据缺口。`npm ls` 另显示本机安装树存在少量 extraneous WASM 包，未影响测试与构建。
+  - 生产构建改写到 `C:\Users\Vader\AppData\Local\Temp\outfit-acceptance-build-20260712-192003`，成功生成 6 个文件；现有 `dist` 未被清理或改写，临时目录按删除约束保留。
+  - 完整复核主路由与 M1/M2/M3 子路由装配；新增 API 均位于 session 认证之后并继承全局来源保护，未发现旧写路径绕过。
+  - 复核迁移运行器及 M1 trusted import 提交事务；确认服务端在写锁内重算上下文/disposition、核对 decision 覆盖、拒绝退款字段修改并统一回滚。
+  - 复核 v1–v4 schema 约束和 M3 feedback service；确认幂等 upsert、wear log 防重、pair 公式/阈值/上限及清空重算均在事务边界内。
+  - 复核 M1 图片净化/原子落盘/认证读取与 M2 saved outfit CRUD/replacement 服务；关键安全边界、历史 snapshot 和派生新版本语义与计划一致。
+  - 复核 candidate identity、推荐约束、候选生成、multiple-accessory include、replacement 与 availability；未发现计划约束被绕过。
+  - 盘点 13 个专项测试文件的测试标题并抽查 README/API/schema；测试矩阵和文档覆盖三里程碑主要风险，尚需补本轮真实交互证据。
+  - 三个子 Agent 返回首批交叉审查发现：M1 privacy-clean/导入严格校验/UI override，M2 replacement 父记录漂移，M3 worn 反馈顺序与洞察阈值提示可能存在未覆盖缺陷。
+  - 已读取 in-app Browser 技能并决定使用隔离数据库复现用户操作顺序；上述问题在主 Agent 复核前均标记为“待确认”。
+  - 主 Agent 逐行复核 M1/M2/M3 相关实现，确认 privacy-clean、严格 batch 校验、取消后编辑、replacement 父记录漂移、worn 反馈回退、洞察阈值文案六类问题均真实存在；下一步进行无文件修改的最小动态复现。
+  - 使用 stdin 运行一次性 TypeScript、仅操作内存 SQLite：成功复现 M1 malformed batch preview 成功/commit 原生 TypeError，以及 M3 feedback false 与既有 wear log 分裂；未创建文件。
+  - 在 `C:\Users\Vader\AppData\Local\Temp\outfit-acceptance-browser-20260712-193035` 启动隔离 QA：API PID 40208、Vite PID 39384，端口 8788/5174 均就绪；真实项目数据库未打开，临时目录不删除。
+  - 浏览器创建隔离账号与 4 件手工衣物，生成推荐后完成真实顺序“实际穿了→喜欢”；只读查询 QA DB 确认 feedback/wear log/pair stats 分裂。
+  - 浏览器完成“保存推荐→把父搭配下装改为黑裤→返回原推荐替换上装”流程；弹窗预览白衬衫+灰裤，派生 DB 实际白衬衫+黑裤，M2 阻断缺陷确定复现。
+  - 使用内存 DB 独立复现 M1 legacy key 跨订单误合并与通用 PUT imageUrl 绝对路径旁路。
+  - 只读检查真实数据库迁移元数据与来源 key 计数：无 schema_migrations，627 条均为 legacy；读取未改变文件时间或长度，未执行迁移。
+  - 390×844 移动视口复验为 clientWidth=scrollWidth=375，无文档级横向溢出；随后恢复默认视口并关闭浏览器标签。
+  - 浏览器控制台只有应用内浏览器扩展通信错误，源码中未发现对应业务日志；没有观察到应用业务 warning。
+  - 已关闭 PID 40208/39384，8788/5174 均无监听；QA 临时目录按不删除约束保留。
+
+### 阶段 38：静态实现、契约与安全质量审计
+- **状态：** complete
+- 三个只读子 Agent 均已返回，主 Agent 对全部高/中风险逐行交叉验证并对关键项独立复现。
+
+### 阶段 39：独立动态验证与可运行性验收
+- **状态：** complete
+- 类型、Node/Python 测试、npm 审计、临时生产构建和隔离浏览器均已完成；产品代码未修改，未删除文件。
+
+### 阶段 40：质量评级与最终结论
+- **状态：** complete
+- 结论为 NO-GO：M1、M2、M3 均有阻断验收的当前缺陷；自动化全绿不能覆盖这些真实顺序、数据升级和安全旁路。
+- 最终工作区只修改 `task_plan.md`、`findings.md`、`progress.md` 三份验收记录（152 行新增、1 行替换）；`git diff --check` 通过，产品源码、真实数据库和 dist 均未修改。
+
+## 会话：2026-07-12（M1–M3 验收缺陷修复）
+
+### 阶段 41：验收缺陷修复基线与并行 TDD
+- **状态：** complete
+- 执行的操作：
+  - 沿用系统已建立的 active goal“请你修复这些你提到的问题”。
+  - 完整重读 `planning-with-files-zh`，检查 session catchup、Git 状态和三份规划记录。
+  - session catchup 中文发生代码页乱码；实际 Git 状态确认只有三份验收记录修改，产品源码无中断残留。
+  - 新增阶段 41–46，覆盖所有已报告缺陷、文档、迁移副本、全量回归与真实交互复验。
+  - 本轮不删除文件、不原地迁移真实数据库；标准构建如涉及清理仍需先确保用户知晓。
+  - 启动三个写入子 Agent，分别负责 M1 导入、M1 图片/隐私、M2/M3 状态一致性；公共文档和规划由主线独占。
+  - 主线盘点 imageUrl 写路径与反馈 API/文档：确认合法图片已有专用路径，公开 PUT 可安全收窄；列出待统一的文档契约。
+  - 深读 README/API/schema 相关章节并检查真实 data 文件元数据；发现真实库存在 WAL/SHM，决定最终只用 SQLite 一致性在线备份副本演练，不做裸文件复制。
+  - 核对本机 Node 类型定义，确认 `node:sqlite.backup()` 可从只读源连接生成一致性副本；尚未创建或迁移任何副本。
+  - 三个子 Agent 已全部返回：M1 导入 71/71、M1 安全 10/10、M2/M3 58/58；最新全量 Vitest 409/409，typecheck 与 diff check 均通过。
+  - 当前共有 25 个已跟踪文件修改、2 个新测试文件；主线开始逐份审查 1364 行新增/86 行删除，尚未采信为最终通过。
+
+### 阶段 42：M1 可信导入完整性主线复核
+- **状态：** in_progress
+- 执行的操作：
+  - 主 Agent 逐段检查 `server/db.ts`、`server/services/importTaobao.ts` 与 `ImportReviewTable.tsx` 的实际差异。
+  - 确认 legacy 精确身份升级、跨订单分离、双 key 冲突回滚、严格批次校验、未勾选禁改及空尺码清除均进入生产路径。
+  - 尚待审阅对应回归测试，并用真实数据库的 SQLite 在线备份副本演练迁移与 legacy 导入；源数据库保持只读。
+  - 已逐条核对新增导入回归，覆盖跨订单、同订单升级、幂等、冲突回滚、空尺码与 preview/commit 畸形输入；不是仅以全绿数量代替语义验收。
+  - 同步开始复核图片更新边界与 privacy-clean；确认公开 PUT 在落库前整体拒绝 imageUrl，清理脚本仍为默认 dry-run，删除型测试仅使用系统临时夹具。
+  - 检查新路由级图片测试，确认恶意引用与“其余字段不得部分更新”均被动态覆盖。
+  - 开始主审 M2/M3 前端：确认 feedback GET/加载防竞态/显式清空、actuallyWorn 不默认降级、weightedPairCount 展示和公开更新类型收窄已接入；replacement 的 position 一致性仍待服务端交叉核对。
+  - 交叉核对 replacement 生产调用、推荐候选 canonical slot 和 saved outfit 落盘顺序；前后端 position 规则一致，编辑过的 parent 会被跳过并从可信候选快照新建干净 parent。
+  - 核对 archived 接线：历史解析使用 active+archived，全量传入不会使归档衣物进入组件内部的 active 可选集合。
+  - 审查 M3 服务、路由与三层测试：wear_log 不可逆、GET/null、显式清空和 pair 阈值均有生产与认证 API 证据，路由优先级正确。
+  - 主审新发现“首次仅 rating:null 可生成空反馈”的契约边缘；将在完成调用面检查后补充服务级保护与回归，避免为修复清空能力引入无信号记录。
+  - 为该边缘先新增失败回归，确认旧实现确实写入空记录；随后在服务合并结果上增加最终信号校验，事务回滚且不生成 pair stats。
+  - 定向复验 M3 服务、认证 API 与前端共 22/22 通过；既有反馈的显式清空和实际穿着不可逆语义未回归。
+
+### 阶段 43：M1 图片与隐私边界主线复核
+- **状态：** complete
+- 公开 garment PUT、专用图片路径、客户端类型边界、privacy-clean 默认预览与临时删除回归均已主审；未发现新的阻断项。
+
+### 阶段 44：M2/M3 状态一致性主线复核
+- **状态：** complete
+- replacement 精确快照、archived 状态、穿着事实、反馈回显/清空及 pair 阈值均已交叉核对；额外修复首次空清除污染统计的边缘。
+
+### 阶段 45：文档、公开契约与迁移副本验收
+- **状态：** in_progress
+- 已定位 README、API、schema 与三份里程碑计划中的待同步章节；开始统一修正文档，真实数据库仍保持只读。
+  - schema 还存在明确过期陈述：garment-assets 不在 privacy-clean、公共 PUT 图片边界未写、wear_log 不可逆未写；已纳入同批修订。
+  - 三份计划将追加本轮缺陷修复记录，不改写旧验收时点；最终测试数字待全量回归后再落笔。
+  - 已更新 README、API、schema 和 M1/M2/M3 计划，覆盖全部已知文档差异与新增契约；六份文档 diff check 通过。
+  - 反向搜索旧错误码、旧 DELETE 状态、过期隐私范围、缺失 UNAVAILABLE 与旧去重表述均无残留。
+  - 通过 SQLite 在线 backup 生成真实 WAL 数据库的一致性系统临时副本，只在副本执行 baseline/迁移与导入演练。
+  - 两次候选筛选因真实旧数据缺 SKU 等字段而在导入前中止；放宽到可重算的真实关联 legacy 行后完成原位升级、跨订单新建与幂等重放验证。
+  - 副本迁移版本精确为 0–4；来源/衣物计数按 627/37 → 628/38 变化，重放不再增长。源 DB/WAL/SHM 的 size 与 mtimeNs 前后完全一致。
+  - 敏感副本保留于 `C:\Users\Vader\AppData\Local\Temp\outfit-realdb-rehearsal-wyUfH7\outfit-rehearsal.sqlite`，未执行删除。
+
+### 阶段 46：全量回归与真实交互复验
+- **状态：** complete
+- 执行的操作：
+  - 全量 Vitest 29 文件、410 项全部通过。
+  - `npm run typecheck` 通过。
+  - Python unittest 25 项、pytest 33 项全部通过；采集器的预期重试日志不影响结果。
+  - 尚待依赖审计、非破坏性临时构建、最终差异检查和隔离浏览器顺序复验。
+  - npm 生产/全量审计 0 漏洞；pip-audit 0 已知漏洞，pip check 无破损依赖。npm ls 成功但保留本机 extraneous 辅助包，不执行删除清理。
+  - 临时目录生产构建成功，Vite 1595 模块、6 个产物；输出保留在 `C:\Users\Vader\AppData\Local\Temp\outfit-build-a2fb6e15f6154222a720d0e2b44eec0f`，现有 dist 未触碰。
+  - 隔离浏览器完成 M1 重复导入与空尺码、M2 精确 replacement 父链/归档来源、M3 实穿不可逆/反馈回显清空/三条分散 pair 阈值复验；数据库断言全部通过。
+  - QA 数据最终为：3 条 feedback、1 条 wear log、3 条 pair stats、0 个达阈值 pair、3 个 saved outfits、1 条导入来源、5 件衣物（4 active/1 archived）；评论与尺码均为空字符串。
+  - 浏览器控制台发现书签脚本直写 `javascript:` href 的 React 未来兼容警告；改用 ref callback 安装 href，保留书签链接能力并消除新警告。中间一次 `useCallback` 方案与旧直接调用测试不兼容，已撤回为无 hook 实现。
+  - 修复后 `tests/app.test.tsx` 76/76、typecheck 通过，最终全量 Vitest 29 文件 410/410 通过。
+  - 最终非破坏性生产构建再次成功，Vite 转换 1595 模块并输出 6 个文件到 `C:\Users\Vader\AppData\Local\Temp\outfit-build-final-5b7bd68889ce4f06bdfa0f549e0efed5`；未清理现有 dist，也未删除临时证据。
+  - 浏览器标签与隔离 API/Vite 进程已关闭，5174/8788 均无监听；QA 目录和数据库继续保留，未删除任何文件。

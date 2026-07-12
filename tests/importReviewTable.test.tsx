@@ -9,6 +9,66 @@ import type {
 } from "../src/shared/types";
 
 describe("ImportReviewTable", () => {
+  it("disables field editing while a candidate is unchecked and re-enables it after selection", () => {
+    const item = makeItem({ sourceItemKey: "order-disabled", disposition: "create" });
+    const preview = makePreview(item);
+    const decisions: Record<string, ImportDecision> = {
+      [item.sourceItemKey]: { sourceItemKey: item.sourceItemKey, include: false }
+    };
+    const onDecision = vi.fn((sourceItemKey: string, next: ImportDecision) => {
+      decisions[sourceItemKey] = next;
+    });
+
+    const uncheckedTable = ImportReviewTable({ preview, decisions, onDecision });
+    const uncheckedEditor = renderFunctionComponent(findComponent(uncheckedTable, "ImportRowEditor"));
+    const uncheckedFieldset = findElement(uncheckedEditor, (element) => element.type === "fieldset");
+    const uncheckedName = findElement(uncheckedEditor, (element) => element.props.label === "名称");
+    expect(uncheckedFieldset.props.disabled).toBe(true);
+    invokeChange(uncheckedName, { target: { value: "不应写入" } });
+    expect(onDecision).not.toHaveBeenCalled();
+
+    const includeCheckbox = findElement(uncheckedTable, (element) => (
+      element.type === "input"
+        && typeof element.props.id === "string"
+        && element.props.id.endsWith("-include")
+    ));
+    expect(includeCheckbox.props.disabled).toBe(false);
+    invokeChange(includeCheckbox, { target: { checked: true } });
+
+    const checkedTable = ImportReviewTable({ preview, decisions, onDecision });
+    const checkedEditor = renderFunctionComponent(findComponent(checkedTable, "ImportRowEditor"));
+    const checkedFieldset = findElement(checkedEditor, (element) => element.type === "fieldset");
+    const checkedName = findElement(checkedEditor, (element) => element.props.label === "名称");
+    expect(checkedFieldset.props.disabled).toBe(false);
+    invokeChange(checkedName, { target: { value: "可以写入" } });
+    expect(decisions[item.sourceItemKey]).toMatchObject({
+      include: true,
+      overrides: { name: "可以写入" }
+    });
+  });
+
+  it("keeps an empty size as an explicit override so it can clear the stored size", () => {
+    const item = makeItem({ sourceItemKey: "order-size", disposition: "update", size: "M" });
+    const preview = makePreview(item);
+    const decisions: Record<string, ImportDecision> = {
+      [item.sourceItemKey]: { sourceItemKey: item.sourceItemKey, include: true }
+    };
+    const onDecision = vi.fn((sourceItemKey: string, next: ImportDecision) => {
+      decisions[sourceItemKey] = next;
+    });
+
+    const table = ImportReviewTable({ preview, decisions, onDecision });
+    const editor = renderFunctionComponent(findComponent(table, "ImportRowEditor"));
+    const sizeField = findElement(editor, (element) => element.props.label === "尺码");
+    invokeChange(sizeField, { target: { value: "" } });
+
+    expect(decisions[item.sourceItemKey]).toEqual({
+      sourceItemKey: item.sourceItemKey,
+      include: true,
+      overrides: { size: "" }
+    });
+  });
+
   it("removes field overrides when an edited candidate is unchecked", () => {
     const item = makeItem({ sourceItemKey: "order-1", disposition: "create" });
     const preview = makePreview(item);

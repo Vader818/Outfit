@@ -352,7 +352,9 @@ export function validateRecommendationFeedbackInput(value: unknown): Recommendat
     input.verdict = enumValue(record.verdict, FEEDBACK_VERDICTS, "verdict");
   }
   if ("rating" in record) {
-    input.rating = strictBoundedInteger(record.rating, "rating", 1, 5) as 1 | 2 | 3 | 4 | 5;
+    input.rating = record.rating === null
+      ? null
+      : strictBoundedInteger(record.rating, "rating", 1, 5) as 1 | 2 | 3 | 4 | 5;
   }
   if ("actuallyWorn" in record) {
     input.actuallyWorn = booleanValue(record.actuallyWorn, "actuallyWorn");

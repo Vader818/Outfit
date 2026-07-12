@@ -39,6 +39,13 @@ const DEFAULT_TARGETS = [
     kind: "directory"
   },
   {
+    relativePath: "data/garment-assets",
+    description: "净化后保存的本地衣物照片",
+    sensitive: true,
+    requiresExtraConfirmation: false,
+    kind: "directory"
+  },
+  {
     relativePath: "data/outfit.sqlite*",
     description: "SQLite 本地衣橱、订单、推荐和穿着数据",
     sensitive: true,
@@ -80,7 +87,7 @@ export function formatPrivacyCleanPlan(plan, args) {
   lines.push("");
   if (!args.confirm) {
     lines.push("未提供 --confirm，不会删除任何文件。");
-    lines.push("如需清理采集产物、缩略图、日志和数据库，运行：npm run privacy:clean -- --confirm");
+    lines.push("如需清理采集产物、缩略图、本地衣物照片、日志和数据库，运行：npm run privacy:clean -- --confirm");
     lines.push("如需同时清除淘宝登录态，再额外加：--include-login-state");
   } else if (!args.includeLoginState) {
     lines.push("已提供 --confirm，但未提供 --include-login-state；将保留 Selenium 与 Playwright 淘宝登录态。");

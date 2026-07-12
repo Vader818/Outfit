@@ -58,7 +58,8 @@ export function upsertRecommendationFeedback(
   db.exec("BEGIN IMMEDIATE");
   try {
     const existing = getFeedbackRow(db, input.candidateId);
-    const actuallyWorn = input.actuallyWorn ?? Boolean(existing?.actually_worn);
+    const hasRecordedWear = existing !== undefined && existing.wear_log_id !== null;
+    const actuallyWorn = hasRecordedWear || (input.actuallyWorn ?? Boolean(existing?.actually_worn));
     const woreInsteadOutfitId = input.woreInsteadOutfitId ?? existing?.wore_instead_outfit_id ?? null;
     if (actuallyWorn && woreInsteadOutfitId !== null) {
       throw new ValidationError("actuallyWorn 与 woreInsteadOutfitId 不能同时提交");
@@ -76,7 +77,7 @@ export function upsertRecommendationFeedback(
     }
     const createdAt = existing?.created_at ?? now;
     const verdict = input.verdict ?? existing?.verdict ?? null;
-    const rating = input.rating ?? existing?.rating ?? null;
+    const rating = input.rating === undefined ? existing?.rating ?? null : input.rating;
     const actualWornAugmentation = input.actuallyWorn === true &&
       input.verdict === undefined &&
       input.rating === undefined &&
@@ -87,6 +88,15 @@ export function upsertRecommendationFeedback(
       ? parseReasonCodes(existing)
       : input.reasonCodes;
     const comment = input.comment ?? existing?.comment ?? "";
+    const hasPersistedSignal = verdict !== null ||
+      rating !== null ||
+      actuallyWorn ||
+      reasonCodes.length > 0 ||
+      Boolean(comment.trim()) ||
+      woreInsteadOutfitId !== null;
+    if (!hasPersistedSignal) {
+      throw new ValidationError("清空后至少保留一个有效反馈字段；如需删除反馈，请使用反馈清理功能");
+    }
 
     db.prepare(`
       INSERT INTO recommendation_feedback (
@@ -131,6 +141,15 @@ export function listRecommendationFeedback(db: AppDatabase): RecommendationFeedb
     FROM recommendation_feedback
     ORDER BY created_at ASC, id ASC
   `).all() as unknown as FeedbackRow[]).map(mapFeedbackRow);
+}
+
+export function getRecommendationFeedback(
+  db: AppDatabase,
+  candidateId: string
+): RecommendationFeedback | null {
+  getCandidate(db, candidateId);
+  const row = getFeedbackRow(db, candidateId);
+  return row ? mapFeedbackRow(row) : null;
 }
 
 export function listOutfitPairStats(db: AppDatabase): OutfitPairStat[] {
@@ -180,6 +199,7 @@ export function calculateLearnedPreferenceBonus(
 
 export function getRecommendationFeedbackInsights(db: AppDatabase): RecommendationFeedbackInsights {
   const feedback = listRecommendationFeedback(db);
+  const weightedPairCount = listOutfitPairStats(db).filter((stat) => stat.totalFeedback >= 3).length;
   const acceptedCount = feedback.filter((item) => item.verdict === "liked" || item.actuallyWorn).length;
   const reasonCounts = new Map<FeedbackReason, number>();
   for (const item of feedback) {
@@ -195,6 +215,7 @@ export function getRecommendationFeedbackInsights(db: AppDatabase): Recommendati
     totalCount: feedback.length,
     acceptedCount,
     acceptanceRate: feedback.length ? Number(((acceptedCount / feedback.length) * 100).toFixed(1)) : 0,
+    weightedPairCount,
     ...(rejectionReasons[0] ? { mostCommonRejectionReason: rejectionReasons[0].reason } : {}),
     rejectionReasons
   };
@@ -261,7 +282,12 @@ export function clearRecommendationFeedback(
 function recomputeOutfitPairStats(db: AppDatabase, updatedAt: string): number {
   const existingGarmentIds = new Set((db.prepare("SELECT id FROM garments").all() as Array<{ id: number }>).map((row) => row.id));
   const rows = db.prepare(`
-    SELECT feedback.verdict, feedback.actually_worn, candidates.item_ids_json
+    SELECT feedback.verdict,
+      CASE
+        WHEN feedback.actually_worn = 1 OR feedback.wear_log_id IS NOT NULL THEN 1
+        ELSE 0
+      END AS actually_worn,
+      candidates.item_ids_json
     FROM recommendation_feedback AS feedback
     JOIN recommendation_candidates AS candidates
       ON candidates.candidate_id = feedback.candidate_id
@@ -359,7 +385,7 @@ function mapFeedbackRow(row: FeedbackRow): RecommendationFeedback {
     candidateId: row.candidate_id,
     ...(row.verdict === null ? {} : { verdict: row.verdict }),
     ...(row.rating === null ? {} : { rating: row.rating }),
-    actuallyWorn: Boolean(row.actually_worn),
+    actuallyWorn: Boolean(row.actually_worn) || row.wear_log_id !== null,
     reasonCodes: parseReasonCodes(row),
     comment: row.comment,
     ...(row.wore_instead_outfit_id === null ? {} : { woreInsteadOutfitId: row.wore_instead_outfit_id }),

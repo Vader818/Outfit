@@ -70,6 +70,10 @@ const MAX_DETAIL_DESCRIPTION_LENGTH = 4000;
 const MAX_DETAIL_IMAGES = 24;
 const MAX_DETAIL_PROPS = 80;
 const MAX_URL_LENGTH = 2048;
+const MAX_SOURCE_LENGTH = 120;
+const MAX_CAPTURED_AT_LENGTH = 64;
+const MAX_NUMERIC_TEXT_LENGTH = 64;
+const TAOBAO_PAGE_TYPES = new Set<TaobaoPageType>(["order-list", "item-detail"]);
 
 export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   const batch = assertBatch(payload);
@@ -248,23 +252,157 @@ export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
 }
 
 function assertBatch(payload: unknown): TaobaoCapturedBatch {
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new ValidationError("导入内容必须是 JSON 对象");
   }
-  const batch = payload as TaobaoCapturedBatch;
-  if (!Array.isArray(batch.items)) {
+  const record = payload as Record<string, unknown>;
+  assertOptionalString(record.source, "source", MAX_SOURCE_LENGTH);
+  assertOptionalPageType(record.pageType, "pageType");
+  assertOptionalString(record.capturedAt, "capturedAt", MAX_CAPTURED_AT_LENGTH);
+  assertOptionalString(record.pageUrl, "pageUrl", MAX_URL_LENGTH);
+  if (!Array.isArray(record.items)) {
     throw new ValidationError("导入内容缺少 items 数组");
   }
-  if (batch.items.length > MAX_IMPORT_ITEMS) {
+  if (record.items.length > MAX_IMPORT_ITEMS) {
     throw new ValidationError(`items 最多包含 ${MAX_IMPORT_ITEMS} 条`);
   }
-  for (let index = 0; index < batch.items.length; index += 1) {
-    const item = batch.items[index];
+  for (let index = 0; index < record.items.length; index += 1) {
+    const item = record.items[index];
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ValidationError(`items[${index}] 必须是 JSON 对象`);
     }
+    assertCapturedItem(item as Record<string, unknown>, index);
   }
-  return batch;
+  return record as unknown as TaobaoCapturedBatch;
+}
+
+function assertCapturedItem(item: Record<string, unknown>, index: number): void {
+  const path = `items[${index}]`;
+  assertOptionalPageType(item.pageType, `${path}.pageType`);
+  const textFields: ReadonlyArray<readonly [string, number]> = [
+    ["itemId", 120],
+    ["orderId", 120],
+    ["orderTime", 120],
+    ["title", 300],
+    ["sku", 500],
+    ["status", 120],
+    ["refundText", 300],
+    ["itemUrl", MAX_URL_LENGTH],
+    ["imageUrl", MAX_URL_LENGTH],
+    ["rawText", MAX_RAW_TEXT_LENGTH],
+    ["detailUrl", MAX_URL_LENGTH],
+    ["detailTitle", 300],
+    ["detailDescription", MAX_DETAIL_DESCRIPTION_LENGTH],
+    ["detailRawText", MAX_RAW_TEXT_LENGTH]
+  ];
+  for (const [field, maxLength] of textFields) {
+    assertOptionalString(item[field], `${path}.${field}`, maxLength);
+  }
+  assertOptionalQuantity(item.quantity, `${path}.quantity`);
+  assertOptionalPayment(item.payment, `${path}.payment`);
+  assertOptionalDetailProps(item.detailProps, `${path}.detailProps`);
+  assertOptionalStringArray(item.detailImages, `${path}.detailImages`, MAX_DETAIL_IMAGES, MAX_URL_LENGTH);
+}
+
+function assertOptionalString(value: unknown, path: string, maxLength: number): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw new ValidationError(`${path} 必须是字符串`);
+  }
+  if (value.length > maxLength) {
+    throw new ValidationError(`${path} 不能超过 ${maxLength} 个字符`);
+  }
+}
+
+function assertOptionalPageType(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || !TAOBAO_PAGE_TYPES.has(value as TaobaoPageType)) {
+    throw new ValidationError(`${path} 必须是 order-list 或 item-detail`);
+  }
+}
+
+function assertOptionalQuantity(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw new ValidationError(`${path} 必须是正整数或正整数字符串`);
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || text.length > MAX_NUMERIC_TEXT_LENGTH || !/^\d+$/.test(text)) {
+      throw new ValidationError(`${path} 必须是正整数或正整数字符串`);
+    }
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new ValidationError(`${path} 必须是正整数或正整数字符串`);
+  }
+}
+
+function assertOptionalPayment(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw new ValidationError(`${path} 必须是非负金额或金额字符串`);
+  }
+  let numericValue: number;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return;
+    if (
+      text.length > MAX_NUMERIC_TEXT_LENGTH ||
+      !/^(?:[¥￥$]\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$/.test(text)
+    ) {
+      throw new ValidationError(`${path} 必须是非负金额或金额字符串`);
+    }
+    numericValue = Number(text.replace(/[¥￥$,\s]/g, ""));
+  } else {
+    numericValue = value;
+  }
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    throw new ValidationError(`${path} 必须是非负金额或金额字符串`);
+  }
+}
+
+function assertOptionalDetailProps(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new ValidationError(`${path} 必须是数组`);
+  }
+  if (value.length > MAX_DETAIL_PROPS) {
+    throw new ValidationError(`${path} 最多包含 ${MAX_DETAIL_PROPS} 项`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const prop = value[index];
+    if (!prop || typeof prop !== "object" || Array.isArray(prop)) {
+      throw new ValidationError(`${path}[${index}] 必须是 JSON 对象`);
+    }
+    const record = prop as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.value !== "string") {
+      throw new ValidationError(`${path}[${index}] 必须包含字符串 name 与 value`);
+    }
+    assertOptionalString(record.name, `${path}[${index}].name`, 120);
+    assertOptionalString(record.value, `${path}[${index}].value`, 1000);
+  }
+}
+
+function assertOptionalStringArray(
+  value: unknown,
+  path: string,
+  maxItems: number,
+  maxItemLength: number
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new ValidationError(`${path} 必须是数组`);
+  }
+  if (value.length > maxItems) {
+    throw new ValidationError(`${path} 最多包含 ${maxItems} 项`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (typeof value[index] !== "string") {
+      throw new ValidationError(`${path}[${index}] 必须是字符串`);
+    }
+    assertOptionalString(value[index], `${path}[${index}]`, maxItemLength);
+  }
 }
 
 export function isWardrobeImportCategory(category: GarmentCategory): boolean {

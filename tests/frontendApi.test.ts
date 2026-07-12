@@ -21,6 +21,7 @@ import {
   getGarments,
   getInsights,
   getPersonalProfile,
+  getRecommendationFeedback,
   getRecommendationRuns,
   getRecommendations,
   getSavedOutfit,
@@ -43,11 +44,22 @@ import {
   startTaobaoItemCapture,
   startTaobaoOrderCapture,
   submitRecommendationFeedback,
+  updateGarment,
   updateGarmentAvailability,
   updateSavedOutfit,
   uploadGarmentImage,
   verifyVisionModel
 } from "../src/api";
+import type { GarmentUpdateInput } from "../src/shared/types";
+
+type ForbiddenGarmentUpdateKeys = Extract<
+  keyof GarmentUpdateInput,
+  "id" | "origin" | "imageUrl" | "cutoutImageUrl" | "availabilityStatus" | "archivedAt" | "lastWornAt" | "wearCount" | "visionTags" | "visionUpdatedAt"
+>;
+type AssertNoGarmentUpdateKeys<T extends never> = T;
+type GarmentUpdateBoundaryCheck = AssertNoGarmentUpdateKeys<ForbiddenGarmentUpdateKeys>;
+const garmentUpdateBoundaryCheck: GarmentUpdateBoundaryCheck | undefined = undefined;
+void garmentUpdateBoundaryCheck;
 
 describe("frontend API client", () => {
   afterEach(() => {
@@ -812,6 +824,44 @@ describe("frontend API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/garments/9/availability", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ status: "repair" })
+    }));
+  });
+
+  it("reads persisted feedback by candidate and sends only the explicit garment update contract", async () => {
+    const candidateId = "11111111-1111-4111-8111-111111111111";
+    const feedback = {
+      id: 1,
+      candidateId,
+      verdict: "disliked",
+      rating: 2,
+      actuallyWorn: true,
+      reasonCodes: ["fit"],
+      comment: "版型不适合",
+      wearLogId: 7,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T01:00:00.000Z"
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(feedback), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 9, name: "白衬衫", confirmed: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getRecommendationFeedback(candidateId)).resolves.toMatchObject({
+      candidateId,
+      rating: 2,
+      comment: "版型不适合"
+    });
+    const update: GarmentUpdateInput = { name: "白衬衫", confirmed: true };
+    await expect(updateGarment(9, update)).resolves.toMatchObject({ id: 9, confirmed: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/recommendation-feedback/${candidateId}`,
+      expect.objectContaining({ method: "GET", credentials: "same-origin" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/garments/9", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify(update)
     }));
   });
 

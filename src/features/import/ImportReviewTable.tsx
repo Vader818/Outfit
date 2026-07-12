@@ -58,6 +58,7 @@ export function ImportReviewTable({ preview, decisions, disabled = false, onDeci
               const decision = decisionFor(item, decisions);
               const skipped = item.disposition === "skip";
               const rowDisabled = disabled || skipped;
+              const editorDisabled = rowDisabled || !decision.include;
               const rowId = `import-review-${batchToken}-${index}`;
               const effectiveName = fieldValue(item, decision, "name");
               const effectiveBrand = fieldValue(item, decision, "brand");
@@ -99,7 +100,7 @@ export function ImportReviewTable({ preview, decisions, disabled = false, onDeci
                       item={item}
                       decision={decision}
                       rowId={rowId}
-                      disabled={rowDisabled}
+                      disabled={editorDisabled}
                       onDecision={(next) => onDecision(item.sourceItemKey, next)}
                     />
                   </td>
@@ -221,7 +222,7 @@ function ImportRowEditor({
             id={`${rowId}-size`}
             label="尺码"
             value={fieldValue(item, decision, "size") ?? ""}
-            onChange={(event) => change("size", event.target.value || undefined)}
+            onChange={(event) => change("size", event.target.value)}
           />
           <Field
             id={`${rowId}-materials`}

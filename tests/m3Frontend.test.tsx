@@ -7,6 +7,7 @@ import {
 } from "../src/features/recommendations/FeedbackDialog";
 import { OutfitStage } from "../src/features/recommendations/OutfitStage";
 import { RecommendationView } from "../src/features/recommendations/RecommendationView";
+import { FeedbackSummary } from "../src/features/insights/HistoryInsightsView";
 import { GarmentItem } from "../src/features/wardrobe/GarmentItem";
 import { AvailabilityMenu } from "../src/features/wardrobe/AvailabilityMenu";
 import { WardrobeView } from "../src/features/wardrobe/WardrobeView";
@@ -17,6 +18,7 @@ import type {
   GarmentAvailabilityStatus,
   OutfitRecommendation,
   RecommendationResult,
+  WardrobeInsights,
   WeatherSnapshot
 } from "../src/shared/types";
 
@@ -36,7 +38,8 @@ describe("M3 recommendation feedback", () => {
       verdict: "disliked",
       rating: 2,
       actuallyWorn: false,
-      reasonCodes: ["fit", "too-formal"]
+      reasonCodes: ["fit", "too-formal"],
+      comment: ""
     });
 
     expect(buildRecommendationFeedbackInput({
@@ -49,9 +52,25 @@ describe("M3 recommendation feedback", () => {
     })).toEqual({
       candidateId: CANDIDATE_ID,
       verdict: "liked",
+      rating: null,
       actuallyWorn: true,
       reasonCodes: [],
       comment: "很适合今天"
+    });
+
+    expect(buildRecommendationFeedbackInput({
+      candidateId: CANDIDATE_ID,
+      verdict: "liked",
+      rating: "",
+      actuallyWorn: undefined,
+      reasonCodes: [],
+      comment: ""
+    })).toEqual({
+      candidateId: CANDIDATE_ID,
+      verdict: "liked",
+      rating: null,
+      reasonCodes: [],
+      comment: ""
     });
   });
 
@@ -75,6 +94,31 @@ describe("M3 recommendation feedback", () => {
     expect(markup).toContain("补充说明（可选）");
     expect(markup).toContain('maxLength="500"');
     expect(markup).not.toContain('textarea required=""');
+  });
+
+  it("prefills the persisted rating, reasons, comment, and actual-wear fact", () => {
+    const markup = renderToStaticMarkup(
+      <FeedbackDialog
+        open
+        candidateId={CANDIDATE_ID}
+        verdict="disliked"
+        initialFeedback={{
+          candidateId: CANDIDATE_ID,
+          verdict: "disliked",
+          rating: 2,
+          actuallyWorn: true,
+          reasonCodes: ["fit"],
+          comment: "版型不适合"
+        }}
+        busy={false}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('<option value="2" selected="">2 分</option>');
+    expect(markup).toMatch(/checked="" value="fit"/);
+    expect(markup).toContain("版型不适合");
   });
 
   it("keeps exact candidates when recommendation feedback callbacks are forwarded", () => {
@@ -138,6 +182,36 @@ describe("M3 recommendation feedback", () => {
     expect(markup).toContain("实际穿了");
     expect(markup).toContain("学习偏好");
     expect(markup).toContain("+2.5");
+  });
+
+  it("shows the ranking threshold only when at least one pair is actually weighted", () => {
+    const pending = renderToStaticMarkup(
+      <FeedbackSummary insights={{
+        feedbackSummary: {
+          totalCount: 8,
+          acceptedCount: 6,
+          acceptanceRate: 75,
+          weightedPairCount: 0,
+          rejectionReasons: []
+        }
+      } as unknown as WardrobeInsights} />
+    );
+    expect(pending).toContain("样本积累中");
+    expect(pending).not.toContain("已达到排序阈值");
+
+    const weighted = renderToStaticMarkup(
+      <FeedbackSummary insights={{
+        feedbackSummary: {
+          totalCount: 3,
+          acceptedCount: 3,
+          acceptanceRate: 100,
+          weightedPairCount: 2,
+          rejectionReasons: []
+        }
+      } as unknown as WardrobeInsights} />
+    );
+    expect(weighted).toContain("已达到排序阈值");
+    expect(weighted).toContain("2 对衣物组合");
   });
 });
 

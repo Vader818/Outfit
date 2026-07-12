@@ -302,13 +302,15 @@ function InsightsContent({ insights, recommendationRuns }: {
   );
 }
 
-function FeedbackSummary({ insights }: { insights: WardrobeInsights }) {
+export function FeedbackSummary({ insights }: { insights: WardrobeInsights }) {
   const summary = insights.feedbackSummary ?? {
     totalCount: 0,
     acceptedCount: 0,
     acceptanceRate: 0,
+    weightedPairCount: 0,
     rejectionReasons: []
   };
+  const weightedPairCount = summary.weightedPairCount ?? 0;
   const commonReason = summary.mostCommonRejectionReason
     ? summary.rejectionReasons.find((entry) => entry.reason === summary.mostCommonRejectionReason)
     : undefined;
@@ -319,8 +321,8 @@ function FeedbackSummary({ insights }: { insights: WardrobeInsights }) {
           <span>推荐反馈</span>
           <h2 id="feedback-summary-title">选择记录</h2>
         </div>
-        <Badge tone={summary.totalCount >= 3 ? "accent" : "neutral"}>
-          {summary.totalCount >= 3 ? "已达到排序阈值" : "样本积累中"}
+        <Badge tone={weightedPairCount > 0 ? "accent" : "neutral"}>
+          {weightedPairCount > 0 ? "已达到排序阈值" : "样本积累中"}
         </Badge>
       </header>
       <dl>
@@ -337,9 +339,9 @@ function FeedbackSummary({ insights }: { insights: WardrobeInsights }) {
         </div>
       </dl>
       <p>
-        {summary.totalCount < 3
-          ? "证据少于 3 条时只记录事实，不改变推荐排序。"
-          : "学习偏好只以有限分值影响排序，可随时预览范围并清空。"}
+        {weightedPairCount === 0
+          ? "尚无单个衣物组合累计到 3 条反馈，当前只记录事实，不改变推荐排序。"
+          : `${weightedPairCount} 对衣物组合已累计至少 3 条反馈；学习偏好只以有限分值影响排序，可随时预览范围并清空。`}
       </p>
     </Surface>
   );
