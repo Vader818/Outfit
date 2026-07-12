@@ -14,7 +14,7 @@ export interface RecommendationFeedbackDraft {
   candidateId: string;
   verdict?: FeedbackVerdict;
   rating: FeedbackRatingValue | number;
-  actuallyWorn: boolean;
+  actuallyWorn?: boolean;
   reasonCodes: FeedbackReason[];
   comment: string;
 }
@@ -34,9 +34,9 @@ export function buildRecommendationFeedbackInput(
   draft: RecommendationFeedbackDraft
 ): RecommendationFeedbackInput {
   const rating = draft.rating === "" || draft.rating === undefined
-    ? undefined
+    ? null
     : Number(draft.rating);
-  if (rating !== undefined && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+  if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
     throw new RangeError("反馈评分必须是 1 到 5 的整数");
   }
   const comment = draft.comment.trim();
@@ -44,10 +44,10 @@ export function buildRecommendationFeedbackInput(
   return {
     candidateId: draft.candidateId,
     ...(draft.verdict ? { verdict: draft.verdict } : {}),
-    ...(rating === undefined ? {} : { rating: rating as 1 | 2 | 3 | 4 | 5 }),
-    actuallyWorn: draft.actuallyWorn,
+    rating: rating as 1 | 2 | 3 | 4 | 5 | null,
+    ...(draft.actuallyWorn === undefined ? {} : { actuallyWorn: draft.actuallyWorn }),
     reasonCodes: draft.reasonCodes,
-    ...(comment ? { comment } : {})
+    comment
   };
 }
 
@@ -64,7 +64,7 @@ export function FeedbackDialog(props: FeedbackDialogProps) {
     setRating(initialRating(props.initialFeedback?.rating));
     setReasonCodes(props.initialFeedback?.reasonCodes ?? []);
     setComment(props.initialFeedback?.comment ?? "");
-  }, [props.candidateId, props.open, props.verdict]);
+  }, [props.candidateId, props.initialFeedback, props.open, props.verdict]);
 
   function toggleReason(reason: FeedbackReason) {
     setReasonCodes((current) => current.includes(reason)
@@ -78,7 +78,7 @@ export function FeedbackDialog(props: FeedbackDialogProps) {
       candidateId: props.candidateId,
       verdict: props.verdict,
       rating,
-      actuallyWorn: props.initialFeedback?.actuallyWorn ?? false,
+      actuallyWorn: props.initialFeedback?.actuallyWorn,
       reasonCodes: props.verdict === "disliked" ? reasonCodes : [],
       comment
     }));

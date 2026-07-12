@@ -42,6 +42,9 @@ export interface ImportViewProps {
 }
 
 export function ImportView(props: ImportViewProps) {
+  const attachBookmarkletHref = (element: HTMLAnchorElement | null) => {
+    if (element) element.setAttribute("href", props.bookmarklet);
+  };
   const captureStatus = props.captureResult && "status" in props.captureResult
     ? captureStatusLabel(props.captureResult.status)
     : "已启动";
@@ -213,7 +216,7 @@ export function ImportView(props: ImportViewProps) {
               <label htmlFor="bookmarklet-script">脚本内容</label>
               <textarea id="bookmarklet-script" className="code-box" readOnly value={props.bookmarklet} />
               <div className="advanced-import__actions">
-                <a className="ui-button ui-button--secondary ui-button--md" href={props.bookmarklet}>Outfit 淘宝采集</a>
+                <a ref={attachBookmarkletHref} className="ui-button ui-button--secondary ui-button--md">Outfit 淘宝采集</a>
                 <Button onClick={props.onCopyBookmarklet}>
                   <Copy aria-hidden="true" size={18} />
                   复制脚本

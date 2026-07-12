@@ -730,6 +730,7 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
 
       const sourceItem = withStoredStandaloneDetail(normalizedItem, selectStandaloneDetailByItemId);
       const externalKey = sourceItem.externalKey;
+      upgradeSafeLegacySourceKey(db, sourceItem);
       upsertSource.run(
         externalKey,
         sourceItem.source,
@@ -1099,18 +1100,31 @@ function findTrustedImportSource(
   db: AppDatabase,
   item: SourceOrderItemDraft
 ): { row?: TrustedImportSourceRow; ambiguous: boolean } {
-  const exactKeys = Array.from(new Set([
-    item.externalKey,
-    computeLegacyTaobaoSourceItemKey({
-      ...item,
-      payment: item.payment ?? undefined
-    })
-  ])).filter(Boolean);
-  for (const key of exactKeys) {
-    const row = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT} WHERE source_order_items.external_key = ?`)
-      .get(key) as unknown as TrustedImportSourceRow | undefined;
-    if (row) return { row, ambiguous: false };
+  const exact = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT} WHERE source_order_items.external_key = ?`)
+    .get(item.externalKey) as unknown as TrustedImportSourceRow | undefined;
+
+  const legacyKey = computeLegacyTaobaoSourceItemKey({
+    ...item,
+    payment: item.payment ?? undefined
+  });
+  let safeLegacy: TrustedImportSourceRow | undefined;
+  if (legacyKey && legacyKey !== item.externalKey) {
+    const legacy = db.prepare(`${TRUSTED_IMPORT_SOURCE_SELECT} WHERE source_order_items.external_key = ?`)
+      .get(legacyKey) as unknown as TrustedImportSourceRow | undefined;
+    if (legacy && safeLegacySourceIdentityMatch(legacy, item)) {
+      safeLegacy = legacy;
+    }
   }
+  if (exact && safeLegacy && exact.id !== safeLegacy.id) {
+    throw new ApiError(
+      "IMPORT_SOURCE_CONFLICT",
+      "同一导入来源同时存在 legacy 与 v2 标识，未选择任何记录",
+      409,
+      { sourceItemKey: item.externalKey, sourceItemIds: [safeLegacy.id, exact.id] }
+    );
+  }
+  if (exact) return { row: exact, ambiguous: false };
+  if (safeLegacy) return { row: safeLegacy, ambiguous: false };
 
   let rows: TrustedImportSourceRow[] = [];
   if (item.orderId) {
@@ -1152,6 +1166,7 @@ function sourceImportChanged(
     ? JSON.stringify(incoming)
     : stored || "[]";
   return (
+    current.external_key !== item.externalKey ||
     current.source !== item.source ||
     (current.page_type ?? "") !== item.pageType ||
     (current.item_id ?? "") !== preserveText(item.itemId, current.item_id) ||
@@ -1181,27 +1196,31 @@ function persistTrustedImportSource(db: AppDatabase, context: TrustedImportRevie
   const item = context.item;
   if (context.target) {
     if (context.sourceChanged) {
-      db.prepare(`
-        UPDATE source_order_items
-        SET source = ?, page_type = ?,
-          item_id = COALESCE(NULLIF(?, ''), item_id), order_id = ?, order_time = ?,
-          title = ?, sku = ?, quantity = ?, payment = ?, status = ?, refund_text = ?,
-          item_url = ?, image_url = ?, raw_text = ?,
-          detail_url = COALESCE(NULLIF(?, ''), detail_url),
-          detail_title = COALESCE(NULLIF(?, ''), detail_title),
-          detail_props = COALESCE(NULLIF(?, '[]'), detail_props),
-          detail_description = COALESCE(NULLIF(?, ''), detail_description),
-          detail_images = COALESCE(NULLIF(?, '[]'), detail_images),
-          detail_raw_text = COALESCE(NULLIF(?, ''), detail_raw_text),
-          is_refunded = ?, is_apparel = ?, imported_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(
-        item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
-        item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
-        item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
-        JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
-        item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0, context.target.id
-      );
+      try {
+        db.prepare(`
+          UPDATE source_order_items
+          SET external_key = ?, source = ?, page_type = ?,
+            item_id = COALESCE(NULLIF(?, ''), item_id), order_id = ?, order_time = ?,
+            title = ?, sku = ?, quantity = ?, payment = ?, status = ?, refund_text = ?,
+            item_url = ?, image_url = ?, raw_text = ?,
+            detail_url = COALESCE(NULLIF(?, ''), detail_url),
+            detail_title = COALESCE(NULLIF(?, ''), detail_title),
+            detail_props = COALESCE(NULLIF(?, '[]'), detail_props),
+            detail_description = COALESCE(NULLIF(?, ''), detail_description),
+            detail_images = COALESCE(NULLIF(?, '[]'), detail_images),
+            detail_raw_text = COALESCE(NULLIF(?, ''), detail_raw_text),
+            is_refunded = ?, is_apparel = ?, imported_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(
+          item.externalKey, item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
+          item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
+          item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
+          JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
+          item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0, context.target.id
+        );
+      } catch (error) {
+        throwTrustedImportSourceConflict(error, item, context.target.id);
+      }
     }
     return context.target.id;
   }
@@ -1225,6 +1244,79 @@ function persistTrustedImportSource(db: AppDatabase, context: TrustedImportRevie
     throw new Error("SQLite returned an invalid source item id");
   }
   return id;
+}
+
+function safeLegacySourceIdentityMatch(
+  row: Pick<TrustedImportSourceRow, "order_id" | "item_id" | "sku">,
+  item: SourceOrderItemDraft
+): boolean {
+  const incomingOrderId = normalizeTrustedImportIdentity(item.orderId);
+  const storedOrderId = normalizeTrustedImportIdentity(row.order_id ?? "");
+  if (incomingOrderId !== storedOrderId) return false;
+
+  const incomingItemId = normalizeTrustedImportIdentity(item.itemId);
+  const storedItemId = normalizeTrustedImportIdentity(row.item_id ?? "");
+  if (incomingItemId !== storedItemId) return false;
+
+  return normalizeTrustedImportSku(row.sku ?? "") === normalizeTrustedImportSku(item.sku);
+}
+
+function upgradeSafeLegacySourceKey(db: AppDatabase, item: SourceOrderItemDraft): void {
+  const exact = db.prepare("SELECT id FROM source_order_items WHERE external_key = ?")
+    .get(item.externalKey) as { id: number } | undefined;
+
+  const legacyKey = computeLegacyTaobaoSourceItemKey({
+    ...item,
+    payment: item.payment ?? undefined
+  });
+  if (!legacyKey || legacyKey === item.externalKey) return;
+  const legacy = db.prepare(`
+    SELECT id, order_id, item_id, sku
+    FROM source_order_items
+    WHERE external_key = ?
+  `).get(legacyKey) as {
+    id: number;
+    order_id: string | null;
+    item_id: string | null;
+    sku: string | null;
+  } | undefined;
+  const safeLegacy = legacy && safeLegacySourceIdentityMatch(legacy, item) ? legacy : undefined;
+  if (exact && safeLegacy && exact.id !== safeLegacy.id) {
+    throw new ApiError(
+      "IMPORT_SOURCE_CONFLICT",
+      "同一导入来源同时存在 legacy 与 v2 标识，未选择任何记录",
+      409,
+      { sourceItemKey: item.externalKey, sourceItemIds: [safeLegacy.id, exact.id] }
+    );
+  }
+  if (exact || !safeLegacy) return;
+
+  try {
+    db.prepare("UPDATE source_order_items SET external_key = ? WHERE id = ?")
+      .run(item.externalKey, safeLegacy.id);
+  } catch (error) {
+    throwTrustedImportSourceConflict(error, item, safeLegacy.id);
+  }
+}
+
+function normalizeTrustedImportIdentity(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function throwTrustedImportSourceConflict(
+  error: unknown,
+  item: SourceOrderItemDraft,
+  sourceItemId: number
+): never {
+  if (error instanceof Error && /UNIQUE constraint failed:\s*source_order_items\.external_key/i.test(error.message)) {
+    throw new ApiError(
+      "IMPORT_SOURCE_CONFLICT",
+      "导入来源标识发生冲突，未写入任何数据",
+      409,
+      { sourceItemKey: item.externalKey, sourceItemId }
+    );
+  }
+  throw error;
 }
 
 function persistTrustedImportGarment(

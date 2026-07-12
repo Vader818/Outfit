@@ -29,6 +29,7 @@
 API 增加：
 
 - POST /api/recommendation-feedback：按 candidateId 幂等新增或更新反馈。
+- GET /api/recommendation-feedback/:candidateId：读取已有反馈或返回 null，供再次编辑时回显。
 - DELETE /api/recommendation-feedback?scope=all|candidate|date-range：清空前由 UI 展示范围并二次确认；服务端记录结构化审计结果并重算 pair stats。
 - POST /api/garments/:id/availability：校验状态并写 garment 与事件历史的同一事务。
 
@@ -102,6 +103,7 @@ pairBonus = clamp(signal / max(1,totalFeedback), -1, 1) × 4 × confidence
 - 待洗/维修/借出/已装箱衣物不进入推荐。
 - 用户能看到“学习偏好”对分数的有限贡献，并可清空反馈；清空前必须展示将影响的数据范围。
 - 清空后 pair stats 与推荐 bonus 在同一事务结果中一致，不残留由已删除反馈计算出的权重。
+- 一旦反馈关联 `wear_log_id`，实际穿着事实不可被后续评价撤销；再次编辑可回显并显式清空评分与评论，但不能生成完全无信号的空反馈。
 
 ### 2026-07-12 验收进度
 
@@ -111,5 +113,13 @@ pairBonus = clamp(signal / max(1,totalFeedback), -1, 1) × 4 × confidence
 - 数据边界：真实 `data/outfit.sqlite` 未由新代码打开或迁移；浏览器验收只使用保留的临时数据库；未删除任何文件。
 - 标准构建：用户已明确确认清理重建 `dist` 6 个生成文件；`npm run build` 成功，Vite 转换 1595 个模块并生成新哈希产物。
 - 文件操作：仅按明确授权由标准构建清理并重建 `dist` 生成物，没有删除源码、数据库、临时验收目录或其他文件。
+
+### 缺陷修复复验记录（2026-07-12）
+
+- 后续 liked/disliked 更新即使显式携带 `actuallyWorn=false`，只要已有关联 wear log，反馈映射、pair stats 与洞察都会继续按实际穿着计数。
+- 反馈对话框打开时读取并回显已有评分、拒绝原因与评论；`rating:null`、`comment:""` 可显式清空，服务端拒绝清空后完全无信号的记录。
+- 洞察阈值改用真实 `weightedPairCount`：只有单个衣物对累计至少 3 条反馈才显示已达到排序阈值，不再按全局 feedback 总数推断。
+- 新增认证 GET API、穿着不可逆、清空重开、pair 阈值和真实顺序回归；最终全量验证结果见本轮项目验收记录。
+- 隔离浏览器与数据库确认 3 条反馈分布在 3 个不同衣物对时 `weightedPairCount=0`，洞察仍显示“样本积累中”；首选搭配只有 1 条 wear log，评分与评论清空后 `actually_worn=1`、`comment=""`。最终全量 Vitest 29 文件 410 项、Python 25+33 项、typecheck 与依赖审计均通过。
 
 ---

@@ -2361,6 +2361,7 @@ describe("App", () => {
     expect(importMarkup).toContain("淘宝衣物导入逐项审阅");
     expect(importMarkup).toContain("候选衣物 7");
     expect(importMarkup).toContain("提交选择");
+    expect(importMarkup).not.toContain('href="javascript:');
     expect(importMarkup).not.toContain("preview-list");
     expect(renderToStaticMarkup(
       <ImportReviewTable preview={preview} decisions={decisions} onDecision={vi.fn()} />

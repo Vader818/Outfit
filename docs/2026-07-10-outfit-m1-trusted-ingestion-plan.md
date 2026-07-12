@@ -136,4 +136,14 @@ interface ImportDecision {
 - 旧 `/api/import/taobao-batch` 现固定返回 HTTP 410，公共导入仅保留可信两阶段写入链路。
 - 与 M2 合并后的全量验证为 Vitest 24 个文件、330 项测试及 Python 33 项测试全部通过；类型检查、生产构建和依赖审计通过。
 
+### 缺陷修复复验记录（2026-07-12）
+
+- 来源身份兼容已收紧：legacy 只有在规范化 orderId、itemId、SKU 全部相同才会原位升级为 v2；跨订单同商品同 SKU 新建独立来源，legacy/v2 双记录以 409 `IMPORT_SOURCE_CONFLICT` 回滚。
+- 预览与提交统一执行严格 runtime batch 校验，畸形顶层、枚举、数量/金额、长文本及详情嵌套结构均返回结构化 400，不再出现 preview 通过、commit 500。
+- 导入审阅中未勾选行不可编辑；空尺码作为显式 override 落盘，可真正清除已有尺码。
+- 通用衣物 PUT 已禁止任意 `imageUrl`，合法图片只走专用净化路径；客户端更新类型同步排除图片和服务端状态字段。
+- `privacy:clean -- --confirm` 已把 `data/garment-assets` 纳入显式清理范围，默认无 `--confirm` 仍只预览。删除型回归只操作系统临时夹具，未触碰真实项目数据。
+- 书签脚本链接不再由 React 直接渲染 `javascript:` href，而是在真实 DOM ref 上安装受控地址；拖拽书签能力保留，未来 React 阻断警告已消除。
+- 隔离浏览器复验确认同来源重复导入只更新 1 条来源/1 件衣物，尺码可由 `M` 显式清为空；最终全量 Vitest 29 文件 410 项、typecheck、Python 25+33 项、依赖审计和非破坏性生产构建均通过。
+
 ---

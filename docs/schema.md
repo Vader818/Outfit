@@ -780,7 +780,7 @@ interface TaobaoImportPreview {
 - `detailProps`、`detailImages` 会归一化、去重并保存为 JSON 字符串。
 - `CaptureJob.engine` 表示实际采集 runner。订单页固定为 `selenium`；商品详情默认 `selenium`，请求传 `engine=playwright` 时使用 Playwright；未传请求值时可用 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 设置 API 默认值。
 - `CaptureJob` 当前保存在 Node 进程内存中；重启 API 后历史 job 状态不会恢复，但产物文件仍在 `output/taobao-captures/<jobId>`。
-- `sourceItemKey` v2 优先使用规范化的 `orderId + itemId/URL + SKU`，不同订单的同商品同 SKU 不再误合并；数据库仍能兼容匹配 legacy key。
+- `sourceItemKey` v2 优先使用规范化的 `orderId + itemId/URL + SKU`，不同订单的同商品同 SKU 不再误合并。legacy key 仅在 `orderId + itemId + SKU` 全部一致时兼容匹配并原位升级；legacy/v2 双记录冲突会以 409 中止预览或提交。
 - `TaobaoImportPreview` 读取 SQLite 判定 disposition，但不写库。commit 在事务内重新计算身份、disposition 和 decision 覆盖关系，前端不能指定 disposition。
 - 退款事件不会被 `wardrobeOnly` 提前丢弃；`include=false` 不写来源或衣物，同批重放保持幂等。
 
@@ -845,7 +845,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 | 列 | 类型 | 约束/默认值 | 说明 |
 | --- | --- | --- | --- |
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | 来源记录 ID |
-| `external_key` | TEXT | NOT NULL UNIQUE | 导入去重稳定键；M1 新记录为 order-aware 的 `v2:<sha256>`，查询兼容 legacy key |
+| `external_key` | TEXT | NOT NULL UNIQUE | 导入去重稳定键；M1 新记录为 order-aware 的 `v2:<sha256>`，仅对相同 orderId+itemId+SKU 的 legacy 行安全升级 |
 | `source` | TEXT | NOT NULL | 采集来源 |
 | `page_type` | TEXT |  | `order-list` 或 `item-detail` |
 | `item_id` | TEXT |  | 淘宝商品 ID |
@@ -921,7 +921,7 @@ ON source_order_items(item_id);
 - legacy 表定义中的 `confirmed` 默认值仍为 `0`。淘宝导入显式写入 `0`，手工创建接口显式写入 `1`；不能用表默认值推断衣物来源。
 - 淘宝重复导入不会覆盖用户已经确认的状态。
 - 默认衣橱与洞察只使用 `owned=1 AND archived_at IS NULL` 的 active 衣物；推荐和替代单品再叠加 `confirmed=1 AND excluded=0 AND availability_status='available'`。非可用状态不等于归档或不再拥有。
-- `PUT /api/garments/:id` 会更新展示字段和 `updated_at`。
+- `PUT /api/garments/:id` 会更新白名单展示字段和 `updated_at`；公共 JSON 路由禁止 `imageUrl`，图片只能经净化上传或受控缩略图选择路径修改。
 - 用户确认过的名称在迁移回填时会尽量保留，避免被自动清洗覆盖。
 - archive 与弃用 DELETE 都只设置 `archived_at`；restore 清除它。两者都不删除衣物、来源记录、图片资产或采集文件。
 
@@ -1062,6 +1062,8 @@ CREATE INDEX idx_saved_outfits_derived_from_outfit_id ON saved_outfits(derived_f
 
 产品只提供软归档，不提供物理删除端点。replacement 必须新建一行并指向父记录；修改或归档子记录不会改变父记录。若推荐候选被物理删除，`source_candidate_id` 置空但搭配继续存在；存在子记录时父记录受 RESTRICT 保护。
 
+从推荐卡应用 replacement 时，客户端只会复用 `source_candidate_id` 相同且 garment ID、保存快照 ID、slot、position 与原候选规范快照全部一致的 recommendation parent。同 candidate 的已编辑搭配不会成为替换父记录；系统会先从持久化候选新建干净 parent，再由它派生 replacement，保证预览整套与落盘整套一致。
+
 ### saved_outfit_items
 
 保存搭配内的 slot/顺序和不可变衣物快照。表为 SQLite `STRICT`。
@@ -1109,7 +1111,7 @@ CREATE INDEX idx_recommendation_feedback_verdict
 ON recommendation_feedback(verdict);
 ```
 
-upsert 后从全部现存反馈重算组合统计。清空先按 `all`、`candidate` 或 `updated_at` 日期闭区间预览；实际 DELETE 与重算 `outfit_pair_stats` 在同一事务中提交，空范围和重放不会留下旧权重。
+upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `comment` 可显式清除旧值，但合并后不允许留下完全无信号的空反馈。只要 `wear_log_id` 非空，服务映射、后续 upsert 与组合统计都把 `actually_worn` 视为 true，后续输入不能撤销已经落盘的穿着事实。清空先按 `all`、`candidate` 或 `updated_at` 日期闭区间预览；实际 DELETE 与重算 `outfit_pair_stats` 在同一事务中提交，空范围和重放不会留下旧权重。
 
 ### outfit_pair_stats
 
@@ -1126,7 +1128,7 @@ upsert 后从全部现存反馈重算组合统计。清空先按 `all`、`candid
 | `signal` | INTEGER | NOT NULL | `likes + 2*worn_count - 2*dislikes` |
 | `updated_at` | TEXT | NOT NULL | 最近一次整表重算时间 |
 
-主键为 `(garment_a_id, garment_b_id)`，并有 `garment_a_id < garment_b_id` CHECK。评分时 `total_feedback < 3` 不产生 bonus；达到阈值后使用 `confidence=min(1,total_feedback/5)`，每对贡献限制为 -4…+4，整套限制为 -8…+8。
+主键为 `(garment_a_id, garment_b_id)`，并有 `garment_a_id < garment_b_id` CHECK。评分时 `total_feedback < 3` 不产生 bonus；达到阈值后使用 `confidence=min(1,total_feedback/5)`，每对贡献限制为 -4…+4，整套限制为 -8…+8。洞察中的 `weightedPairCount` 直接统计 `total_feedback >= 3` 的 pair 行，不由全局反馈总数推断。
 
 ### garment_availability_events
 
@@ -1158,4 +1160,4 @@ upsert 后从全部现存反馈重算组合统计。清空先按 `all`、`candid
 
 这些路径已在 `.gitignore` 中忽略。
 
-`npm run privacy:clean` 默认只打印包含绝对路径的清理计划，不删除文件。当前脚本的确认清理范围仍是采集产物、旧缩略图、日志和 `data/outfit.sqlite*`；M1 的 `data/garment-assets` 不在自动清理目标中，旧资产必须留待后续 privacy-clean 资产预览和用户明确确认。登录 profile 只有显式加入 `--include-login-state` 才允许清理。所有目标的词法路径和真实路径都必须位于项目根目录内；junction/symlink 外逃或 realpath 解析失败会中止清理。`output/models` 也不在当前 privacy-clean 目标中。
+`npm run privacy:clean` 默认只打印包含绝对路径的清理计划，不删除文件。显式提供 `--confirm` 后，清理范围包括采集产物、旧缩略图、`data/garment-assets`、日志和 `data/outfit.sqlite*`；登录 profile 只有再显式加入 `--include-login-state` 才允许清理。所有目标的词法路径和真实路径都必须位于项目根目录内；junction/symlink 外逃或 realpath 解析失败会中止清理。`output/models` 不在当前 privacy-clean 目标中。

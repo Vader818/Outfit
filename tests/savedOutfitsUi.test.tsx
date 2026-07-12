@@ -12,6 +12,10 @@ import {
 import { ReplacementDialog } from "../src/features/outfits/ReplacementDialog";
 import { SavedOutfitsPanel } from "../src/features/outfits/SavedOutfitsPanel";
 import { GarmentItem } from "../src/features/wardrobe/GarmentItem";
+import {
+  findExactSavedRecommendationParent,
+  resolveSavedRecommendationParent
+} from "../src/app/App";
 import type { Garment, OutfitRecommendation, RecommendationResult, SavedOutfit } from "../src/shared/types";
 
 const CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
@@ -176,6 +180,56 @@ describe("saved outfit recommendation actions", () => {
     expect(dialogMarkup).toContain("蓝色与黑色更协调");
     expect(dialogMarkup).toContain("应用为新版本");
   });
+
+  it("reuses a recommendation parent only when garment ids, slots, and positions match the candidate snapshot", () => {
+    const candidate = makeOutfit();
+    const editedParent = makeSavedRecommendationParent(8, candidate);
+    editedParent.items[1] = {
+      ...editedParent.items[1],
+      garmentId: 4,
+      garmentSnapshot: {
+        ...editedParent.items[1].garmentSnapshot,
+        id: 4,
+        name: "灰长裤"
+      }
+    };
+    const exactParent = makeSavedRecommendationParent(9, candidate);
+
+    expect(findExactSavedRecommendationParent([editedParent], candidate)).toBeUndefined();
+    expect(findExactSavedRecommendationParent([editedParent, exactParent], candidate)).toBe(exactParent);
+
+    const wrongPosition = makeSavedRecommendationParent(10, candidate);
+    wrongPosition.items[0] = { ...wrongPosition.items[0], position: 1 };
+    expect(findExactSavedRecommendationParent([wrongPosition], candidate)).toBeUndefined();
+  });
+
+  it("creates a clean candidate parent after an edited snapshot and reuses that exact parent on replay", async () => {
+    const candidate = makeOutfit();
+    const editedParent = makeSavedRecommendationParent(8, candidate);
+    editedParent.items[1] = {
+      ...editedParent.items[1],
+      garmentId: 4,
+      garmentSnapshot: { ...editedParent.items[1].garmentSnapshot, id: 4, name: "灰长裤" }
+    };
+    const cleanParent = makeSavedRecommendationParent(9, candidate);
+    const saveCandidate = vi.fn().mockResolvedValue(cleanParent);
+
+    await expect(resolveSavedRecommendationParent(
+      [editedParent],
+      candidate,
+      saveCandidate
+    )).resolves.toEqual({ parent: cleanParent, created: true });
+    expect(saveCandidate).toHaveBeenCalledOnce();
+    expect(saveCandidate).toHaveBeenCalledWith(candidate.candidateId);
+
+    saveCandidate.mockClear();
+    await expect(resolveSavedRecommendationParent(
+      [editedParent, cleanParent],
+      candidate,
+      saveCandidate
+    )).resolves.toEqual({ parent: cleanParent, created: false });
+    expect(saveCandidate).not.toHaveBeenCalled();
+  });
 });
 
 describe("saved outfits history integration", () => {
@@ -284,6 +338,7 @@ describe("saved outfit historical snapshot safety", () => {
     expect(markup).toContain("有 2 件历史衣物当前不可用");
     expect(markup).toContain("已归档衬衫");
     expect(markup).toContain("来源衣物已归档");
+    expect(markup).not.toContain('<option value="1">');
     expect(markup).toContain("旧鞋");
     expect(markup).toContain("来源衣物已删除");
     expect(markup).toContain("调整搭配内容");
@@ -433,6 +488,33 @@ function makeHistoricalOutfit(): SavedOutfit {
     ],
     createdAt: "2026-07-10T00:00:00.000Z",
     updatedAt: "2026-07-11T00:00:00.000Z"
+  };
+}
+
+function makeSavedRecommendationParent(id: number, candidate: OutfitRecommendation): SavedOutfit {
+  return {
+    id,
+    name: "推荐快照",
+    notes: "",
+    source: "recommendation",
+    sourceCandidateId: candidate.candidateId,
+    favorite: false,
+    items: candidate.items.map((garment, index) => ({
+      id: id * 10 + index,
+      outfitId: id,
+      garmentId: garment.id,
+      slot: garment.category,
+      position: 0,
+      garmentSnapshot: {
+        id: garment.id,
+        name: garment.name,
+        brand: garment.brand,
+        category: garment.category,
+        imageUrl: garment.imageUrl
+      }
+    })),
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z"
   };
 }
 

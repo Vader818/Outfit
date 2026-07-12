@@ -172,7 +172,9 @@ http://127.0.0.1:8788
 
 ## POST /api/import/taobao-preview
 
-数据库感知地预览淘宝采集批次，全程不写数据库。服务端会重新归一化来源、计算 `v2:<sha256>` 身份键，并结合现有 active/归档衣物判定 `create`、`update`、`refund-sync`、`unchanged` 或 `skip`。退款事件不会在采集读取阶段被提前丢弃。
+数据库感知地预览淘宝采集批次，全程不写数据库。服务端会严格校验顶层字段、`pageType` 枚举、数量/金额、文本与 URL 长度、`detailProps` 和 `detailImages` 的嵌套结构，再重新归一化来源、计算 order-aware 的 `v2:<sha256>` 身份键，并结合现有 active/归档衣物判定 `create`、`update`、`refund-sync`、`unchanged` 或 `skip`。退款事件不会在采集读取阶段被提前丢弃；畸形运行时字段返回 400 `VALIDATION_ERROR`，不会延迟到 commit 形成 500。
+
+历史 legacy key 只在规范化 `orderId + itemId + SKU` 全部一致时兼容匹配，并会在提交时原位升级为 v2、保留来源与衣物 ID。不同订单即使商品和 SKU 相同也按新来源处理；若同一安全身份已经同时存在 legacy 与 v2 两行，preview/commit 返回 HTTP 409 `IMPORT_SOURCE_CONFLICT`，不选择任一行。
 
 请求体：`TaobaoCapturedBatch`
 
@@ -287,7 +289,7 @@ http://127.0.0.1:8788
 }
 ```
 
-同一 batch 与 decisions 重放保持幂等；`include=false` 的项不写入来源表或衣物表。
+同一 batch 与 decisions 重放保持幂等；`include=false` 的项不写入来源表或衣物表，且其审阅字段在 UI 中不可编辑。`size:""` 是显式清空尺码，不会被当成“未提供”。legacy 升级发生唯一键冲突时返回 HTTP 409 `IMPORT_SOURCE_CONFLICT`，整个 commit 事务回滚。
 
 ## POST /api/capture/taobao-orders
 
@@ -545,7 +547,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 }
 ```
 
-常见错误：`UNSUPPORTED_IMAGE_TYPE`（415）、`INVALID_IMAGE`（400）、`IMAGE_TOO_LARGE`（413）、`IMAGE_PIXEL_LIMIT`（400）。
+常见错误：`UNSUPPORTED_IMAGE_TYPE`（415）、`INVALID_IMAGE`（400）、`IMAGE_TOO_LARGE`（413）、`IMAGE_PIXEL_LIMIT_EXCEEDED`（413）。
 
 ## GET /api/garment-assets/:id/content
 
@@ -796,6 +798,8 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 请求体：`GarmentUpdate`
 
+该通用 JSON 更新只接受衣物展示/审阅字段，不接受 `imageUrl`。只要请求对象自身包含 `imageUrl`（无论绝对路径、data URL、远程 URL 或伪造 asset URL），整次请求会在任何字段写入前返回 HTTP 400 `GARMENT_IMAGE_UPDATE_FORBIDDEN`；图片必须使用 `PUT /api/garments/:id/image` 或受控缩略图选择接口。
+
 ```json
 {
   "brand": "示例品牌",
@@ -822,7 +826,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 响应：
 
 - 成功：HTTP 204，无响应体
-- 不存在：HTTP 400，`{ "error": { "code": "BAD_REQUEST", "message": "衣服不存在" } }`
+- 不存在：HTTP 404，`{ "error": { "code": "NOT_FOUND", "message": "衣服不存在" } }`
 
 ## POST /api/wear-logs
 
@@ -924,11 +928,11 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 请求规则：
 
 - `candidateId` 必须是已持久化候选的 UUID；不存在时返回 404 `RECOMMENDATION_CANDIDATE_NOT_FOUND`。
-- `verdict` 可为 `liked`、`disliked`、`skipped`；`rating` 可为整数 1–5；`actuallyWorn` 为布尔值。
+- `verdict` 可为 `liked`、`disliked`、`skipped`；`rating` 可为整数 1–5，更新既有反馈时也可传 `null` 显式清空；`actuallyWorn` 为布尔值。
 - `reasonCodes` 是必填的不重复数组，可以为空；元素只允许 `too-warm`、`too-cold`、`too-formal`、`too-casual`、`color`、`fit`、`repeat`、`unavailable`、`other`。
-- `comment` 可省略，最多 2000 字符。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与 `actuallyWorn=true` 同时提交。
-- 除 `candidateId` 和空 `reasonCodes` 外，至少还要提供一个有意义信号：verdict、rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId`；全空中性提交返回 400。
-- 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 `wear_logs` 在同一事务中写入；重放不会再建第二条关联穿着记录。
+- `comment` 可省略，最多 2000 字符；省略表示保留旧值，空字符串表示显式清空。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与最终 `actuallyWorn=true` 同时提交。
+- 除 `candidateId` 和空 `reasonCodes` 外，至少还要提供一个有意义信号：verdict、非空 rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId`。清空标记会先与旧值合并；若最终仍完全无信号则返回 400，不创建空反馈。
+- 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 `wear_logs` 在同一事务中写入；重放不会再建第二条关联穿着记录。一旦存在 `wearLogId`，实际穿着是不可逆事实，后续显式传 `actuallyWorn=false` 也仍返回并统计为 true。
 - 未知字段、错误类型、越界评分或重复/未知原因返回 400 `VALIDATION_ERROR`。写接口继续要求有效本地 session，并经过 Origin/Sec-Fetch-Site 校验。
 
 组合学习分采用固定、有界公式：
@@ -942,6 +946,10 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 `totalFeedback` 计入该衣物对出现过的每一条候选反馈，包括 `skipped`、仅评分或没有 verdict 的反馈；`likes`、`dislikes`、`wornCount` 分别计数，同一条反馈可以同时贡献 verdict 与实际穿着信号。
 
 单对衣物少于 3 条反馈时只记录统计，`pairBonus` 按 0 处理，不改变排序。达到阈值后，每对最多贡献 -4…+4；一套搭配的全部组合贡献最终限制在 -8…+8，并通过 `scoreBreakdown.learnedPreference` 单独返回。
+
+## GET /api/recommendation-feedback/:candidateId
+
+读取一个已持久化候选的当前反馈，供编辑对话框回显。候选存在且已有反馈时返回 `RecommendationFeedback`；候选存在但尚无反馈时返回 HTTP 200 与 JSON `null`；候选不存在时返回 404 `RECOMMENDATION_CANDIDATE_NOT_FOUND`。路径参数必须是 UUID，接口要求有效本地 session。
 
 ## GET /api/recommendation-feedback/clear-preview
 
@@ -1144,7 +1152,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 
 ## GET /api/insights
 
-读取本地衣橱分析洞察。基础统计、常穿/未穿列表、季节/风格分布、健康度和建议都只基于 `owned=true` 且未归档的 active 衣物；归档衣物不会进入默认洞察。`excluded` 仍属于衣橱分析，但不会进入推荐。`feedbackSummary` 汇总全部推荐反馈；接受数按 `verdict=liked` 或 `actuallyWorn=true` 计，拒绝原因只统计 `disliked` 反馈。
+读取本地衣橱分析洞察。基础统计、常穿/未穿列表、季节/风格分布、健康度和建议都只基于 `owned=true` 且未归档的 active 衣物；归档衣物不会进入默认洞察。`excluded` 仍属于衣橱分析，但不会进入推荐。`feedbackSummary` 汇总全部推荐反馈；接受数按 `verdict=liked` 或 `actuallyWorn=true` 计，拒绝原因只统计 `disliked` 反馈，`weightedPairCount` 是 `totalFeedback >= 3`、已实际参与学习排序的衣物对数量。
 
 响应：`WardrobeInsights`
 
@@ -1205,6 +1213,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
     "totalCount": 8,
     "acceptedCount": 5,
     "acceptanceRate": 62.5,
+    "weightedPairCount": 2,
     "mostCommonRejectionReason": "too-warm",
     "rejectionReasons": [
       { "reason": "too-warm", "count": 2 },
@@ -1276,9 +1285,9 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 约束规则：
 
 - `includeGarmentIds`、`excludeGarmentIds` 省略时不启用约束；一旦提供，必须是 1-24 个不重复的正安全整数，且同一 ID 不能同时出现于两者。
-- include 中不存在、不再拥有、已归档、未确认或已排除推荐的衣物会返回 HTTP 400；同类别锁定多件非配饰，或同时锁定连衣裙与上装/下装，也会被判定为不可满足。
+- include 中不存在、不再拥有、已归档、未确认、已排除推荐或 `availabilityStatus` 非 `available` 的衣物会返回 HTTP 400；同类别锁定多件非配饰，或同时锁定连衣裙与上装/下装，也会被判定为不可满足。
 - exclude 引用同样必须指向当前可推荐衣物，避免客户端用失效 ID 误以为已生效。
-- 所有结构与数据库状态错误均返回 `VALIDATION_ERROR`，并在 `error.details.issues` 中逐项给出 `field`、可选 `garmentId` 和 `reason`。reason 可能为 `INVALID_ARRAY`、`INVALID_ID`、`TOO_MANY`、`DUPLICATE`、`INCLUDE_EXCLUDE_CONFLICT`、`NOT_FOUND`、`NOT_OWNED`、`ARCHIVED`、`UNCONFIRMED`、`EXCLUDED` 或 `UNSATISFIABLE`。校验失败不会写入 recommendation run/candidate。
+- 所有结构与数据库状态错误均返回 `VALIDATION_ERROR`，并在 `error.details.issues` 中逐项给出 `field`、可选 `garmentId` 和 `reason`。reason 可能为 `INVALID_ARRAY`、`INVALID_ID`、`TOO_MANY`、`DUPLICATE`、`INCLUDE_EXCLUDE_CONFLICT`、`NOT_FOUND`、`NOT_OWNED`、`ARCHIVED`、`UNCONFIRMED`、`EXCLUDED`、`UNAVAILABLE` 或 `UNSATISFIABLE`。校验失败不会写入 recommendation run/candidate。
 
 响应：`RecommendationResult`
 

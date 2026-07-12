@@ -528,3 +528,133 @@
 - 浏览器控制台在业务验收期间无新增应用 warning/error；唯一旧错误是应用内浏览器初开时的扩展消息接收端不存在，不来自仓库业务代码。
 - 最终自动化复验全部通过：TypeScript 类型检查、365 项 Vitest、25 项 unittest、33 项 pytest、两种 npm 审计及差异检查。
 - 用户已明确授权标准构建清理并重建列明的 6 个 `dist` 生成文件；`npm run build` 成功，旧哈希 JS/CSS 已由新哈希产物替换，源码与数据库未受影响。
+
+## 2026-07-12 M1–M3 独立复验（本轮）
+- 当前 Git 工作区在复验开始时为空；因此本轮可按已提交仓库状态验收，不需要区分未提交实现。
+- 既有记录声称 M1–M3 已完成且曾通过自动化与浏览器验收，但本轮不把旧声明作为通过依据，将重新核对计划、源码、测试、文档和动态结果。
+- 当前活动 goal 已与用户本轮目标一致；重复创建失败后已改为沿用，不影响复验。
+- 当前协作环境共 4 个并发槽位（含主 Agent）；已并行启动 3 个只读子 Agent，分别审计 M1、M2、M3，均禁止修改或删除文件。
+- 本轮只做验收与报告，不修复产品代码；若发现缺陷，将提供复现证据和严重度。
+- M1 计划共 16 项实施任务、7 条验收标准，重点风险集中在图片净化/路径边界、两阶段导入的服务端重算与重放幂等、软归档去重、ZIP 路径安全；计划文本自身已全部勾选，但需用当前代码重证。
+- M2 计划共 11 项实施任务、5 条验收标准，重点风险集中在 snapshot 历史可回看、include 多配饰硬约束、replacement 新版本派生关系、归档记录隔离；计划文本自身已全部勾选，但需用当前代码重证。
+- M3 计划共 12 项实施任务、5 条验收标准，重点风险集中在稳定 candidateId、反馈更新幂等、wear log 同事务、pair bonus 阈值与总上限、availability 硬过滤、清空后同事务重算。
+- 仓库包含三份计划对应的服务、路由、前端组件及专项测试文件；提交历史显示 M1 单独提交，M2/M3 合并在 `41cf75a`。文件存在只能证明结构落地，不能替代行为验收。
+- `npm test` 仅运行 Vitest；Python 三组测试需要独立运行。构建会执行 TypeScript 后调用 Vite，可能清理并重建 `dist`，必须遵守用户的删除知情约束后再决定是否执行。
+- 当前运行时 Node v24.15.0 满足项目 `>=24.14 <27` 约束；Python 为 3.13.9。TypeScript 使用 strict/noEmit，覆盖 src/server/tests/scripts。
+- 本轮首次独立 `npm run typecheck` 通过；`git diff --check` 仅报告三份规划记录的 LF→CRLF 提示，无空白错误。
+- 本轮全量 Vitest 独立复验为 27 个文件、365/365 项通过，耗时 5.73 秒。
+- Python `unittest discover` 为 25/25 项通过；`pytest -q` 为 33/33 项通过。运行中的淘宝登录重试文字来自预期测试场景，不是失败。
+- 当前 `node_modules` 顶层解析成功但含若干 extraneous WASM 辅助包，属于本机安装树漂移信号；仓库锁文件是否可由干净 `npm ci` 重建本轮不验证，因为该命令会删除并重建 `node_modules`。
+- npm 生产依赖与含开发依赖的全量审计均报告 0 vulnerabilities。系统未安装 `pip-audit`，本轮没有擅自安装工具，因此 Python 锁定依赖缺少同等级的当前漏洞数据库复验。
+- 非破坏性生产构建成功：TypeScript + Vite 8.0.16 转换 1595 模块，生成 JS 316.33 kB（gzip 96.63 kB）与 CSS 90.96 kB（gzip 15.32 kB）；产物保留在系统临时目录，现有 `dist` 未删除或改写。
+- 路由装配顺序正确：Helmet、5 MB JSON 限制和全局 mutating-origin 检查在认证之前，新 M1/M2/M3 路由注册在 `/api` session 认证之后；新增写接口统一继承来源与会话保护。
+- 图片 raw-body 路由虽然注册在全局 `express.json` 之后，但图片 MIME 不会被 JSON parser 消费，路由自身对全部类型启用 5 MB raw 限制；asset content 仅按数值 ID 读取并设置 private/no-sniff/ETag。
+- M1 旧直写导入固定返回 410；M2 CRUD/replacement/save 和 M3 feedback/availability/clear 都通过严格 validator 进入 service。当前静态路由层未发现绕过认证或绕过新 service 的平行写路径。
+- 数据库迁移运行器对 baseline、严格递增版本、已应用前缀和并发写锁均有防护；每个 numbered migration 使用 `BEGIN IMMEDIATE` 并在异常时回滚。
+- M1 trusted commit 在获得写锁后重新归一化批次、重建数据库感知上下文、严格核对 decisions，再在单事务内逐项落库；退款 override 被服务端拒绝，取消项不写，异常统一回滚。该实现符合“客户端只表达选择、服务端掌控 identity/disposition”的计划边界。
+- 关键服务静态索引显示 M1 资产、M2 candidate/saved outfit、M3 feedback/availability/export 都显式使用事务；下一步需逐段确认事务内部的更新顺序和失败回滚语义。
+- 版本化 schema 与里程碑对应清晰：v1 candidate UUID、v2 trusted ingestion/asset、v3 saved outfits/snapshot、v4 feedback/pair stats/availability。数据库层同时施加 enum、JSON、唯一性、自引用、pair 顺序和 FK 约束。
+- M3 feedback upsert 在同一 `BEGIN IMMEDIATE` 中写一次 wear log（由唯一 wear_log_id 防重）、按 candidate unique upsert 反馈、全量重算 pair stats 后提交；重复实际穿着不会重复写日志。
+- pair bonus 实现逐 pair 跳过 `<3` 证据，按计划公式计算并将整套总和 clamp 到 -8…+8；clear 在同一事务内先预览、删除目标 feedback、全量重算 stats，再返回结构化结果。
+- feedback clear 不持久化单独的“审计日志”表，只在响应中返回 scope、影响数、删除数、剩余 stats 数和时间。计划的实施任务与验收标准没有要求独立审计表，因此暂不判定为偏离，但文案“记录结构化审计结果”存在解释空间。
+- M1 图片服务按 MIME 与真实解码格式双重核对，限制 5 MB/4000 万像素/单页，旋转后重新编码 WebP 且未调用 metadata 保留 API；UUID 文件名、root descendant、lstat/realpath、symlink 和 sha256/长度校验构成读写边界。数据库失败时有意保留孤儿文件供 privacy-clean 预览，符合“不静默删除”约束。
+- M2 saved outfit 的 create/save/replacement/update 均使用 `BEGIN IMMEDIATE`；snapshot 与可空 live garment link 分离，归档或删除来源后仍能读取历史。replacement 总是新建 source=replacement 且 derived_from 指向原记录，不覆盖原搭配。
+- saved outfit 完整性同时在 validator/service/schema 三层约束 slot、position、重复衣物、裙装与上下装互斥；metadata-only 更新不会重写历史 items。
+- M0/M3 candidate identity 由 UUID 生成，`id===candidateId`，搭配内容另有 canonical SHA-256 signature；推荐 run、完整 result 和 candidate rows 在同一事务持久化，因此反馈关联的是稳定数据库主键而非列表序号。
+- M2 include/exclude 冲突在请求 validator 中返回 `INCLUDE_EXCLUDE_CONFLICT`；服务端再核对存在性、owned/archived/confirmed/excluded/availability 和不可满足的同 slot/裙装冲突。
+- 多个锁定配饰由 `appendRequiredItems` 作为整体追加到每个保留候选；replacement 只从统一 eligible/available 集合选择，并跳过所有锁定目标，因而不会移除 locked item 或引入非 available 衣物。
+- availability 更新以 compare-and-swap 条件和事件插入放在同一写事务；同状态请求是无事件的幂等 no-op。推荐统一 eligibility 硬过滤四种非 available 状态，并为真正缺失的核心 slot 返回 unavailableCount。
+- 专项测试标题与计划风险高度对应：迁移原子性/演练、EXIF/ICC/XMP、路径穿越/symlink、trusted import replay、历史 snapshot、派生 replacement、多配饰/冲突约束、feedback replay/rollback/clear、availability rollback、V2/ZIP 完整性均有直接用例，而不只是间接 UI 快照。
+- README、`docs/api.md`、`docs/schema.md` 均已覆盖 M1 两阶段导入/图片、M2 saved outfits/约束/replacement、M3 feedback/availability/learnedPreference/clear 事务；抽查的路由名、enum、阈值和 schemaVersion 与代码一致。
+- 隔离浏览器与数据库联合复验通过：M1 同来源重复导入仅保留 1 条 v2 source/1 件 garment，尺码可从 `M` 显式清为空；M2 同 candidate 的编辑父记录与干净父记录同时保留，replacement 精确派生自白衬衫+黑裤的干净父记录；M3 共有 3 条不同 pair 反馈、1 条 wear log、3 条 pair stats，`weightedPairCount=0`，评分和评论可清空且 actuallyWorn 仍为 1。
+- 归档灰色长裤后，隔离库保持 5 件总衣物、4 件 active、1 件 archived；历史编辑器显示“来源衣物已归档”，未误判为删除，也未把归档衣物带回可选集合。
+- 浏览器控制台暴露并已修复 React 直接渲染 `javascript:` 书签 href 的未来兼容警告。修复后 DOM 仍呈现可拖拽的 javascript 书签 URL，重新进入导入页不再产生该警告；残留的 “Receiving end does not exist” 来自浏览器扩展通信，不是应用日志。
+- 自动化仍不是所有验收标准的充分证据：M1“60 秒内建档”、键盘/真实移动端、以及 M3 清空前实际用户可见范围属于交互/可用性要求，需要本轮浏览器复验或沿用可审计的旧浏览器证据时明确降低证据等级。
+
+### 子 Agent 初步缺陷（待主 Agent 复现）
+- M1：`privacy-clean` 当前未扫描 `data/garment-assets`，与计划中“失活旧图片后续由 privacy-clean 预览/确认处理”的勾选声明不一致；数据库清理后可能遗留手工照片与失活资产。
+- M1：Taobao batch 顶层/条目字段可能未被严格校验，畸形 `source/pageType` 可通过 preview，commit 在 SQLite 绑定处变为非结构化 500；需主线复现并检查 validator 边界。
+- M1：导入审阅把空尺码映射为 `undefined`，JSON 后丢失清空 override；未选行仍可编辑可能形成 include=false+overrides 并被服务端拒绝。需浏览器/组件路径复核。
+- M2：替换弹窗展示 candidate suggestion，但应用时复用任意相同 `sourceCandidateId` 的已保存搭配作为父记录；若父记录后来被 OutfitBuilder 改过，最终新版本可能与弹窗展示不同或 target 不存在而失败。
+- M2：API 文档遗漏运行时约束原因 `UNAVAILABLE`，README 同样未明确该错误枚举。
+- M3：先“实际穿了”再提交喜欢/不喜欢时，反馈弹层疑似显式发送 `actuallyWorn:false`，服务端会把 feedback 的 worn 标志清零但保留 wear_log_id，导致穿着事实、pair stats 与洞察矛盾。
+- M3：洞察 UI 以全局 feedback 总数达到 3 条宣称“已达到排序阈值”，但阈值实际按每个 garment pair 计算；互不重叠的反馈会造成误导。
+
+### 主 Agent 静态复核结果
+- **已确认 M1 计划偏离：** `scripts/privacy-clean.mjs` 的目标只有登录态、采集 JSON、缩略图、日志和 `data/outfit.sqlite*`，完全没有 `data/garment-assets`。计划已勾选“后续由 privacy-clean 预览和明确确认处理”，当前实现无法做到；清数据库反而会失去资产关联而留下照片。
+- **已确认 M1 严格校验缺口：** `assertBatch()` 只保证 payload/items 是对象/数组，不验证 batch.source/pageType/pageUrl/capturedAt 或 item 字段类型；source/pageType 被原样传入 SQLite bind，存在 preview 成功而 commit 500 的路径。
+- **已确认 M1 UI 缺口：** 取消勾选会清 overrides，但 editor 的 disabled 条件不含 `!decision.include`，取消后仍能重新编辑并构造服务端拒绝的 include=false+overrides；size 清空写 `undefined`，无法表达“覆盖为空”。
+- **已确认 M2 数据源漂移：** replacement 弹窗展示 `suggestion.nextItems`，应用函数却只按 `sourceCandidateId` 找首个 saved outfit 并基于其当前 items 调 replacement API，未比较 candidate snapshot；保存后编辑或重复保存均可能导致展示与实际新版本不一致。
+- **已确认 M3 worn 状态回退：** `FeedbackDialog` 总是输出 boolean `actuallyWorn`，App 未传 initialFeedback，所以喜欢/不喜欢路径发送 false；service 将 false 覆盖既有 true、却保留 wear_log_id，随后重算移除 worn 信号。
+- **已确认 M3 阈值文案错误：** UI 直接以全局 `summary.totalCount >= 3` 判定“已达到排序阈值”，而真实算法按每个衣物 pair 的 `totalFeedback >= 3` 生效。
+- **动态确认 M1 500：** 内存 DB 中 `{source:{unexpected:true}, pageType:'order-list', items:[合法衬衫]}` 能 preview 出 1 个候选；commit 随后抛原生 `TypeError: Provided value cannot be bound to SQLite parameter 2.`。API 会将其包装为 500 `INTERNAL_ERROR`，不是计划要求的结构化 400。
+- **动态确认 M3 事实分裂：** 内存 DB 先提交 `actuallyWorn:true`，再模拟 UI 提交 `verdict:'liked', actuallyWorn:false`；最终 feedback 为 false、`wearLogId=1` 且 wear_logs 仍为 1 条，pair stats 变为 likes=1/wornCount=0/signal=1。缺陷可确定复现。
+- **M3 反馈编辑契约缺口：** App 不回存/传入 initialFeedback；用户重新打开看到空评分/评论，而构造器省略空值、服务端又保留旧值，因此界面无法忠实回显或显式清除既有评分/评论。
+- **M2 低严重度 UX：** OutfitBuilder 能区分 archived/deleted，但 App 只传 active garments、未传已经加载的 archivedGarments，导致归档来源在编辑器中被误报为“已删除”；不破坏 snapshot，但文案误导且生产接线未被组件测试覆盖。
+- **浏览器再次确认 M3：** 隔离页面对同一首选搭配依次执行“实际穿了 → 喜欢 → 保存反馈”；页面先显示“已记录实际穿着”，最终 QA DB 却为 `actually_worn=0, wear_log_id=1`，wear_logs 保留一条，pair stats `worn_count=0`。这是生产 UI 的真实可达路径，不只是 service 人工输入。
+- **浏览器确认 M2 预览/落盘不一致：** 原候选为“蓝衬衫+灰长裤”，保存后在 OutfitBuilder 改为“蓝衬衫+黑长裤”；从原推荐打开“换蓝衬衫”时弹窗明确预览“白衬衫+灰长裤”，点击应用后数据库派生记录实际为“白衬衫+黑长裤”，页面仍展示旧预览并提示成功。
+- 隔离浏览器同时验证了账号创建、4 件手工衣物快速建档、推荐生成、保存/编辑和替换入口均可正常操作；缺陷集中在状态一致性而非页面不可用。
+- **动态确认 M1 legacy 碰撞：** 内存 DB 先放入 `order-001` 的 legacy key，再预览同商品同 SKU 的 `order-002`，错误 disposition 为 update；commit 后 created=0/updated=1、衣物仍 1 条，原来源记录的 order_id 被覆盖为 order-002，external_key 仍是 legacy。
+- **动态确认 M1 图片旁路：** `validateGarmentUpdate()` 接受绝对 Windows 路径 imageUrl，`updateGarment()` 原样落库并返回；专用净化 asset 路由并非唯一图片写入口，绝对路径/任意 URL/data URL 边界可被绕过。
+- 只读检查真实 `data/outfit.sqlite`：当前没有 `schema_migrations`，627 条来源记录的 v2 key 数量为 0；读取前后 LastWriteTime/Length 均未变化。未迁移本身是尚未启动新版应用的部署状态，但说明 legacy 碰撞会直接影响现有数据的下一次导入，不是理论边缘情况。
+
+### 本轮最终验收结论
+- **总体结论：NO-GO / 不通过。** M1–M3 的主体架构和绝大多数功能真实存在，自动化与构建基线优秀，但三份计划的“已完成并通过验收”声明不成立；每个里程碑至少有一个已动态复现的阻断缺陷。
+- **M1 不通过：** 高风险为 legacy key 跨订单误合并、通用 garment PUT 绕过图片引用边界、privacy-clean 未覆盖 garment assets；中风险为畸形 batch preview→commit 500 与导入审阅状态缺陷；API 文档另有错误码/状态码不一致。
+- **M2 不通过：** 替换弹窗预览基于 candidate snapshot，实际派生却基于任意同 candidate 的可编辑 saved outfit，已在真实浏览器复现“预览白+灰、落盘白+黑”；另有 archived 被误报 deleted 和 UNAVAILABLE 文档遗漏。
+- **M3 不通过：** 真实浏览器复现“实际穿了→喜欢”使 feedback 的 actually_worn 归零但 wear log 保留；洞察把全局 3 条误当 pair 阈值，反馈重新编辑也无法忠实回显/清除旧评分与评论。
+- **通过证据：** `npm run typecheck`；Vitest 27 文件 365/365；unittest 25/25；pytest 33/33；npm 生产/全量审计 0 漏洞；临时目录生产构建 1595 模块成功；390×844 无页面横向溢出。
+- **证据缺口/环境风险：** 未安装 pip-audit，Python 依赖未做同等级漏洞数据库复验；本机 node_modules 有少量 extraneous 包；标准 build 因删除约束未清理现有 dist，而使用临时 outDir 完成等价构建。
+- 文档抽查确认三处低风险不一致：图片像素错误应为 `IMAGE_PIXEL_LIMIT_EXCEEDED`/413 而非 `IMAGE_PIXEL_LIMIT`/400；DELETE 不存在应为 404 `NOT_FOUND` 而非 400；约束 reason 列表遗漏 `UNAVAILABLE`。
+- 修复优先级：先处理 M1 数据误合并与图片旁路、M3 穿着事实一致性、M1 资产隐私清理、M2 replacement snapshot 一致性；再处理反馈编辑/阈值文案、严格 batch 校验、导入审阅与文档。
+
+## 2026-07-12 M1–M3 验收缺陷修复
+- 本轮目标覆盖上一轮报告的全部高、中、低风险，不把“测试转绿”缩减为只修阻断项。
+- 当前产品源码基线无改动；工作区仅含 `task_plan.md`、`findings.md`、`progress.md` 三份验收记录的既有差异。
+- 真实 `data/outfit.sqlite` 继续只读保护；迁移与导入修复必须在内存或副本上验证。
+- 三个并行写入域已划定：M1 导入、M1 图片/隐私、M2/M3 状态一致性；共享文档由主 Agent 最后统一更新，避免冲突。
+- 前端通用 `updateGarment(id, Partial<Garment>)` 的类型仍允许 imageUrl；即使路由拒绝，也应在集成阶段收窄客户端公开更新类型，形成编译期和运行时双重边界。
+- 可信图片变化已有独立路径：`selectGarmentThumbnail()`、手工图片 raw 上传及内部 DB 服务，因此公开 PUT 禁止 imageUrl 不会阻断合法图片工作流。
+- 文档需统一修正四类内容：privacy-clean 现状说明、图片像素错误码/状态、DELETE 不存在状态、推荐约束 `UNAVAILABLE`；反馈 GET/显式清空与 weightedPairCount 属于新增契约，也必须同步。
+- README 当前对反馈、replacement 和 privacy-clean 的用户承诺都需要在修复后补充不变量：actuallyWorn 不可逆、替换父快照精确匹配、asset root 随显式隐私清理删除。
+- 真实数据库旁存在约 1 MB WAL 与 32 KB SHM；迁移演练不能只 `Copy-Item outfit.sqlite`，必须使用 SQLite 在线 backup/一致性快照方式，否则可能遗漏 WAL 中的已提交数据。
+- 现有 migration rehearsal 仅对冻结 fixture 做 copy+迁移，不覆盖当前真实 WAL 数据库；最终需增加一次独立在线副本验证，但不得修改源库。
+- 当前 Node v24 的 `node:sqlite` 明确导出异步 `backup(sourceDb, path, options)`，类型说明基于 SQLite backup API 并会处理其他连接写入导致的重启；最终演练将用只读 `DatabaseSync` 源连接和该 API 生成一致性副本。
+- 子 Agent 实现结果：M1 导入专项 71/71、M1 图片/隐私专项 10/10、M2/M3 专项 58/58；三者均通过 typecheck，最新串行全量 Vitest 为 29 文件 409/409。
+- M1 导入新增安全迁移语义：legacy 仅在 orderId+itemId+SKU 一致时匹配，同订单原位升级 v2，不同订单新建；legacy/v2 并存冲突返回 `IMPORT_SOURCE_CONFLICT` 409 并回滚。
+- M1 图片边界新增公开路由错误 `GARMENT_IMAGE_UPDATE_FORBIDDEN` 400；privacy-clean 计划新增敏感目录 `data/garment-assets`，测试删除仅发生在系统临时夹具。
+- M2/M3 新契约包括 candidate feedback GET、rating:null/comment:"" 显式清空、wear_log 不可逆、weightedPairCount 与精确 candidate 父快照匹配；主线仍需审查实现细节和并行兼容性。
+- 主审 M1 导入实现确认：普通导入与可信审阅提交两条写路径都在落盘前执行 orderId+itemId+SKU 的 legacy 身份核验；安全同源会原位升级 external_key，legacy/v2 双记录则用 409 终止事务，避免跨订单覆盖。
+- 严格 batch 校验已覆盖顶层类型、pageType 枚举、数量/金额、URL/文本长度、detailProps 与 detailImages 嵌套结构；空金额字符串仍兼容既有采集器。审阅表未勾选行现在禁用编辑器，尺码空字符串会作为显式 override 保留。
+- 本轮代码主审暂未发现新的 M1 阻断项；仍需结合测试与真实 legacy 数据库在线副本验证升级行为。
+- M1 导入回归不是表面断言：测试分别固定了跨订单 create、同订单 legacy 原 ID 升级、内部批量导入幂等、显式空尺码、触发器制造的 UNIQUE 冲突与事务回滚、预存双 key 冲突，以及 preview/commit 两阶段畸形输入均不落库。
+- M1 图片路由在参数校验后、通用更新前检查请求体自身 `imageUrl` 字段，任何值都返回专用 400，避免同一请求其余字段部分写入；privacy-clean 新增 `data/garment-assets` 且仍保持默认仅预览、显式 `--confirm` 才执行。
+- privacy-clean 的删除回归只操作 `os.tmpdir()` 下动态夹具；不会触碰工作区真实资产。测试本身会留下临时父目录，但不构成隐私清理生产路径风险。
+- 新图片边界测试通过真实 Express 路由逐一覆盖绝对路径、data URL、任意 HTTPS 与伪造本地 asset URL，并断言同请求中的名称不被部分更新；正常字段更新仍返回 200。
+- M3 前端契约已从“每次空白表单”改为打开时 GET 既有 feedback：对话框加载期间禁止提交，requestId 防止异步串候选，返回后重新水合评分/原因/评论；提交总是发送 `rating:null` 与 `comment:""` 表达显式清除，actuallyWorn 未知时不再默认 false。
+- 洞察阈值展示改用服务端 `weightedPairCount`，不再把全局 totalCount>=3 当成组合已参与排序；客户端公开 garment 更新类型也已排除 imageUrl、availability 与服务端状态字段。
+- M2 replacement 精确父记录匹配会比较 candidateId、garmentId、snapshot id、slot 与 position；仍需继续核对生产调用和同 slot 多件衣物的 position 生成是否与服务端一致。
+- M2 replacement 的生产调用已改为先 `resolveSavedRecommendationParent`：仅复用精确快照，否则调用候选快照保存接口创建干净 parent，再从该 parent 派生替换版本；已编辑的同 candidate 记录不会再污染弹窗预览对应的落盘结果。
+- 前端 position 计算与服务端 `canonicalizeOutfitSlots` 使用同一规则（slot 固定顺序、同 slot 按 garment id、从 0 递增），因此多配饰也能精确匹配；新增测试固定了编辑后不复用、错 position 不复用、干净 parent 重放复用。
+- OutfitBuilder 现在接收 active+archived 衣物用于历史状态解析，但现有可选列表仍由组件内部按 active 条件过滤；归档快照可显示“已归档”而不会重新成为可选衣物。
+- M3 服务端把 `wear_log_id IS NOT NULL` 视为不可逆穿着事实：即使后续显式传 `actuallyWorn:false`，持久化映射和 pair 重算都会保持 worn=true；对应服务与认证 API 测试复现了原“实际穿了→喜欢”顺序并断言 wear log 仅一条、wornCount 仍为 1。
+- feedback GET 路由注册在静态 `clear-preview` 之后，避免动态 candidateId 抢占；未知候选仍 404，已知无反馈返回 JSON null。rating 的 undefined=保留、null=清空，comment 的 undefined=保留、空字符串=清空。
+- `weightedPairCount` 来自当前 `outfit_pair_stats.total_feedback >= 3` 的真实行数；测试用三个 candidate 证明只有共同出现三次的那一对计入，而不是按全局反馈数推断。
+- 发现一个新增契约边缘待处理：当前校验把仅 `rating:null` 也视为“有效反馈”，因此对尚无反馈的合法候选可能创建一条完全空白记录。显式清空既有反馈需要保留，但首次空清除应在服务层拒绝或定义清晰。
+- 上述空反馈边缘已修复：服务在合并旧值与清空标记后检查最终持久化信号；若 verdict/rating/worn/reasons/comment/woreInstead 全为空则事务内抛出 ValidationError。既有 verdict 或穿着事实仍允许只清空 rating/comment。
+- 新回归按 TDD 先失败后通过；`recommendationFeedback`、认证 feedback API、M3 前端三文件合计 22/22 通过。
+- 文档定位确认既有差异仍在：图片像素错误写成 `IMAGE_PIXEL_LIMIT`/400，DELETE 不存在写成 BAD_REQUEST/400，约束 reason 缺 `UNAVAILABLE`；feedback 尚无单候选 GET、null/clear 与 wear 不可逆说明。
+- README 的隐私清理清单仍漏 `data/garment-assets`，replacement 说明也未声明只复用精确候选快照；这些均需与已落地行为同步。
+- import API 文档当前只说 v2 key，尚未定义 orderId+itemId+SKU 的安全 legacy 升级、双 key 409 冲突与严格 runtime batch 校验。
+- schema 的 privacy-clean 尾注仍明确声称 garment-assets 不在范围，已与代码相反；garments 更新行为也需要声明公共 PUT 禁止 imageUrl，feedback 表需记录 wear_log_id 对 actually_worn 的事实优先级。
+- 三份里程碑计划的旧验收记录保留了当时的测试数量；本轮应追加“缺陷修复复验记录”，不能覆盖历史证据，也不能在最终全量测试完成前预写新数字。
+- README/API/schema 与三份计划已完成契约同步；反向搜索确认旧图片错误码、DELETE 400、garment-assets 不清理、缺 UNAVAILABLE、旧 itemId+sku 去重说法均为 0 命中，六份文档 `git diff --check` 通过。
+- API 洞察示例已加入 `weightedPairCount`，三份计划以新增复验段保留原历史记录，未伪造尚未完成的最终全量测试数字。
+- 使用 `node:sqlite.backup()` 从只读真实连接生成 WAL 一致性副本，并仅在副本上执行 baseline 0 与迁移 1–4；`schema_migrations` 最终精确为 0/legacy-baseline、1/recommendation-candidates、2/trusted-ingestion、3/saved-outfits、4/feedback-availability。
+- 真实旧数据比预想更稀疏：627 条来源中没有同时具备 orderId+itemId+SKU 的行；第一次筛选还叠加 is_apparel，第二次要求非空 SKU，均在选中/导入前中止。最终使用可重算且已关联 garment 的真实 legacy 行 443（有 orderId+itemId、空 SKU）完成演练。
+- 副本结果：来源 443 preview=update，commit 原 ID 升级为 `v2:` 且总数仍 627/37；同 item/空 SKU 换成不同 orderId 时 preview=create、总数变 628/38；同批重放 preview=unchanged，commit unchanged=1，数量不再增长。
+- 真实源 `outfit.sqlite`、WAL、SHM 前后 size/mtimeNs 完全相同（1081344/1009432/32768 字节），确认未被迁移或写入。
+- 含真实敏感数据的演练副本按不擅自删除约束保留在 `C:\Users\Vader\AppData\Local\Temp\outfit-realdb-rehearsal-wyUfH7\outfit-rehearsal.sqlite`；没有删除任何文件。
+- 最终代码回归当前结果：Vitest 29 文件 410/410；TypeScript `tsc --noEmit` 通过；Python unittest 25/25、pytest 33/33。主审新增的空反馈保护使总数从子 Agent 阶段的 409 增至 410。
+- 依赖安全：npm 生产与全量审计均为 0 漏洞；`pip-audit -r requirements.lock.txt` 为 0 已知漏洞，`pip check` 无破损依赖。`npm ls --depth=0` 成功但列出若干 extraneous WASM/tslib 辅助包，属于本机 node_modules 卫生项；本轮不通过删除清理。
+- 非破坏性生产构建成功：Vite 8 转换 1595 模块，在 `C:\Users\Vader\AppData\Local\Temp\outfit-build-a2fb6e15f6154222a720d0e2b44eec0f` 生成 6 个文件；使用 `--emptyOutDir false`，现有 dist 未被清理或改写。

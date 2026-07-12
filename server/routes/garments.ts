@@ -87,11 +87,15 @@ export function registerGarmentRoutes(
   });
 
   app.put("/api/garments/:id", (request, response) => {
-    handle(response, () => updateGarment(
-      db,
-      validatePositiveIntegerParam(request.params.id),
-      validateGarmentUpdate(request.body) as GarmentUpdate
-    ));
+    handle(response, () => {
+      const garmentId = validatePositiveIntegerParam(request.params.id);
+      rejectPublicImageUrlUpdate(request.body, garmentId);
+      return updateGarment(
+        db,
+        garmentId,
+        validateGarmentUpdate(request.body) as GarmentUpdate
+      );
+    });
   });
 
   app.post("/api/garments/:id/availability", (request, response) => {
@@ -157,4 +161,23 @@ function sendError(response: Response, error: unknown): void {
 
 function isTruthyQueryFlag(value: unknown): boolean {
   return value === "1" || value === "true";
+}
+
+function rejectPublicImageUrlUpdate(body: unknown, garmentId: number): void {
+  if (
+    body !== null
+    && typeof body === "object"
+    && !Array.isArray(body)
+    && Object.prototype.hasOwnProperty.call(body, "imageUrl")
+  ) {
+    throw new ApiError(
+      "GARMENT_IMAGE_UPDATE_FORBIDDEN",
+      "imageUrl 只能通过专用图片上传接口修改",
+      400,
+      {
+        field: "imageUrl",
+        endpoint: `/api/garments/${garmentId}/image`
+      }
+    );
+  }
 }

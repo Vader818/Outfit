@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { archiveGarment, commitTaobaoImport, createDatabase, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
+import { computeLegacyTaobaoSourceItemKey, computeTaobaoSourceItemKey } from "../server/services/importTaobao";
+import { ValidationError } from "../server/validation";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -705,5 +707,213 @@ describe("database import", () => {
     const refundReplay = commitTaobaoImport(db, { batch: refundedBatch, decisions: [refundDecision] });
     expect(refundReplay.summary.unchanged).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 1 });
+  });
+
+  it("does not merge a different order into a matching legacy item and SKU", () => {
+    const db = createDatabase(":memory:");
+    const firstItem = { ...payload.items[0], itemId: "303", orderId: "order-001" };
+    const secondItem = { ...firstItem, orderId: "order-002" };
+    const firstBatch = { ...payload, items: [firstItem] };
+    const secondBatch = { ...payload, capturedAt: "2026-06-11T08:00:00.000Z", items: [secondItem] };
+    importTaobaoBatchIntoDb(db, firstBatch);
+    const legacyKey = computeLegacyTaobaoSourceItemKey(firstItem);
+    db.prepare("UPDATE source_order_items SET external_key = ?").run(legacyKey);
+
+    const preview = previewTaobaoImportForDb(db, secondBatch);
+    expect(preview.candidates[0]).toMatchObject({ disposition: "create" });
+    const result = commitTaobaoImport(db, {
+      batch: secondBatch,
+      decisions: [{ sourceItemKey: preview.candidates[0].sourceItemKey, include: true }]
+    });
+
+    expect(result.summary).toMatchObject({ created: 1, updated: 0 });
+    expect(db.prepare(`
+      SELECT external_key, order_id
+      FROM source_order_items
+      ORDER BY order_id
+    `).all()).toEqual([
+      { external_key: legacyKey, order_id: "order-001" },
+      { external_key: computeTaobaoSourceItemKey(secondItem), order_id: "order-002" }
+    ]);
+    expect(listGarments(db)).toHaveLength(2);
+  });
+
+  it("safely upgrades a same-order legacy key to v2 and remains idempotent", () => {
+    const db = createDatabase(":memory:");
+    const item = { ...payload.items[0], itemId: "404", orderId: "order-legacy" };
+    const batch = { ...payload, items: [item] };
+    importTaobaoBatchIntoDb(db, batch);
+    const sourceBefore = db.prepare("SELECT id FROM source_order_items").get() as { id: number };
+    const garmentBefore = listGarments(db)[0];
+    db.prepare("UPDATE source_order_items SET external_key = ?").run(computeLegacyTaobaoSourceItemKey(item));
+
+    const preview = previewTaobaoImportForDb(db, batch);
+    expect(preview.candidates[0]).toMatchObject({
+      disposition: "update",
+      existingGarmentId: garmentBefore.id
+    });
+    const first = commitTaobaoImport(db, {
+      batch,
+      decisions: [{ sourceItemKey: preview.candidates[0].sourceItemKey, include: true }]
+    });
+    expect(first.summary).toMatchObject({ created: 0, updated: 1 });
+    expect(db.prepare("SELECT id, external_key FROM source_order_items").get()).toEqual({
+      id: sourceBefore.id,
+      external_key: computeTaobaoSourceItemKey(item)
+    });
+    expect(listGarments(db)).toHaveLength(1);
+    expect(listGarments(db)[0].id).toBe(garmentBefore.id);
+
+    const replayPreview = previewTaobaoImportForDb(db, batch);
+    expect(replayPreview.candidates[0].disposition).toBe("unchanged");
+    const replay = commitTaobaoImport(db, {
+      batch,
+      decisions: [{ sourceItemKey: replayPreview.candidates[0].sourceItemKey, include: true }]
+    });
+    expect(replay.summary).toMatchObject({ created: 0, updated: 0, unchanged: 1 });
+  });
+
+  it("also upgrades a same-order legacy key through the internal batch importer without duplicating garments", () => {
+    const db = createDatabase(":memory:");
+    const item = { ...payload.items[0], itemId: "405", orderId: "order-internal-legacy" };
+    const batch = { ...payload, items: [item] };
+    importTaobaoBatchIntoDb(db, batch);
+    const sourceBefore = db.prepare("SELECT id FROM source_order_items").get() as { id: number };
+    const garmentBefore = listGarments(db)[0];
+    db.prepare("UPDATE source_order_items SET external_key = ?").run(computeLegacyTaobaoSourceItemKey(item));
+
+    const replay = importTaobaoBatchIntoDb(db, batch);
+
+    expect(replay.summary.createdGarments).toBe(0);
+    expect(db.prepare("SELECT id, external_key FROM source_order_items").get()).toEqual({
+      id: sourceBefore.id,
+      external_key: computeTaobaoSourceItemKey(item)
+    });
+    expect(listGarments(db)).toHaveLength(1);
+    expect(listGarments(db)[0].id).toBe(garmentBefore.id);
+  });
+
+  it("persists an explicit empty size override to clear an imported garment size", () => {
+    const db = createDatabase(":memory:");
+    const firstPreview = previewTaobaoImportForDb(db, payload);
+    commitTaobaoImport(db, {
+      batch: payload,
+      decisions: [{
+        sourceItemKey: firstPreview.candidates[0].sourceItemKey,
+        include: true,
+        overrides: { size: "M" }
+      }]
+    });
+    expect(listGarments(db)[0].size).toBe("M");
+
+    const clearPreview = previewTaobaoImportForDb(db, payload);
+    const cleared = commitTaobaoImport(db, {
+      batch: payload,
+      decisions: [{
+        sourceItemKey: clearPreview.candidates[0].sourceItemKey,
+        include: true,
+        overrides: { size: "" }
+      }]
+    });
+
+    expect(cleared.summary.updated).toBe(1);
+    expect(listGarments(db)[0].size).toBe("");
+    expect(db.prepare("SELECT size FROM garments").get()).toEqual({ size: "" });
+  });
+
+  it("returns a structured conflict and rolls back when a legacy-key upgrade hits a unique key", () => {
+    const db = createDatabase(":memory:");
+    const item = { ...payload.items[0], itemId: "505", orderId: "order-conflict" };
+    const batch = { ...payload, items: [item] };
+    importTaobaoBatchIntoDb(db, batch);
+    const legacyKey = computeLegacyTaobaoSourceItemKey(item);
+    const v2Key = computeTaobaoSourceItemKey(item);
+    db.prepare("UPDATE source_order_items SET external_key = ?").run(legacyKey);
+    db.exec(`
+      CREATE TRIGGER inject_import_external_key_conflict
+      BEFORE UPDATE OF external_key ON source_order_items
+      WHEN NEW.external_key LIKE 'v2:%'
+      BEGIN
+        INSERT INTO source_order_items (external_key, source, title)
+        VALUES (NEW.external_key, 'conflict-fixture', '冲突夹具');
+      END;
+    `);
+    const before = db.prepare("SELECT id, external_key, order_id, title FROM source_order_items").all();
+    const preview = previewTaobaoImportForDb(db, batch);
+
+    let thrown: unknown;
+    try {
+      commitTaobaoImport(db, {
+        batch,
+        decisions: [{ sourceItemKey: preview.candidates[0].sourceItemKey, include: true }]
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      code: "IMPORT_SOURCE_CONFLICT",
+      status: 409,
+      details: { sourceItemKey: v2Key }
+    });
+    expect(db.isTransaction).toBe(false);
+    expect(db.prepare("SELECT id, external_key, order_id, title FROM source_order_items").all()).toEqual(before);
+    expect(listGarments(db)).toHaveLength(1);
+  });
+
+  it("reports a pre-existing legacy/v2 identity conflict instead of choosing either row", () => {
+    const db = createDatabase(":memory:");
+    const item = { ...payload.items[0], itemId: "506", orderId: "order-existing-conflict" };
+    const batch = { ...payload, items: [item] };
+    importTaobaoBatchIntoDb(db, batch);
+    const legacyKey = computeLegacyTaobaoSourceItemKey(item);
+    const v2Key = computeTaobaoSourceItemKey(item);
+    db.prepare("UPDATE source_order_items SET external_key = ?").run(legacyKey);
+    db.prepare(`
+      INSERT INTO source_order_items (external_key, source, title)
+      VALUES (?, 'conflict-fixture', '冲突夹具')
+    `).run(v2Key);
+    const before = db.prepare("SELECT id, external_key, order_id, title FROM source_order_items ORDER BY id").all();
+
+    let thrown: unknown;
+    try {
+      previewTaobaoImportForDb(db, batch);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      code: "IMPORT_SOURCE_CONFLICT",
+      status: 409,
+      details: { sourceItemKey: v2Key }
+    });
+    let internalThrown: unknown;
+    try {
+      importTaobaoBatchIntoDb(db, batch);
+    } catch (error) {
+      internalThrown = error;
+    }
+    expect(internalThrown).toMatchObject({
+      code: "IMPORT_SOURCE_CONFLICT",
+      status: 409,
+      details: { sourceItemKey: v2Key }
+    });
+    expect(db.prepare("SELECT id, external_key, order_id, title FROM source_order_items ORDER BY id").all()).toEqual(before);
+    expect(listGarments(db)).toHaveLength(1);
+  });
+
+  it.each(["preview", "commit"])("rejects malformed batch fields as ValidationError during %s", (operation) => {
+    const db = createDatabase(":memory:");
+    const malformed = {
+      source: { collector: "taobao" },
+      pageType: "order-list",
+      items: [{ ...payload.items[0], pageType: { value: "order-list" } }]
+    };
+    const action = operation === "preview"
+      ? () => previewTaobaoImportForDb(db, malformed)
+      : () => commitTaobaoImport(db, { batch: malformed as never, decisions: [] });
+
+    expect(action).toThrowError(ValidationError);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM source_order_items").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM garments").get()).toEqual({ count: 0 });
   });
 });

@@ -28,6 +28,7 @@ import {
   getGarments,
   getInsights,
   getPersonalProfile,
+  getRecommendationFeedback,
   getRecommendationRuns,
   getRecommendations,
   getSavedOutfits,
@@ -102,6 +103,7 @@ import type {
   RecommendationResult,
   RecommendationFeedbackClearPreview,
   RecommendationFeedbackClearScope,
+  RecommendationFeedback,
   RecommendationFeedbackInput,
   RecommendationRunEntry,
   SavedOutfit,
@@ -138,6 +140,8 @@ type ReplacementDialogState = {
 type FeedbackDialogState = {
   outfit: OutfitRecommendation;
   verdict: Extract<FeedbackVerdict, "liked" | "disliked">;
+  initialFeedback?: RecommendationFeedback;
+  loading: boolean;
 } | null;
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: ReactNode }> = [
@@ -147,6 +151,59 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: ReactNode }> = [
   { id: "import", label: "导入", icon: <Upload aria-hidden="true" /> },
   { id: "settings", label: "设置", icon: <Settings aria-hidden="true" /> }
 ];
+
+const SAVED_OUTFIT_SLOT_ORDER: Record<Garment["category"], number> = {
+  top: 0,
+  bottom: 1,
+  dress: 2,
+  outerwear: 3,
+  shoes: 4,
+  accessory: 5
+};
+
+export function findExactSavedRecommendationParent(
+  savedOutfits: readonly SavedOutfit[],
+  candidate: OutfitRecommendation
+): SavedOutfit | undefined {
+  const positions = new Map<Garment["category"], number>();
+  const expectedItems = [...candidate.items]
+    .sort((left, right) =>
+      SAVED_OUTFIT_SLOT_ORDER[left.category] - SAVED_OUTFIT_SLOT_ORDER[right.category] || left.id - right.id
+    )
+    .map((garment) => {
+      const position = positions.get(garment.category) ?? 0;
+      positions.set(garment.category, position + 1);
+      return { garmentId: garment.id, slot: garment.category, position };
+    });
+
+  return savedOutfits.find((saved) => {
+    if (saved.sourceCandidateId !== candidate.candidateId || saved.items.length !== expectedItems.length) {
+      return false;
+    }
+    const actualItems = [...saved.items].sort((left, right) =>
+      SAVED_OUTFIT_SLOT_ORDER[left.slot] - SAVED_OUTFIT_SLOT_ORDER[right.slot] ||
+      left.position - right.position ||
+      left.garmentSnapshot.id - right.garmentSnapshot.id
+    );
+    return actualItems.every((item, index) => {
+      const expected = expectedItems[index];
+      return item.garmentId === expected.garmentId &&
+        item.garmentSnapshot.id === expected.garmentId &&
+        item.slot === expected.slot &&
+        item.position === expected.position;
+    });
+  });
+}
+
+export async function resolveSavedRecommendationParent(
+  savedOutfits: readonly SavedOutfit[],
+  candidate: OutfitRecommendation,
+  saveCandidate: (candidateId: string) => Promise<SavedOutfit> = saveRecommendationCandidate
+): Promise<{ parent: SavedOutfit; created: boolean }> {
+  const existing = findExactSavedRecommendationParent(savedOutfits, candidate);
+  if (existing) return { parent: existing, created: false };
+  return { parent: await saveCandidate(candidate.candidateId), created: true };
+}
 
 export function buildTaobaoOrderCaptureOptions() {
   return { maxPages: 15, loginWait: 60 };
@@ -289,6 +346,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [manualGarmentError, setManualGarmentError] = useState("");
   const [manualSavedGarment, setManualSavedGarment] = useState<Garment | null>(null);
   const thumbnailPickerRequestId = useRef(0);
+  const feedbackDialogRequestId = useRef(0);
   const [occasion, setOccasion] = useState<Formality>("casual");
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
   const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
@@ -297,6 +355,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [statusMessage, setStatusMessage] = useState("");
 
   const bookmarklet = useMemo(() => getTaobaoBookmarklet(), []);
+  const outfitBuilderGarments = useMemo(
+    () => [...garments, ...archivedGarments],
+    [archivedGarments, garments]
+  );
   const reviewPendingCount = garments.filter(isWardrobeReviewPendingGarment).length;
   const recommendationPendingCount = garments.filter(isRecommendationPendingGarment).length;
   const recommendationGarments = garments.filter(isRecommendationEligibleGarment);
@@ -1002,11 +1064,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setApplyingReplacementId(suggestion.replacement.id);
     setReplacementError("");
     try {
-      let parent = savedOutfits.find((outfit) =>
-        outfit.sourceCandidateId === replacementDialog.outfit.candidateId
-      );
-      if (!parent) {
-        parent = await saveRecommendationCandidate(replacementDialog.outfit.candidateId);
+      const resolvedParent = await resolveSavedRecommendationParent(savedOutfits, replacementDialog.outfit);
+      const parent = resolvedParent.parent;
+      if (resolvedParent.created) {
         upsertSavedOutfit(parent);
       }
       const derived = await applySavedOutfitReplacement(parent.id, {
@@ -1052,12 +1112,27 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     outfit: OutfitRecommendation,
     verdict: Extract<FeedbackVerdict, "liked" | "disliked">
   ) {
+    const requestId = feedbackDialogRequestId.current + 1;
+    feedbackDialogRequestId.current = requestId;
     setFeedbackError("");
-    setFeedbackDialog({ outfit, verdict });
+    setFeedbackDialog({ outfit, verdict, loading: true });
+    void getRecommendationFeedback(outfit.candidateId)
+      .then((initialFeedback) => {
+        if (feedbackDialogRequestId.current !== requestId) return;
+        setFeedbackDialog((current) => current?.outfit.candidateId === outfit.candidateId
+          ? { ...current, ...(initialFeedback ? { initialFeedback } : {}), loading: false }
+          : current);
+      })
+      .catch((feedbackLoadError) => {
+        if (feedbackDialogRequestId.current !== requestId) return;
+        setFeedbackDialog(null);
+        setError(feedbackLoadError instanceof Error ? feedbackLoadError.message : "已有反馈读取失败");
+      });
   }
 
   function closeRecommendationFeedback() {
     if (feedbackBusyCandidateId) return;
+    feedbackDialogRequestId.current += 1;
     setFeedbackDialog(null);
     setFeedbackError("");
   }
@@ -1488,7 +1563,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       <OutfitBuilder
         open={outfitBuilderOutfit !== undefined}
         outfit={outfitBuilderOutfit ?? null}
-        garments={garments}
+        garments={outfitBuilderGarments}
         busy={savedOutfitBusy}
         error={outfitBuilderError}
         onClose={closeOutfitBuilder}
@@ -1513,7 +1588,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         open={Boolean(feedbackDialog)}
         candidateId={feedbackDialog?.outfit.candidateId ?? ""}
         verdict={feedbackDialog?.verdict ?? "liked"}
-        busy={feedbackBusyCandidateId === feedbackDialog?.outfit.candidateId}
+        initialFeedback={feedbackDialog?.initialFeedback}
+        busy={Boolean(feedbackDialog?.loading) || feedbackBusyCandidateId === feedbackDialog?.outfit.candidateId}
         error={feedbackError}
         onClose={closeRecommendationFeedback}
         onSubmit={saveRecommendationFeedback}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDatabase, getGarmentById, type AppDatabase } from "../server/db";
 import {
   clearRecommendationFeedback,
+  getRecommendationFeedback,
   getRecommendationFeedbackInsights,
   listOutfitPairStats,
   previewRecommendationFeedbackClear,
@@ -103,6 +104,92 @@ describe("recommendation feedback service", () => {
     ]);
   });
 
+  it("treats a linked wear log as an irreversible fact even when an update explicitly sends false", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    const worn = upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      actuallyWorn: true,
+      reasonCodes: []
+    });
+
+    const updated = upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      verdict: "liked",
+      actuallyWorn: false,
+      reasonCodes: [],
+      comment: "后来补充评价"
+    });
+
+    expect(updated.feedback).toMatchObject({
+      verdict: "liked",
+      actuallyWorn: true,
+      wearLogId: worn.feedback.wearLogId,
+      comment: "后来补充评价"
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(listOutfitPairStats(db)).toEqual([
+      expect.objectContaining({ likes: 1, wornCount: 1, totalFeedback: 1, signal: 3 })
+    ]);
+  });
+
+  it("reads one candidate feedback and clears rating and comment explicitly", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    insertCandidate(db, SECOND_CANDIDATE, [top, bottom]);
+    upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      verdict: "disliked",
+      rating: 2,
+      reasonCodes: ["fit"],
+      comment: "版型不合适"
+    });
+
+    expect(getRecommendationFeedback(db, SECOND_CANDIDATE)).toBeNull();
+    expect(getRecommendationFeedback(db, FIRST_CANDIDATE)).toMatchObject({
+      verdict: "disliked",
+      rating: 2,
+      reasonCodes: ["fit"],
+      comment: "版型不合适"
+    });
+
+    const cleared = upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      verdict: "liked",
+      rating: null,
+      reasonCodes: [],
+      comment: ""
+    });
+    expect(cleared.feedback).toMatchObject({
+      verdict: "liked",
+      reasonCodes: [],
+      comment: ""
+    });
+    expect(cleared.feedback).not.toHaveProperty("rating");
+    expect(getRecommendationFeedback(db, FIRST_CANDIDATE)).toEqual(cleared.feedback);
+  });
+
+  it("does not create an empty feedback row when clear markers are submitted first", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+
+    expect(() => upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      rating: null,
+      reasonCodes: [],
+      comment: ""
+    })).toThrow(/至少保留一个有效反馈字段/);
+
+    expect(getRecommendationFeedback(db, FIRST_CANDIDATE)).toBeNull();
+    expect(listOutfitPairStats(db)).toEqual([]);
+  });
+
   it("adds the actual-worn fact without erasing an earlier verdict or rejection reasons", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "上衣", "top");
@@ -197,7 +284,26 @@ describe("recommendation feedback service", () => {
       totalCount: 2,
       acceptedCount: 2,
       acceptanceRate: 100,
+      weightedPairCount: 0,
       rejectionReasons: []
+    });
+  });
+
+  it("counts only garment pairs with at least three feedback samples as weighted", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    const shoes = insertGarment(db, "鞋", "shoes");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    insertCandidate(db, SECOND_CANDIDATE, [top, bottom]);
+    insertCandidate(db, THIRD_CANDIDATE, [top, bottom, shoes]);
+    for (const candidateId of [FIRST_CANDIDATE, SECOND_CANDIDATE, THIRD_CANDIDATE]) {
+      upsertRecommendationFeedback(db, { candidateId, verdict: "liked", reasonCodes: [] });
+    }
+
+    expect(getRecommendationFeedbackInsights(db)).toMatchObject({
+      totalCount: 3,
+      weightedPairCount: 1
     });
   });
 });

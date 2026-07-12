@@ -2197,6 +2197,7 @@ describe("API routes", () => {
       totalCount: 3,
       acceptedCount: 3,
       acceptanceRate: 100,
+      weightedPairCount: 3,
       rejectionReasons: []
     });
 

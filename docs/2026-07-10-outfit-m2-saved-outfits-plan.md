@@ -123,4 +123,11 @@ interface OutfitReplacementSuggestion {
 - 归档搭配现可在历史洞察的独立区域回看保存时快照和派生关系。
 - 与 M1 合并后的全量验证为 Vitest 24 个文件、330 项测试及 Python 33 项测试全部通过；类型检查、生产构建和依赖审计通过。
 
+### 缺陷修复复验记录（2026-07-12）
+
+- 推荐替换只复用 garment ID、快照 ID、slot、position 与候选完全一致的 recommendation parent；同 candidate 的已编辑搭配会先创建干净候选 parent，再派生 replacement，预览与落盘不再分叉。
+- OutfitBuilder 的历史状态解析现同时接收 active 与 archived 衣物；归档来源显示为“已归档”，但组件仍只把 active 衣物放入可选集合。
+- 推荐约束文档已补齐 availability 拒绝原因 `UNAVAILABLE`。
+- 隔离浏览器与数据库确认同一 candidate 的已编辑父记录（白衬衫+灰裤）和干净父记录（白衬衫+黑裤）同时保留，蓝衬衫+黑裤 replacement 只派生自干净父记录；归档灰裤仍以历史快照显示为“已归档”。最终全量 Vitest 29 文件 410 项及 typecheck 通过。
+
 ---

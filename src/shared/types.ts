@@ -55,6 +55,26 @@ export interface Garment {
   visionUpdatedAt?: string;
 }
 
+export type GarmentUpdateInput = Partial<Pick<Garment,
+  | "brand"
+  | "name"
+  | "rawName"
+  | "category"
+  | "color"
+  | "warmth"
+  | "seasons"
+  | "styles"
+  | "formality"
+  | "size"
+  | "materials"
+  | "patterns"
+  | "tags"
+  | "owned"
+  | "confirmed"
+  | "excluded"
+  | "notes"
+>>;
+
 export type SavedOutfitSource = "recommendation" | "manual" | "replacement";
 export type OutfitSlot = GarmentCategory;
 
@@ -253,15 +273,16 @@ export type FeedbackReason =
 export interface RecommendationFeedbackInput {
   candidateId: string;
   verdict?: FeedbackVerdict;
-  rating?: 1 | 2 | 3 | 4 | 5;
+  rating?: 1 | 2 | 3 | 4 | 5 | null;
   actuallyWorn?: boolean;
   reasonCodes: FeedbackReason[];
   comment?: string;
   woreInsteadOutfitId?: number;
 }
 
-export interface RecommendationFeedback extends RecommendationFeedbackInput {
+export interface RecommendationFeedback extends Omit<RecommendationFeedbackInput, "rating"> {
   id: number;
+  rating?: 1 | 2 | 3 | 4 | 5;
   actuallyWorn: boolean;
   comment: string;
   wearLogId?: number;
@@ -284,6 +305,7 @@ export interface RecommendationFeedbackInsights {
   totalCount: number;
   acceptedCount: number;
   acceptanceRate: number;
+  weightedPairCount: number;
   mostCommonRejectionReason?: FeedbackReason;
   rejectionReasons: Array<{ reason: FeedbackReason; count: number }>;
 }

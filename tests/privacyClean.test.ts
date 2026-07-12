@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,7 +12,7 @@ describe("privacy clean script", () => {
     };
 
     const args = privacyClean.parsePrivacyCleanArgs([]);
-    const plan = privacyClean.buildPrivacyCleanPlan("D:\\JavaWork\\Outfit");
+    const plan = privacyClean.buildPrivacyCleanPlan(makeIsolatedRoot());
 
     expect(args).toEqual({ confirm: false, includeLoginState: false });
     expect(plan).toEqual(expect.arrayContaining([
@@ -36,6 +37,12 @@ describe("privacy clean script", () => {
         relativePath: "data/outfit.sqlite*",
         sensitive: true,
         requiresExtraConfirmation: false
+      }),
+      expect.objectContaining({
+        relativePath: "data/garment-assets",
+        sensitive: true,
+        requiresExtraConfirmation: false,
+        kind: "directory"
       })
     ]));
   });
@@ -51,7 +58,7 @@ describe("privacy clean script", () => {
       ) => boolean;
     };
 
-    const plan = privacyClean.buildPrivacyCleanPlan("D:\\JavaWork\\Outfit");
+    const plan = privacyClean.buildPrivacyCleanPlan(makeIsolatedRoot());
     const loginTargets = [
       "output/chrome-taobao-profile",
       "output/playwright-taobao-profile"
@@ -80,7 +87,7 @@ describe("privacy clean script", () => {
         args: { confirm: boolean; includeLoginState: boolean }
       ) => string;
     };
-    const plan = privacyClean.buildPrivacyCleanPlan("D:\\JavaWork\\Outfit");
+    const plan = privacyClean.buildPrivacyCleanPlan(makeIsolatedRoot());
     const preview = privacyClean.formatPrivacyCleanPlan(plan, privacyClean.parsePrivacyCleanArgs([]));
     const confirmedWithoutLogin = privacyClean.formatPrivacyCleanPlan(
       plan,
@@ -105,9 +112,9 @@ describe("privacy clean script", () => {
     const privacyClean = await import(moduleUrl) as {
       isInsideRoot: (root: string, targetPath: string) => boolean;
     };
-    const root = path.resolve("D:\\JavaWork\\Outfit");
+    const root = makeIsolatedRoot();
     const redirectedData = path.resolve(root, "data");
-    const outsideData = path.resolve("D:\\Outside\\outfit-data");
+    const outsideData = path.resolve(root, "..", "outside-outfit-data");
     const realpath = vi.spyOn(fs.realpathSync, "native").mockImplementation(((candidate: fs.PathLike) => {
       const resolved = path.resolve(String(candidate));
       if (resolved === redirectedData) return outsideData;
@@ -122,4 +129,32 @@ describe("privacy clean script", () => {
       realpath.mockRestore();
     }
   });
+
+  it("previews garment assets by default and deletes them only with --confirm", async () => {
+    const moduleUrl = new URL("../scripts/privacy-clean.mjs", import.meta.url).href;
+    const privacyClean = await import(moduleUrl) as {
+      runPrivacyClean: (root: string, args: string[]) => { deleted: string[] };
+    };
+    const root = makeIsolatedRoot();
+    const assetRoot = path.join(root, "data", "garment-assets");
+    const assetPath = path.join(assetRoot, "private.webp");
+    fs.mkdirSync(assetRoot, { recursive: true });
+    fs.writeFileSync(assetPath, "isolated-test-fixture", "utf8");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      expect(privacyClean.runPrivacyClean(root, [])).toEqual({ deleted: [] });
+      expect(fs.existsSync(assetPath)).toBe(true);
+
+      const confirmed = privacyClean.runPrivacyClean(root, ["--confirm"]);
+      expect(confirmed.deleted).toContain(assetRoot);
+      expect(fs.existsSync(assetRoot)).toBe(false);
+    } finally {
+      stdout.mockRestore();
+    }
+  });
 });
+
+function makeIsolatedRoot(): string {
+  return fs.mkdtempSync(path.join(tmpdir(), "outfit-privacy-clean-"));
+}

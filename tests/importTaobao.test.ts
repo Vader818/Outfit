@@ -6,6 +6,7 @@ import {
   isTrustedProductImage,
   normalizeTaobaoBatch
 } from "../server/services/importTaobao";
+import { ValidationError } from "../server/validation";
 
 describe("normalizeTaobaoBatch", () => {
   it("uses a versioned order identity while exposing the legacy key for database compatibility", () => {
@@ -181,6 +182,66 @@ describe("normalizeTaobaoBatch", () => {
         }
       ]
     })).toThrow(/rawText/);
+  });
+
+  it.each([
+    ["source 类型", { source: 42, items: [] }],
+    ["source 长度", { source: "x".repeat(121), items: [] }],
+    ["batch pageType 枚举", { pageType: "cart", items: [] }],
+    ["capturedAt 类型", { capturedAt: 1_720_000_000_000, items: [] }],
+    ["capturedAt 长度", { capturedAt: "x".repeat(65), items: [] }],
+    ["pageUrl 类型", { pageUrl: ["https://example.test"], items: [] }],
+    ["pageUrl 长度", { pageUrl: `https://example.test/${"x".repeat(2049)}`, items: [] }],
+    ["item pageType 枚举", { items: [{ pageType: "cart", title: "白色衬衫" }] }],
+    ["item 文本类型", { items: [{ itemId: 101, title: "白色衬衫" }] }],
+    ["quantity 类型", { items: [{ title: "白色衬衫", quantity: { value: 1 } }] }],
+    ["quantity 格式", { items: [{ title: "白色衬衫", quantity: "1件" }] }],
+    ["payment 有限值", { items: [{ title: "白色衬衫", payment: Number.POSITIVE_INFINITY }] }],
+    ["payment 格式", { items: [{ title: "白色衬衫", payment: "免费" }] }],
+    ["detailProps 类型", { items: [{ title: "白色衬衫", detailProps: {} }] }],
+    ["detailProps 元素类型", { items: [{ title: "白色衬衫", detailProps: ["棉"] }] }],
+    ["detailProps.name 类型", { items: [{ title: "白色衬衫", detailProps: [{ name: 1, value: "棉" }] }] }],
+    ["detailImages 类型", { items: [{ title: "白色衬衫", detailImages: "https://img.alicdn.com/a.jpg" }] }],
+    ["detailImages 元素类型", { items: [{ title: "白色衬衫", detailImages: [123] }] }]
+  ])("rejects malformed import runtime fields with ValidationError: %s", (_label, malformed) => {
+    expect(() => normalizeTaobaoBatch(malformed)).toThrowError(ValidationError);
+  });
+
+  it("accepts the runtime forms emitted by the current bookmarklet, Selenium, and Playwright collectors", () => {
+    expect(() => normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      capturedAt: "2026-06-11T05:30:00.000Z",
+      pageUrl: "https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm",
+      items: [{
+        pageType: "order-list",
+        itemId: "303",
+        orderId: "order-001",
+        orderTime: "2026-06-10 12:00:00",
+        title: "纯棉短袖T恤",
+        sku: "颜色分类: 黑色; 尺码: M",
+        quantity: "2",
+        payment: "399.00",
+        status: "交易成功",
+        refundText: "",
+        itemUrl: "https://item.taobao.com/item.htm?id=303",
+        imageUrl: "https://img.alicdn.com/tee.jpg",
+        rawText: "订单抓取文本",
+        detailUrl: "https://item.taobao.com/item.htm?id=303",
+        detailTitle: "UTIMUS/纯棉短袖T恤",
+        detailProps: [{ name: "材质", value: "棉100%" }],
+        detailDescription: "夏季透气",
+        detailImages: ["https://img.alicdn.com/detail.jpg"],
+        detailRawText: "详情抓取文本"
+      }, {
+        pageType: "order-list",
+        itemId: "304",
+        orderId: "order-002",
+        title: "蓝色直筒牛仔裤",
+        quantity: 1,
+        payment: ""
+      }]
+    })).not.toThrow();
   });
 
   it("does not throw on malformed percent-encoded image URLs", () => {

@@ -2,13 +2,15 @@ import type { Express, Response } from "express";
 import type { AppDatabase } from "../db";
 import {
   clearRecommendationFeedback,
+  getRecommendationFeedback,
   previewRecommendationFeedbackClear,
   upsertRecommendationFeedback
 } from "../services/recommendationFeedback";
 import {
   ApiError,
   validateRecommendationFeedbackClearScope,
-  validateRecommendationFeedbackInput
+  validateRecommendationFeedbackInput,
+  validateUuidParam
 } from "../validation";
 
 export function registerFeedbackRoutes(app: Express, db: AppDatabase): void {
@@ -23,6 +25,13 @@ export function registerFeedbackRoutes(app: Express, db: AppDatabase): void {
     handle(response, () => previewRecommendationFeedbackClear(
       db,
       validateRecommendationFeedbackClearScope(request.query)
+    ));
+  });
+
+  app.get("/api/recommendation-feedback/:candidateId", (request, response) => {
+    handle(response, () => getRecommendationFeedback(
+      db,
+      validateUuidParam(request.params.candidateId, "candidateId")
     ));
   });
 
