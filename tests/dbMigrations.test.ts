@@ -29,7 +29,8 @@ describe("versioned database migrations", () => {
       { version: 1, name: "recommendation-candidates" },
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
-      { version: 4, name: "feedback-availability" }
+      { version: 4, name: "feedback-availability" },
+      { version: 5, name: "diary-week-planner" }
     ]);
   });
 
@@ -59,7 +60,8 @@ describe("versioned database migrations", () => {
       { version: 1 },
       { version: 2 },
       { version: 3 },
-      { version: 4 }
+      { version: 4 },
+      { version: 5 }
     ]);
   });
 
@@ -254,7 +256,8 @@ describe("versioned database migrations", () => {
       { version: 1, name: "recommendation-candidates" },
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
-      { version: 4, name: "feedback-availability" }
+      { version: 4, name: "feedback-availability" },
+      { version: 5, name: "diary-week-planner" }
     ]);
     expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
       "idx_recommendation_candidates_run_id",
@@ -620,6 +623,31 @@ describe("versioned database migrations", () => {
         garment_id, previous_status, status, changed_at
       ) VALUES (?, 'available', 'missing', ?)
     `).run(garmentId, now)).toThrow();
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("adds diary and planner tables with strict foreign keys and indexes in migration 5", () => {
+    const db = createDatabase(":memory:");
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN ('wear_events', 'wear_event_items', 'outfit_plan_entries')
+      ORDER BY name
+    `).all()).toEqual([
+      { name: "outfit_plan_entries" },
+      { name: "wear_event_items" },
+      { name: "wear_events" }
+    ]);
+    expect((db.prepare("PRAGMA table_info(recommendation_feedback)").all() as Array<{ name: string }>)
+      .map((column) => column.name)).toContain("wear_event_id");
+    const indexNames = (table: string) => (db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+      .map((index) => index.name);
+    expect(indexNames("wear_events")).toContain("idx_wear_events_worn_at");
+    expect(indexNames("wear_event_items")).toContain("idx_wear_event_items_item_id");
+    expect(indexNames("outfit_plan_entries")).toContain("idx_outfit_plan_entries_planned_date");
+    expect(db.prepare("PRAGMA foreign_key_list(wear_event_items)").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: "wear_events", from: "wear_event_id", on_delete: "CASCADE" }),
+      expect.objectContaining({ table: "garments", from: "item_id", on_delete: "RESTRICT" })
+    ]));
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });

@@ -22,6 +22,7 @@ export type RecommendationViewProps = {
   busyAction?: BusyAction | null;
   savingOutfitId?: string | null;
   feedbackBusyCandidateId?: string | null;
+  schedulingOutfitId?: string | null;
   coreGarments?: Garment[];
   recordingOutfitId: string | null;
   wearLogFeedback: WearLogFeedback | null;
@@ -30,6 +31,7 @@ export type RecommendationViewProps = {
   onGenerate: () => void;
   onRecordWearLog: (outfit: OutfitRecommendation) => void;
   onSaveOutfit?: (outfit: OutfitRecommendation) => void;
+  onScheduleOutfit?: (outfit: OutfitRecommendation) => void;
   onUseGarmentAsCore?: (garment: Garment) => void;
   onReplaceGarment?: (outfit: OutfitRecommendation, garment: Garment) => void;
   onRecommendationFeedback?: (outfit: OutfitRecommendation, verdict: RecommendationFeedbackAction) => void;
@@ -215,9 +217,11 @@ export function RecommendationView(props: RecommendationViewProps) {
                 recordingOutfitId={props.recordingOutfitId}
                 savingOutfitId={props.savingOutfitId}
                 feedbackBusyCandidateId={props.feedbackBusyCandidateId}
+                schedulingOutfitId={props.schedulingOutfitId}
                 wearLogFeedback={props.wearLogFeedback}
                 onRecordWearLog={props.onRecordWearLog}
                 onSaveOutfit={props.onSaveOutfit}
+                onScheduleOutfit={props.onScheduleOutfit}
                 onUseGarmentAsCore={props.onUseGarmentAsCore}
                 onReplaceGarment={props.onReplaceGarment}
                 onRecommendationFeedback={props.onRecommendationFeedback}
@@ -234,9 +238,11 @@ export function RecommendationView(props: RecommendationViewProps) {
                         recordingOutfitId={props.recordingOutfitId}
                         savingOutfitId={props.savingOutfitId}
                         feedbackBusyCandidateId={props.feedbackBusyCandidateId}
+                        schedulingOutfitId={props.schedulingOutfitId}
                         wearLogFeedback={props.wearLogFeedback}
                         onRecordWearLog={props.onRecordWearLog}
                         onSaveOutfit={props.onSaveOutfit}
+                        onScheduleOutfit={props.onScheduleOutfit}
                         onUseGarmentAsCore={props.onUseGarmentAsCore}
                         onReplaceGarment={props.onReplaceGarment}
                         onRecommendationFeedback={props.onRecommendationFeedback}

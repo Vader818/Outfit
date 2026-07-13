@@ -1,6 +1,6 @@
 # Outfit
 
-Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单页或商品详情页采集服饰候选，导入到本地 SQLite 衣橱库，再结合天气、场合、最近穿着记录生成可解释的搭配建议。
+Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单页或商品详情页采集服饰候选，导入到本地 SQLite 衣橱库，结合天气、场合和既有反馈生成可解释的搭配建议，并在本机管理穿着日记与周计划。
 
 项目当前定位是个人本地应用，不是多用户账号系统，也不是云端导购平台。淘宝采集、衣橱数据、推荐历史默认都保存在本机工作目录下。
 
@@ -10,7 +10,7 @@ Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单�
 - 后端：Express + Node 内置 `node:sqlite`
 - 数据库：`data/outfit.sqlite`
 - 采集：订单页使用 Python + Selenium；商品详情默认 Selenium，可通过 Playwright 切换；采集任务输出 JSON 到 `output/taobao-captures/<jobId>`
-- 天气：Open-Meteo API，失败时回退到本地估算天气
+- 天气：Open-Meteo 单日与 1–7 天逐日预报，失败时回退到过期缓存或本地估算天气
 
 ## 环境要求
 
@@ -56,7 +56,7 @@ npm run start
 
 前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8788`。
 
-API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 4（`recommendation-candidates`、`trusted-ingestion`、`saved-outfits`、`feedback-availability`）。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
+API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 5（`recommendation-candidates`、`trusted-ingestion`、`saved-outfits`、`feedback-availability`、`diary-week-planner`）。版本 5 会把旧 `wear_logs` 无损迁移为带 legacy snapshot 的 WearEvent，并创建周计划表与关联索引。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
 
 ## 测试与构建
 
@@ -177,6 +177,15 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 4. 进入「历史洞察 → 保存的搭配」可新建手工搭配、重新打开编辑、收藏或归档；已归档搭配仍在独立历史区域按保存时快照回看。手工搭配的核心必须是连衣裙，或上装加下装；配饰可拖动，也可用上移/下移按钮调整顺序。
 5. 替换创建的新版本会显示原搭配关系；原记录不会被覆盖。衣物以后改名或归档也不会改变已经保存的名称、品牌、类别和图片快照。
 
+## 穿搭日记与周计划
+
+- schema 5 使用 `wear_events` 与 `wear_event_items` 保存实际穿着。`wornAt` 统一保存 UTC ISO timestamp，同时保留记录时的 IANA `timeZone`；补录、修改衣物、撤销误记、日期范围和稳定游标均由 `/api/wear-events` 提供。更新时省略字段表示保留，`outfitId: null` 可解除搭配关联，`notes: null` 可清空备注。
+- `outfit_plan_entries.planned_date` 是用户时区中的严格 `YYYY-MM-DD` 本地日历键，不会因 UTC 转换移动到前一天。计划可为 `planned`、`skipped` 或 `worn`；计划备注可用 `null` 或空字符串清空。`mark-worn` 在一个事务中创建 WearEvent 并更新计划，重复提交不会重复创建事件；请求可用 `outfitId`（含 `null`）、`occasion`、`itemIds`、天气和备注完整覆盖实际事件，省略则按计划继承。
+- 重复提醒以目标日期为中心做对称检查：正式场合前后各 28 天，约会或晚餐前后各 14 天，并返回最近冲突；更新时排除计划自身。`RECENT_OUTFIT_REPEAT` 是计划保存成功后的提醒，关闭或点击“换一件（保留当前计划）”都不会撤销计划；休闲、商务休闲和运动不拦截也不提醒。
+- `GET /api/weather/forecast` 必须携带经纬度，可请求 1–7 天逐日快照。计划天气是可选冻结快照，且日期必须与 `plannedDate` 相同；远期计划可以只保存场合，进入 7 天窗口后再由客户端补充天气。
+- 主 `App` 已把 7 天周网格、上/下周、今日、计划卡、穿着日记、保存搭配和洞察接入“历史洞察”二级导航；移动主导航仍保持五项。推荐卡与保存搭配均可打开安排日期流程，重复提醒对话框明确显示计划已经保存。
+- 旧 `/api/wear-logs` 仅作兼容适配器：POST 转写新事件并保存 legacy snapshot，GET 从 WearEvent 投影旧 DTO。新功能应使用 `/api/wear-events`。
+
 ## 隐私边界
 
 - API 只监听 `127.0.0.1`，默认不对局域网开放。
@@ -192,15 +201,15 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 
 ## 数据删除、导出与备份
 
-- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着记录、推荐历史、推荐反馈与评论、衣物状态历史、保存搭配及个人画像。
+- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着日记、周计划、天气/场合快照、旧日志原始 context、推荐历史、推荐反馈与评论、衣物状态历史、保存搭配及个人画像。
 - `data/garment-assets` 包含净化后的本地衣物照片；它与数据库一样属于敏感本地数据。
 - `output/chrome-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Selenium Chrome 退出淘宝登录态。
 - `output/playwright-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Playwright Chrome 退出淘宝登录态。
 - `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
 - `output/garment-thumbnails` 是本地缩略图缓存。
-- `GET /api/export` 当前始终返回 `OutfitExportV2`：envelope 保持 `version=2`，当前数据库自动报告 `schemaVersion=4`，并带有 `feedback-availability` 功能标识。除画像、衣物、淘宝来源、穿着记录、全部推荐 run/candidate，以及 active、归档、派生保存搭配和衣物快照外，还导出全部推荐反馈、衣物组合统计和可用状态变更历史。
-- 反馈 verdict/评分、拒绝原因、自由文本评论、实际穿着选择与完整状态历史都是敏感本地数据。前端请求 JSON 或完整 ZIP 前会明确提示这些内容；直接调用 API 的人必须自行确认接收方和存放位置可信。
-- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1，以及缺少反馈/状态数组的旧 V2 导出。
+- `GET /api/export` 当前始终返回 `OutfitExportV2`：envelope 保持 `version=2`，当前数据库自动报告 `schemaVersion=5`，并带有 `diary-week-planner` 功能标识。除原有画像、衣物、淘宝来源、旧 wearLogs、推荐与保存搭配数据外，还完整导出 `wearEvents`、legacy snapshots、`outfitPlanEntries`、推荐反馈、衣物组合统计和状态变更历史。
+- 反馈 verdict/评分、拒绝原因、自由文本评论、实际穿着选择、日记备注、计划、场合、天气、IANA 时区与 legacy context 都是敏感本地数据。前端请求 JSON 或完整 ZIP 前会明确提示这些内容；直接调用 API 的人必须自行确认接收方和存放位置可信。
+- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。`plannedDate` 作为本地日历键原样往返，不经 UTC 转换。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1，以及缺少 M3/M4 可选数组的旧 V2 导出。
 
 查看隐私清理计划但不删除任何文件：
 
@@ -281,5 +290,6 @@ npm run models:verify
 - 淘宝页面停在登录、滑块或风险验证：在打开的 Chrome 中手动完成验证后等待采集继续；必要时再次运行采集。
 - 「读取产物」提示找不到 JSON：先确认对应采集任务已生成产物；旧版最新产物读取则检查 `output/taobao-captures` 或其子目录中是否有 `.json` 文件。
 - 导入后没有新增衣服：检查 JSON 是否包含 `items`，以及候选是否被退款、非服饰或无有效标题过滤。
-- 天气接口失败：服务会优先使用缓存，缓存也不可用时返回估算天气。
+- 天气接口失败：服务会优先使用同坐标、同天数的缓存，缓存也不可用时返回等长估算天气；逐日接口还需确认 `days` 是 1–7 的整数。
+- 周计划日期偏移：确认客户端传的是严格 `YYYY-MM-DD` 和正确 IANA 时区，不要把 `plannedDate` 先转为 UTC timestamp；实际穿着时间应单独通过带 offset 的 `wornAt` 提交。
 - SQLite 被占用：关闭其他正在访问 `data/outfit.sqlite` 的进程后重试。

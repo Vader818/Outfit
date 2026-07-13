@@ -24,7 +24,7 @@ import {
   attachCandidateIdentities,
   persistRecommendationSnapshot
 } from "../server/services/recommendationCandidates";
-import type { Garment, RecommendationScoreBreakdown, WeatherSnapshot } from "../src/shared/types";
+import type { Garment, OutfitExportV2, RecommendationScoreBreakdown, WeatherSnapshot } from "../src/shared/types";
 
 const FIXED_NOW = new Date("2026-07-11T06:00:00.000Z");
 const weather: WeatherSnapshot = {
@@ -207,6 +207,85 @@ describe("OutfitExportV2", () => {
     })).toThrow(/recommendationCandidates/i);
   });
 
+  it("validates M4 diary and planner arrays while keeping older V2 envelopes compatible", () => {
+    const fixture: OutfitExportV2 = {
+      version: 2,
+      schemaVersion: 5,
+      exportedAt: "2026-07-11T06:00:00.000Z",
+      features: ["versioned-migrations", "diary-week-planner"],
+      profile: {},
+      garments: [],
+      sourceOrderItems: [],
+      wearLogs: [],
+      recommendationRuns: [],
+      recommendationCandidates: [],
+      wearEvents: [{
+        id: 1,
+        wornAt: "2026-07-13T16:15:00.000Z",
+        timeZone: "Asia/Shanghai",
+        outfitId: 7,
+        occasion: "formal",
+        weatherSnapshot: weather,
+        notes: "跨午夜",
+        items: [{ id: 11, wearEventId: 1, itemId: 101, position: 0 }],
+        legacySnapshot: {
+          originalGarmentIds: [101, 999999],
+          originalContext: {
+            object: { nested: true },
+            array: ["value", 2, false, null],
+            string: "legacy",
+            number: 3,
+            boolean: true,
+            nullValue: null
+          }
+        }
+      }],
+      outfitPlanEntries: [{
+        id: 2,
+        plannedDate: "2026-07-14",
+        timeZone: "Asia/Shanghai",
+        outfitId: 7,
+        occasion: "formal",
+        weatherSnapshot: weather,
+        status: "planned",
+        notes: "本地日历键"
+      }]
+    };
+
+    expect(validateOutfitExport(fixture)).toBe(fixture);
+    expect(() => validateOutfitExport({ ...fixture, wearEvents: undefined })).toThrow(/wearEvents/i);
+    expect(() => validateOutfitExport({ ...fixture, outfitPlanEntries: undefined })).toThrow(/outfitPlanEntries/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      wearEvents: [{ ...fixture.wearEvents![0], timeZone: "Mars/Olympus" }]
+    })).toThrow(/wearEvents/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      wearEvents: [{
+        ...fixture.wearEvents![0],
+        weatherSnapshot: { ...weather, temperature: Number.NaN }
+      }]
+    })).toThrow(/wearEvents/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      wearEvents: [{
+        ...fixture.wearEvents![0],
+        legacySnapshot: {
+          originalGarmentIds: [101],
+          originalContext: { invalid: undefined }
+        }
+      }]
+    })).toThrow(/wearEvents/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      outfitPlanEntries: [{ ...fixture.outfitPlanEntries![0], plannedDate: "2026-02-30" }]
+    })).toThrow(/outfitPlanEntries/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      outfitPlanEntries: [{ ...fixture.outfitPlanEntries![0], status: "worn" }]
+    })).toThrow(/outfitPlanEntries/i);
+  });
+
   it("builds a deterministic V2 envelope with every V1 business field and M0 data", () => {
     const db = createDatabase(":memory:");
     const profile = savePersonalProfile(db, {
@@ -236,7 +315,7 @@ describe("OutfitExportV2", () => {
 
     expect(exported).toEqual({
       version: 2,
-      schemaVersion: 4,
+      schemaVersion: 5,
       exportedAt: FIXED_NOW.toISOString(),
       features: OUTFIT_EXPORT_V2_FEATURES,
       profile,
@@ -267,9 +346,172 @@ describe("OutfitExportV2", () => {
       savedOutfits: [],
       recommendationFeedback: [],
       outfitPairStats: [],
-      garmentAvailabilityEvents: []
+      garmentAvailabilityEvents: [],
+      wearEvents: [],
+      outfitPlanEntries: []
     });
     expect(JSON.stringify(again, null, 2)).toBe(JSON.stringify(exported, null, 2));
+  });
+
+  it("exports complete M4 diary and plan history without changing local calendar keys", () => {
+    const db = createDatabase(":memory:");
+    const itemId = insertAssetGarment(db, "跨时区衣物");
+    const outfitId = Number(db.prepare(`
+      INSERT INTO saved_outfits (
+        name, notes, source, favorite, created_at, updated_at
+      ) VALUES ('跨时区搭配', '', 'manual', 0, ?, ?)
+    `).run(FIXED_NOW.toISOString(), FIXED_NOW.toISOString()).lastInsertRowid);
+    const legacySnapshot = {
+      originalGarmentIds: [itemId, 999999],
+      originalContext: {
+        object: { nested: true },
+        array: ["value", 2, false, null],
+        string: "legacy",
+        number: 3,
+        boolean: true,
+        nullValue: null
+      }
+    };
+    const insertEvent = db.prepare(`
+      INSERT INTO wear_events (
+        id, worn_at, time_zone, outfit_id, occasion, weather_snapshot,
+        notes, legacy_snapshot, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertEvent.run(
+      201,
+      "2026-07-13T16:15:00.000Z",
+      "Asia/Shanghai",
+      outfitId,
+      "formal",
+      JSON.stringify(weather),
+      "UTC+8 跨午夜",
+      JSON.stringify(legacySnapshot),
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    );
+    insertEvent.run(
+      202,
+      "2026-01-16T07:45:00.000Z",
+      "America/Los_Angeles",
+      outfitId,
+      "casual",
+      null,
+      "UTC-8 跨午夜",
+      null,
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    );
+    insertEvent.run(
+      203,
+      "2026-03-08T07:00:00.000Z",
+      "America/New_York",
+      outfitId,
+      "date",
+      null,
+      "DST 春季跳时",
+      null,
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    );
+    insertEvent.run(
+      204,
+      "2026-11-01T05:30:00.000Z",
+      "America/New_York",
+      outfitId,
+      "dinner",
+      null,
+      "DST 秋季第一次 01:30",
+      null,
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    );
+    insertEvent.run(
+      205,
+      "2026-11-01T06:30:00.000Z",
+      "America/New_York",
+      outfitId,
+      "dinner",
+      null,
+      "DST 秋季第二次 01:30",
+      null,
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    );
+    db.prepare(`
+      INSERT INTO wear_event_items (id, wear_event_id, item_id, position)
+      VALUES (301, 201, ?, 0)
+    `).run(itemId);
+
+    const insertPlan = db.prepare(`
+      INSERT INTO outfit_plan_entries (
+        id, planned_date, time_zone, outfit_id, occasion, weather_snapshot,
+        status, worn_at, wear_event_id, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'planned', NULL, NULL, ?, ?, ?)
+    `);
+    insertPlan.run(401, "2026-01-15", "America/Los_Angeles", outfitId, "casual", null, "UTC-8", FIXED_NOW.toISOString(), FIXED_NOW.toISOString());
+    insertPlan.run(402, "2026-03-08", "America/New_York", outfitId, "date", null, "DST spring", FIXED_NOW.toISOString(), FIXED_NOW.toISOString());
+    insertPlan.run(403, "2026-07-14", "Asia/Shanghai", outfitId, "formal", JSON.stringify(weather), "UTC+8", FIXED_NOW.toISOString(), FIXED_NOW.toISOString());
+    insertPlan.run(404, "2026-11-01", "America/New_York", outfitId, "dinner", null, "DST fall", FIXED_NOW.toISOString(), FIXED_NOW.toISOString());
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+    const again = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+
+    expect(exported.schemaVersion).toBe(5);
+    expect(exported.features).toContain("diary-week-planner");
+    expect(exported.wearEvents?.map((event) => event.id)).toEqual([205, 204, 201, 203, 202]);
+    expect(exported.wearEvents?.find((event) => event.id === 201)).toEqual({
+      id: 201,
+      wornAt: "2026-07-13T16:15:00.000Z",
+      timeZone: "Asia/Shanghai",
+      outfitId,
+      occasion: "formal",
+      weatherSnapshot: weather,
+      notes: "UTC+8 跨午夜",
+      items: [{ id: 301, wearEventId: 201, itemId, position: 0 }],
+      legacySnapshot
+    });
+    expect(exported.wearEvents?.find((event) => event.id === 201)?.items.map((item) => item.itemId)).toEqual([itemId]);
+    expect(exported.wearEvents?.find((event) => event.id === 201)?.legacySnapshot?.originalGarmentIds).toContain(999999);
+    expect(exported.outfitPlanEntries?.map((entry) => [entry.plannedDate, entry.timeZone])).toEqual([
+      ["2026-01-15", "America/Los_Angeles"],
+      ["2026-03-08", "America/New_York"],
+      ["2026-07-14", "Asia/Shanghai"],
+      ["2026-11-01", "America/New_York"]
+    ]);
+    expect(JSON.stringify(again, null, 2)).toBe(JSON.stringify(exported, null, 2));
+
+    const roundTripped = validateOutfitExport(JSON.parse(JSON.stringify(exported)));
+    expect(roundTripped.version).toBe(2);
+    if (roundTripped.version !== 2) throw new Error("expected V2 export");
+    expect(roundTripped.outfitPlanEntries?.map((entry) => entry.plannedDate)).toEqual([
+      "2026-01-15",
+      "2026-03-08",
+      "2026-07-14",
+      "2026-11-01"
+    ]);
+  });
+
+  it("fails with row and column context for malformed M4 JSON payloads", () => {
+    const db = createDatabase(":memory:");
+    const eventId = Number(db.prepare(`
+      INSERT INTO wear_events (
+        worn_at, time_zone, occasion, weather_snapshot, notes, created_at, updated_at
+      ) VALUES (?, 'UTC', 'casual', '{"date":"2026-07-11"}', '', ?, ?)
+    `).run(FIXED_NOW.toISOString(), FIXED_NOW.toISOString(), FIXED_NOW.toISOString()).lastInsertRowid);
+
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      new RegExp(`wear_events.*${eventId}.*weather_snapshot`, "i")
+    );
+
+    db.prepare(`
+      UPDATE wear_events
+      SET weather_snapshot = ?, legacy_snapshot = '{"originalGarmentIds":"bad","originalContext":null}'
+      WHERE id = ?
+    `).run(JSON.stringify(weather), eventId);
+    expect(() => buildOutfitExportV2(db)).toThrow(
+      new RegExp(`wear_events.*${eventId}.*legacy_snapshot`, "i")
+    );
   });
 
   it("exports every feedback, pair stat, and availability event in deterministic order", () => {
@@ -363,7 +605,7 @@ describe("OutfitExportV2", () => {
 
     const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
 
-    expect(exported.schemaVersion).toBe(4);
+    expect(exported.schemaVersion).toBe(5);
     expect(exported.features).toContain("feedback-availability");
     expect(exported.recommendationFeedback).toEqual([
       {

@@ -1,4 +1,4 @@
-import { BookmarkPlus, Check, RefreshCw, Target, ThumbsDown, ThumbsUp } from "lucide-react";
+import { BookmarkPlus, CalendarPlus, Check, RefreshCw, Target, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useId } from "react";
 import { GarmentImage } from "../../components/garments/GarmentImage";
 import { Badge, Button, Notice, Surface, cx } from "../../components/ui";
@@ -24,10 +24,12 @@ export function OutfitStage({
   wearLogFeedback,
   onRecordWearLog,
   onSaveOutfit,
+  onScheduleOutfit,
   onUseGarmentAsCore,
   onReplaceGarment,
   onRecommendationFeedback,
   feedbackBusyCandidateId,
+  schedulingOutfitId,
   allowRemoteTaobaoImages = false
 }: {
   outfit: OutfitRecommendation;
@@ -37,10 +39,12 @@ export function OutfitStage({
   wearLogFeedback: WearLogFeedback | null;
   onRecordWearLog: (outfit: OutfitRecommendation) => void;
   onSaveOutfit?: (outfit: OutfitRecommendation) => void;
+  onScheduleOutfit?: (outfit: OutfitRecommendation) => void;
   onUseGarmentAsCore?: (garment: Garment) => void;
   onReplaceGarment?: (outfit: OutfitRecommendation, garment: Garment) => void;
   onRecommendationFeedback?: (outfit: OutfitRecommendation, verdict: RecommendationFeedbackAction) => void;
   feedbackBusyCandidateId?: string | null;
+  schedulingOutfitId?: string | null;
   allowRemoteTaobaoImages?: boolean;
 }) {
   const titleId = useId();
@@ -50,6 +54,7 @@ export function OutfitStage({
   const recording = recordingOutfitId === outfit.id;
   const saving = savingOutfitId === outfit.candidateId;
   const feedbackBusy = feedbackBusyCandidateId === outfit.candidateId;
+  const scheduling = schedulingOutfitId === outfit.candidateId;
 
   return (
     <Surface
@@ -200,6 +205,17 @@ export function OutfitStage({
           >
             <BookmarkPlus aria-hidden="true" />
             {saving ? "保存中" : "保存搭配"}
+          </Button>
+        ) : null}
+        {onScheduleOutfit ? (
+          <Button
+            variant="secondary"
+            disabled={scheduling}
+            aria-busy={scheduling || undefined}
+            onClick={() => onScheduleOutfit(outfit)}
+          >
+            <CalendarPlus aria-hidden="true" />
+            {scheduling ? "安排中" : "安排日期"}
           </Button>
         ) : null}
         {onRecommendationFeedback ? (

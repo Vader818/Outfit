@@ -113,6 +113,13 @@ export const OCCASION_LABELS: Record<(typeof OCCASIONS)[number], string> = {
   sport: "运动"
 };
 
+export const PLANNER_OCCASIONS = [...OCCASIONS, "date", "dinner"] as const;
+export const PLANNER_OCCASION_LABELS: Record<(typeof PLANNER_OCCASIONS)[number], string> = {
+  ...OCCASION_LABELS,
+  date: "约会",
+  dinner: "晚餐"
+};
+
 export const BODY_TYPE_LABELS: Record<NonNullable<PersonalProfile["bodyType"]>, string> = {
   "slim-tall": "瘦高",
   average: "标准",
@@ -259,7 +266,7 @@ export function labelDistribution<T extends string>(
 }
 
 export function styleLabel(value: string): string {
-  return OCCASION_LABELS[value as keyof typeof OCCASION_LABELS] || value;
+  return PLANNER_OCCASION_LABELS[value as keyof typeof PLANNER_OCCASION_LABELS] || value;
 }
 
 export function labelStyleDistribution(data: Record<string, number>): Record<string, number> {
@@ -311,4 +318,22 @@ export function formatLocalDateTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
+}
+
+export function formatDateTimeInTimeZone(value: string, timeZone: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short"
+    }).format(date);
+  } catch {
+    return formatLocalDateTime(value);
+  }
 }

@@ -10,7 +10,11 @@ import {
   commitTaobaoImport,
   createGarment,
   createGarmentCutout,
+  createOutfitPlan,
   createSavedOutfit,
+  createWearEvent,
+  deleteOutfitPlan,
+  deleteWearEvent,
   downloadCompleteBackup,
   downloadVisionModel,
   exportLocalData,
@@ -20,6 +24,7 @@ import {
   getGarmentThumbnailCandidates,
   getGarments,
   getInsights,
+  getOutfitPlans,
   getPersonalProfile,
   getRecommendationFeedback,
   getRecommendationRuns,
@@ -28,8 +33,11 @@ import {
   getSavedOutfits,
   getVisionModels,
   getWearLogs,
+  getWearEvents,
+  getWeatherForecast,
   login,
   logout,
+  markOutfitPlanWorn,
   previewCompleteBackup,
   previewRecommendationFeedbackClear,
   previewTaobaoImport,
@@ -46,7 +54,9 @@ import {
   submitRecommendationFeedback,
   updateGarment,
   updateGarmentAvailability,
+  updateOutfitPlan,
   updateSavedOutfit,
+  updateWearEvent,
   uploadGarmentImage,
   verifyVisionModel
 } from "../src/api";
@@ -901,5 +911,72 @@ describe("frontend API client", () => {
       method: "GET",
       credentials: "same-origin"
     }));
+  });
+
+  it("uses calendar-safe planner, diary, and forecast endpoints", async () => {
+    const fetchMock = vi.fn();
+    for (let index = 0; index < 10; index += 1) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }));
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    const range = { timeZone: "Asia/Shanghai", from: "2026-07-13", to: "2026-07-19" };
+    const wearInput = {
+      wornAt: "2026-07-13T16:15:00.000Z",
+      timeZone: "Asia/Shanghai",
+      occasion: "casual" as const,
+      itemIds: [1, 2]
+    };
+    const planInput = {
+      plannedDate: "2026-07-14",
+      timeZone: "Asia/Shanghai",
+      outfitId: 9,
+      occasion: "formal" as const
+    };
+
+    await getWeatherForecast(31.2, 121.4, 7);
+    await getWearEvents({ ...range, cursor: "cursor value", limit: 20 });
+    await createWearEvent(wearInput);
+    await updateWearEvent(3, { notes: "改正记录" });
+    await deleteWearEvent(3);
+    await getOutfitPlans(range);
+    await createOutfitPlan(planInput);
+    await updateOutfitPlan(4, { status: "skipped" });
+    await deleteOutfitPlan(4);
+    await markOutfitPlanWorn(5, {
+      wornAt: "2026-07-14T01:30:00.000Z",
+      timeZone: "Asia/Shanghai"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/weather/forecast?latitude=31.2&longitude=121.4&days=7",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/wear-events?timeZone=Asia%2FShanghai&from=2026-07-13&to=2026-07-19&cursor=cursor+value&limit=20",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/wear-events", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(wearInput)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/wear-events/3", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ notes: "改正记录" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/wear-events/3", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "/api/outfit-plans?timeZone=Asia%2FShanghai&from=2026-07-13&to=2026-07-19",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(7, "/api/outfit-plans", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(planInput)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(8, "/api/outfit-plans/4", expect.objectContaining({ method: "PUT" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(9, "/api/outfit-plans/4", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(10, "/api/outfit-plans/5/mark-worn", expect.objectContaining({ method: "POST" }));
   });
 });

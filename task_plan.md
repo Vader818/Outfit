@@ -1,10 +1,10 @@
-# 任务计划：Outfit M1–M3 连续交付
+# 任务计划：Outfit M1–M4 连续交付
 
 ## 目标
-在已完成并保留 M1/M2 工作区成果的基础上，严格执行 `docs/2026-07-10-outfit-m3-feedback-availability-plan.md`，完整交付 Outfit M3：稳定 candidateId 反馈、幂等 pair stats、透明有界的学习偏好、衣物可用状态及历史、推荐硬过滤、反馈清空一致性、V2 导出、文档、自动化测试与真实交互验收。
+在已完成并保留 M1–M3 工作区成果的基础上，严格执行 `docs/2026-07-10-outfit-m4-diary-week-plan.md`，完整交付 Outfit M4：穿搭日记、周计划、日期/时区边界、天气冻结、场合化重复提醒、洞察口径、V2 导出、文档、自动化测试与真实交互验收。
 
 ## 当前阶段
-进行中：阶段 46——全量回归与真实交互复验
+已完成：阶段 54——M4 最终复核与交付
 
 ## 各阶段
 
@@ -290,6 +290,54 @@
 - [x] 汇总修改与残余风险，仅在所有已报告问题均有直接通过证据后完成 goal。
 - **状态：** complete
 
+### 阶段 47：M4 上下文恢复、契约审计与 TDD 蓝图
+- [x] 读取 M4 计划、三份规划记录、Git 差异、现有迁移/schema、wear logs、saved outfits、天气、推荐、洞察、导出与前端导航实现。
+- [x] 运行修改前基线并保留全部既有工作区改动，不修改或删除真实数据。
+- [x] 将十二项实施任务与四项验收标准映射到具体文件、失败测试顺序及无冲突并行范围。
+- **状态：** complete
+
+### 阶段 48：M4 数据迁移、日期时区与索引（TDD）
+- [x] 先写旧 `wear_logs` 迁移失败测试，覆盖 object、array、string、number、boolean、null context、缺失 garment ID 和 legacy snapshot。
+- [x] 新增 `wear_events`、`wear_event_items`、`outfit_plan_entries` 与 worn_at、planned_date、item_id 索引。
+- [x] 严格分离 plannedDate 本地日历键与 wornAt UTC 时间戳，并验证 IANA 时区、UTC±8、跨午夜、DST 边界。
+- **状态：** complete
+
+### 阶段 49：WearEvent 与 OutfitPlan 服务/API（TDD）
+- [x] 创建 WearEvent CRUD，覆盖补录、日期/游标查询、修改衣物、撤销误记、删除后统计回滚。
+- [x] 创建 OutfitPlan CRUD 与 mark-worn 原子操作，冻结计划/穿着快照并保持历史事实一致。
+- [x] 接入认证、Origin/Sec-Fetch-Site、严格输入校验和结构化错误边界。
+- **状态：** complete
+
+### 阶段 50：天气快照、推荐安排与重复提醒（TDD）
+- [x] 扩展天气服务为 1–7 天逐日快照，超出七天只保存场合并支持临近更新。
+- [x] 推荐结果增加安排日期并冻结天气/场合快照。
+- [x] 实现场合化重复提醒：正式 28 天、约会/晚餐 14 天、日常不提醒；提醒可忽略并提供换一件，不作硬阻断。
+- **状态：** complete
+
+### 阶段 51：周计划与穿着日记前端（TDD）
+- [x] 将历史洞察主区域改为周计划、穿着日记、保存搭配、洞察二级导航，移动主导航保持五项。
+- [x] 创建 7 天周视图、上/下周、今日定位、计划卡、已穿状态、空态和安排入口。
+- [x] 创建 WearEvent 对话框，支持补录、编辑、撤销和删除，并覆盖键盘、移动端、加载/错误/成功状态。
+- **状态：** complete
+
+### 阶段 52：洞察口径与 V2 导出（TDD）
+- [x] 将“近期未穿”与“从未穿过”分开，按 active garments 统一计算分布。
+- [x] 扩展 OutfitExportV2，加入 wear events、items、legacy snapshots 与 plan entries。
+- [x] 用固定跨时区 fixture 验证 JSON 往返不改变 plannedDate，归档/缺失引用仍可回看。
+- **状态：** complete
+
+### 阶段 53：文档、全量回归与真实交互验收
+- [x] 同步 `docs/api.md`、`docs/schema.md`、README 与 M4 原计划勾选/状态。
+- [x] 运行专项测试、`npm run typecheck`、`npm test`、Python 测试、依赖审计、`git diff --check` 与不删除现有文件的生产构建。
+- [x] 使用隔离数据库完成桌面/移动端真实交互验收，逐条验证四项验收标准。
+- **状态：** complete
+
+### 阶段 54：最终复核与交付
+- [x] 汇总代码、测试、文档、交互证据与残余风险，确认十二项任务和四项验收标准无遗漏。
+- [x] 更新 `task_plan.md`、`findings.md`、`progress.md`，仅在全部工作真实完成后结束 goal。
+- [x] 全程不删除任何未经用户明确确认的电脑文件。
+- **状态：** complete
+
 ## 关键问题
 1. 工作区已有 `src/App.tsx`、`src/styles.css`、`tests/app.test.tsx` 未提交改动，必须先理解并保留。
 2. 当前前端可能以大型单文件为主，是否拆分需依据实际耦合和测试边界决定。
@@ -314,7 +362,32 @@
 ## 遇到的错误
 | 错误 | 尝试次数 | 解决方案 |
 |------|---------|---------|
+| 追加 M4 阶段的首次补丁因旧文件状态行带列表前缀而未匹配 | 1 | 用 `Select-String -Context` 精确定位实际格式，改用匹配 `- **状态：**` 的补丁 |
+| 只读审计误查不存在的 `server/routes/index.ts` | 1 | 从 `server/index.ts` 的 `./routes` 解析规则与根目录清单定位真实 `server/routes.ts`，不重复错误路径 |
+| 推荐/保存搭配安排入口组合补丁未匹配 `SavedOutfitsPanel` 实际 import | 1 | 拆分补丁：先应用已精确定位的推荐入口，再读取保存搭配真实头部单独修改 |
+| 并行 typecheck 命中天气子 Agent TDD 红灯期的临时测试类型错误 | 1 | 不越界修改其独占文件；先验证本次 3 个前端文件，待天气 Agent 完成后统一 typecheck |
+| 历史页二级导航使 2 条旧同屏/旧标题断言失败 | 1 | 按 M4 新 IA 更新为“穿搭历史”与四分区，并让保存搭配测试显式选择 saved 分区；98/98 回归通过 |
+| 阶段 48–52 状态补丁末尾使用了错误的原始勾选上下文 | 1 | 拆分并按真实未勾选原文更新，避免整批补丁失败 |
+| 兼容/UI 补丁在文件切换前包含空 hunk 标记 | 1 | 删除多余 `@@` 后原样重放；解析失败时无文件变化 |
+| 联合回归旧导出 feature 断言缺 M4，且测试 worker 异常退出 | 1 | 补 `diary-week-planner`；移除新增 API 测试在监听服务器关闭前的两次 `db.close()` |
+| 首次隔离 QA 启动命令超时且 API 内联脚本未监听 | 1 | 保留已启动 Vite；为正式入口增加 `OUTFIT_DATABASE_PATH`，用继承环境变量启动隔离 API |
+| 浏览器进入后 WearEvent `limit=100` 被 service 拒绝 | 1 | Express query 是字符串；仅将十进制字符串转为整数后再执行原 1–100 严格边界，并补真实 API GET 测试 |
+| forecast API 测试首次按文件尾部闭合位置插入未匹配 | 1 | 定位 `api.test.ts` 主 describe 的真实结束行，在 helper 区之前精确插入 |
+| forecast/API 联测命中旧 schemaVersion=4 断言 | 1 | migration 5 已落地，更新里程碑版本断言为 5；不回退正确 schema |
+| 读取并发核心实现时 `outfitPlanner.ts` 尚未创建 | 1 | 不重复读取中间态；先接已稳定的 WearEvent/前端组件，等待核心 Agent 明确 planner service 签名 |
 | 新建 `/goal` 失败，因为已有同名 active goal | 1 | 使用当前 active goal 继续推进 |
+| 浏览器注册页首次按简短 label 定位账号/密码均为 0 | 1 | 读取最新 DOM snapshot 后改用页面实际可访问名称和精确 role 定位，登录成功 |
+| 周计划日期用自动化 `fill()` 后 DOM 显示新值但 React 草稿仍保留旧日期 | 2 | 为受控日期输入补 `onInput` 同步并增加 create/edit 显式模式；热更新后天气预览与落库日期均正确 |
+| 浏览器限定 Locator 不提供 `inputValue()` 与 `focus()` | 2 | 不再调用未公开方法，改用 DOM snapshot 读取值、`click()` 获取焦点 |
+| 原生日期选择器打开时两次保存按钮定位超时，随后热更新标签页失效 | 3 | 先用 `Escape` 关闭原生选择器；标签失效后复用既有 browser 绑定新建标签并恢复登录会话 |
+| M4 最终只读复核发现可选字段清空、mark-worn 改动丢失、天气冻结和对称重复窗口四项缺口 | 1 | 分离前端/服务与 planner 窗口写入范围并行修复，补专项回归后再继续真实交互 |
+| 前端热更新后隔离 API 仍是旧进程，mark-worn 拒绝新增 `outfitId` 字段 | 1 | 仅重启 8788 隔离 QA API，复用同一临时数据库；原样重试后完整实际衣物/场合/搭配落库 |
+| 浏览器 `fill("")` 没有清空 textarea，计划备注快捷键首次只删掉末尾字符 | 2 | 日记改用真实键盘选择/退格并验证 null 清空；计划清空由 108 项定向/API 测试覆盖，不把自动化输入差异误判为服务回归 |
+| 移动端页面截图 CDP 超时 | 1 | 不重复截图；改用只读 DOM 指标确认页面 375/375 无溢出、planner 容器 375/2344 且 overflow-x=auto |
+| 重复提醒关闭按钮两次超时并触发浏览器控制会话重置 | 3 | 重新连接既有内置浏览器会话，读取最新 snapshot 后用 dialog 作用域和 force click 关闭；最终控制台为 0 warn/error |
+| Node 会话重置后直接使用 `agent` 失败 | 1 | 按浏览器技能用插件绝对路径重新初始化 browser runtime，再复用标签页 3 完成最小复核和清理 |
+| 最终 Vitest 首次带入 Jest 的 `--runInBand` 参数而失败 | 1 | Vitest 不支持该参数；改为项目标准 `npm test`，最终 32 文件 455/455 通过 |
+| PowerShell 找不到 `pip-audit` 可执行命令且同一行后续 `pip check` 掩盖退出码 | 1 | 单独执行 `python -m pip_audit -r requirements.lock.txt`，确认 0 已知漏洞；`pip check` 也无破损依赖 |
 | 全仓 `Select-String` 搜索未排除 `logs/output`，扫到本地状态文件 | 1 | 后续搜索明确限定源码/测试/文档路径，避免扫描敏感本地状态目录 |
 | 本轮再次请求创建 goal 时提示已有 active goal | 1 | 读取 `get_goal` 并确认其目标正是本次前端重构，直接沿用 |
 | PowerShell `foreach` 结果直接接管道导致 EmptyPipeElement | 4 | 后续所有此类命令统一先赋给 `$rows` 再执行 `Format-Table`，不再使用直接管道形式 |

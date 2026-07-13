@@ -658,3 +658,63 @@
 - 最终代码回归当前结果：Vitest 29 文件 410/410；TypeScript `tsc --noEmit` 通过；Python unittest 25/25、pytest 33/33。主审新增的空反馈保护使总数从子 Agent 阶段的 409 增至 410。
 - 依赖安全：npm 生产与全量审计均为 0 漏洞；`pip-audit -r requirements.lock.txt` 为 0 已知漏洞，`pip check` 无破损依赖。`npm ls --depth=0` 成功但列出若干 extraneous WASM/tslib 辅助包，属于本机 node_modules 卫生项；本轮不通过删除清理。
 - 非破坏性生产构建成功：Vite 8 转换 1595 模块，在 `C:\Users\Vader\AppData\Local\Temp\outfit-build-a2fb6e15f6154222a720d0e2b44eec0f` 生成 6 个文件；使用 `--emptyOutDir false`，现有 dist 未被清理或改写。
+
+## 2026-07-13 Outfit M4 穿搭日记与周计划
+
+### 需求与硬约束
+- 严格执行 `docs/2026-07-10-outfit-m4-diary-week-plan.md` 的全部十二项实施任务和四项验收标准。
+- M4 硬依赖 M2，并必须兼容已完成的 M1–M3 数据、saved outfits、反馈/可用状态和现有五项移动主导航。
+- 采用 TDD；新增写接口继续经过 session、Origin/Sec-Fetch-Site、严格输入校验和结构化错误。
+- `planned_date` 是用户时区下的 `YYYY-MM-DD` 日历键，`worn_at` 是 UTC ISO timestamp，IANA `time_zone` 单独保存；API 必须拒绝带时间的 plannedDate 和未知时区。
+- 旧 `wear_logs` 迁移必须保留全部 context JSON 类型及缺失衣物 ID 的 legacy snapshot，但不能创建无效外键。
+- 删除任何电脑文件前必须先告知目标与影响并取得明确确认；本轮默认不删除，真实数据库不得原地迁移。
+
+### 初始实现审计
+- 本轮开始时 Git 工作区除三份规划记录外无产品源码改动；必须继续保留历史规划差异。
+- 当前编号迁移为 1–4，M4 应新增 migration 5；旧 `wear_logs` 位于冻结 baseline 0，`recommendation_feedback.wear_log_id` 仍外键引用它，迁移方案必须兼容 M3 的不可逆实穿事实。
+- `server/services/weather.ts` 当前只返回单个 `WeatherSnapshot`，Open-Meteo 请求硬编码 `forecast_days=4`，尚无逐日 1–7 天列表契约。
+- 目前没有 planner 路由、service、feature 或 `tests/planner.test.ts`；历史页已集中承载 wear logs、saved outfits 与 insights，适合在该主导航项内增加四个二级页签。
+- `server/db.ts` 仍包含 `saveWearLog()` 与旧日志查询；M4 必须决定兼容写路径或原子镜像，不能让 M3 feedback 继续写旧表而新日记只读新表。
+- 修改前自动化基线为 TypeScript 类型检查通过、Vitest 29/29 文件与 410/410 测试通过；后续测试数量变化可据此核对。
+- M3 `submitRecommendationFeedback()` 在 `BEGIN IMMEDIATE` 内调用 `saveWearLog()`，并把旧日志 ID 存入 `recommendation_feedback.wear_log_id`；M4 迁移不能简单停止旧表写入，需保留 ID 兼容并在同一事务生成/关联新 WearEvent。
+- `server/routes.ts` 在所有业务路由之前统一执行同源写保护和 `/api` session 鉴权；新增 planner router 只要在该鉴权中间件之后注册即可继承安全边界。
+- 当前洞察的衣物分布已经基于 `listGarments(db)` 默认 active 范围，但穿着计数仍扫描旧 `wear_logs`；M4 需改用 wear event items，并新增“近期未穿”字段/口径而非把它与 neverWorn 混为一谈。
+- V2 导出当前 feature 终止于 `feedback-availability`，包含旧 wearLogs 但没有 wear events/plan entries；M4 需要保持旧字段兼容并新增导出数组、shape 校验与 `diary-week-planner` feature。
+
+### 冻结实施决策
+- migration 5 固定命名 `diary-week-planner`；旧 wear event ID 沿用 wear log ID，旧时间按 SQLite UTC 语义正规化为 ISO Z，时区记为 `UTC`。
+- 新增 `recommendation_feedback.wear_event_id` 并回填旧关联；旧 `wear_logs` 表为兼容保留，但迁移后旧端点和 M3 feedback 都改由 WearEvent service 写入，避免双事实源。
+- 默认周查询显式接收 IANA `timeZone`；forecast 路径保持 `/api/weather/forecast`，同时接收现有位置来源所必需的 latitude/longitude 与 1–7 days。
+- “近期未穿”固定为 30 天；重复同套按规范化 item ID 组合签名而不是 saved outfit ID，formal 28 天、date/dinner 14 天，其余场合不提醒。
+- V2 `version` 保持 2，schemaVersion 升 5；旧 V2 新字段可缺，当前 builder 始终输出 wearEvents 与 outfitPlanEntries。
+
+### 天气实现结果
+- `fetchWeatherForecast`、`mapOpenMeteoForecastDays`、`buildEstimatedWeatherForecast` 已实现，days 仅允许 1–7 整数，默认 7；单日 API 保持兼容。
+- daily 温度/体感取最高最低均值，逐日降雨概率、天气码、最大风速按索引映射；服务专项 12/12 通过。
+
+### 前端组件契约
+- PlannerView/WeekGrid 为受控周视图；WearDiaryPanel 为受控事件列表；WearEventDialog 与 OutfitPlanDialog 负责浏览器侧日期、IANA 时区、衣物/搭配和天气快照表单校验。
+- 组件不直接调用 API，App 可统一刷新计划、日记和洞察，避免局部状态导致统计滞后；planner UI 专项 9/9 通过。
+
+### 核心实现与兼容结果
+- migration 5 使用旧 wear_log ID 回填 WearEvent，缺失衣物仅留 legacy snapshot；三张 STRICT 表和计划/事件关联已落地。
+- mark-worn 原子创建事件并更新计划，重复调用幂等；删除事件会同事务重置计划、撤销新旧反馈实穿关联、删除空反馈并重建 pair stats。
+- 新推荐反馈首次 actuallyWorn 在原反馈事务内调用 `insertWearEvent`，后续反馈复用同一事件；旧 wearLogId 与新 wearEventId 同时兼容。
+- 旧 `/api/wear-logs` 已成为新 WearEvent 模型适配器，不再新增旧表行；缺失衣物遵循 legacy-only 语义。
+
+### 真实浏览器与终检发现
+- 真实 `type=date` 自动化输入会发出 input，但原实现只监听 React change，造成控件显示 2026-07-14、草稿提交仍为 2026-07-13；同时监听 `onInput` 后，日期、天气预览和最终卡片一致。
+- 新建计划传入默认日期不能用于推断编辑模式；已把 create/edit 作为显式 prop，避免新建流程标题误写为“编辑计划”。
+- 28 天正式搭配提醒真实触发且不禁止保存；当前服务在返回提醒时条目已落库，UI 必须明确“已保存/保留”语义，避免关闭或换一件被误解为撤销。
+- 最终只读复核发现原重复查询只看目标日期之前，导致先建晚日期、再补早日期时漏报；正确契约是按目标日期前后对称 14/28 天窗口查计划与实穿，更新时排除自身。
+- 穿着/计划更新的可选字段必须区分“省略=保留”与 `null`/空值=清空；mark-worn 对话框允许编辑的衣物、场合、搭配必须被服务完整尊重，不能静默回退到原计划搭配。
+- 冻结天气快照属于历史事实：编辑同一天的备注等字段应保留原快照；只有日期改变且新日期存在逐日 forecast 时才替换。
+
+### M4 最终证据与结论
+- API/事务最终契约区分“省略=保留”和 `null`/空值=清空；mark-worn 写入对话框中的实际 outfit、occasion、itemIds、notes，并保留计划自身的原始计划快照。
+- 重复提醒按目标日前后对称窗口查询计划与 WearEvent，formal 为 ±28 天、date/dinner 为 ±14 天；更新排除自身，多个冲突选择最近日期，同距选择较早日期。
+- 真实交互中 7 月 13 日正式计划与 7 月 14 日正式计划触发 28 天提醒，提示明确计划已经保存；计划天气分别冻结为雷雨 35°C 与小雨 37°C。
+- 计划实穿记录被改为晚餐、无保存搭配关联、单件实际衣物后仍正确落库；日记再关联整套、清空关联与备注、最终撤销均成功，撤销后计划恢复 planned 且穿着计数归零。
+- 移动端页面本身没有横向溢出；2344px 的七日网格被约束在 375px 的 `overflow-x:auto` 容器内，五项移动主导航未发生 M4 信息架构膨胀。
+- 最终回归为 Vitest 455/455、Python 25/25 与 33/33、typecheck/构建/diff check 全通过；npm 和 Python 依赖均无已知漏洞。最终浏览器控制台无 warn/error。
+- M4 当前无已知阻断项；仅保留本机 `node_modules` 的既有 extraneous 辅助包卫生提示，不执行删除清理。

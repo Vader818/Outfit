@@ -1,7 +1,7 @@
 ﻿# Outfit M4：穿搭日记与周计划
 
 > 恢复说明：本文件正文从 2026-07-11 的本地 Codex 会话存档中按原章节边界恢复，未凭记忆改写。
-> 状态：按用户指令停止本轮 M1–M6 实施；本文件作为后续可独立执行的开发计划保留。
+> 状态（2026-07-13）：M4 已完整交付；十二项实施任务、四项验收标准、文档、全量回归和隔离数据库真实交互验收均已完成。
 
 ## 共同执行约束
 
@@ -48,6 +48,7 @@ interface OutfitPlanEntry {
   weatherSnapshot?: WeatherSnapshot;
   status: "planned" | "worn" | "skipped";
   wornAt?: string;
+  wearEventId?: number;
   notes?: string;
 }
 ~~~
@@ -67,7 +68,7 @@ API：
 - GET/POST /api/outfit-plans
 - PUT/DELETE /api/outfit-plans/:id
 - POST /api/outfit-plans/:id/mark-worn
-- GET /api/weather/forecast?days=1..7
+- GET /api/weather/forecast?latitude=...&longitude=...&days=1..7
 
 ### 文件结构
 
@@ -90,18 +91,18 @@ API：
 
 ### 实施任务
 
-- [ ] 写旧 wear_logs 迁移测试：每条旧日志变成 wear_event + item 行；原始 garment_ids/context 写入 legacy_snapshot，缺失衣物 ID 仍保留但不创建无效外键；fixture 覆盖 object、array、string、number、boolean 和 null context。
-- [ ] 实现日期范围/游标查询，默认当前周；为 worn_at、planned_date 和 item_id 建索引。
-- [ ] 写 WearEvent CRUD 测试：补录过去日期、修改衣物、撤销误记、删除后计数回滚。
-- [ ] 实现 outfit plan CRUD 和 mark-worn 原子操作；计划日期与实际时间分别保存。
-- [ ] 把“历史洞察”主区域改为二级导航：周计划、穿着日记、保存搭配、洞察；移动主导航仍保持五项。
-- [ ] 实现 7 天周视图、上/下周、今日定位、计划卡、已穿状态和空态。
-- [ ] 推荐结果增加“安排日期”，保存时冻结天气/场合快照。
-- [ ] 扩展天气服务返回逐日快照；超出 7 天的计划只保存场合，临近后再更新天气。
-- [ ] 实现场合化重复提醒：正式类同套 28 天、约会/晚餐类 14 天、日常不拦截；只提醒并提供换一件，不禁止。
-- [ ] 更新洞察口径，把“近期未穿”和“从未穿过”分开，并统一按 active garments 计算分布。
-- [ ] 扩展 OutfitExportV2，加入 wear events、legacy snapshots 与 plan entries；固定跨时区 fixture 验证往返 JSON 不改变 plannedDate。
-- [ ] 更新文档并完成全量验证。
+- [x] 写旧 wear_logs 迁移测试：每条旧日志变成 wear_event + item 行；原始 garment_ids/context 写入 legacy_snapshot，缺失衣物 ID 仍保留但不创建无效外键；fixture 覆盖 object、array、string、number、boolean 和 null context。
+- [x] 实现日期范围/游标查询，默认当前周；为 worn_at、planned_date 和 item_id 建索引。
+- [x] 写 WearEvent CRUD 测试：补录过去日期、修改衣物、撤销误记、删除后计数回滚。
+- [x] 实现 outfit plan CRUD 和 mark-worn 原子操作；计划日期与实际时间分别保存。
+- [x] 把“历史洞察”主区域改为二级导航：周计划、穿着日记、保存搭配、洞察；移动主导航仍保持五项。
+- [x] 实现 7 天周视图、上/下周、今日定位、计划卡、已穿状态和空态。
+- [x] 推荐结果增加“安排日期”，保存时冻结天气/场合快照。
+- [x] 扩展天气服务返回逐日快照；超出 7 天的计划只保存场合，临近后再更新天气。
+- [x] 实现场合化重复提醒：正式类同套 28 天、约会/晚餐类 14 天、日常不拦截；只提醒并提供换一件，不禁止。
+- [x] 更新洞察口径，把“近期未穿”和“从未穿过”分开，并统一按 active garments 计算分布。
+- [x] 扩展 OutfitExportV2，加入 wear events、legacy snapshots 与 plan entries；固定跨时区 fixture 验证往返 JSON 不改变 plannedDate。
+- [x] 更新文档并完成全量验证。API、Schema、README 已同步；`typecheck`、Vitest 32 文件 455/455、Python unittest 25/25、pytest 33/33、npm/Python 依赖审计、`git diff --check` 与非破坏性生产构建全部通过。
 
 ### 验收标准
 
@@ -109,5 +110,11 @@ API：
 - 可把保存搭配安排到未来 7 天，并区分计划与实际穿着。
 - 同一正式搭配 28 天内再次计划时收到可忽略提示；日常重复不提示。
 - plannedDate 在数据库保存 `YYYY-MM-DD` 本地日历键，wornAt 保存 UTC ISO timestamp 并带 IANA 时区；UTC+8、UTC-8、跨午夜和夏令时边界测试通过。
+
+### 最终验收记录（2026-07-13）
+
+- 隔离数据库真实交互完成周计划创建/编辑、天气冻结、28 天正式搭配提醒、计划与实际穿着差异、日记编辑/显式清空/撤销、统计回滚、保存搭配安排入口及洞察口径验证。
+- 390×844 移动端页面无整体横向溢出，周网格仅在自身容器横向滚动，五项移动主导航保持不变；浏览器控制台无 warn/error。
+- QA 数据库、日志和两个生产构建证据目录均保留在系统临时目录；未删除任何电脑文件，真实数据库未原地迁移或写入。
 
 ---

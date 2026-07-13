@@ -10,4 +10,5 @@
 @import "./styles/insights.css";
 @import "./styles/outfits.css";
 @import "./styles/settings.css";
+@import "./features/planner/planner.css";
 @import "./styles/responsive.css";

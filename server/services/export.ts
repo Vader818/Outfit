@@ -7,13 +7,16 @@ import type {
   GarmentAssetMetadata,
   GarmentAvailabilityEvent,
   GarmentAvailabilityStatus,
+  JsonValue,
   OutfitExport,
   OutfitExportV2,
+  OutfitPlanEntry,
   OutfitPairStat,
   RecommendationCandidateExport,
   RecommendationFeedback,
   RecommendationRunEntry,
   SavedOutfit,
+  WearEvent,
   WearLogEntry
 } from "../../src/shared/types";
 import {
@@ -33,7 +36,8 @@ export const OUTFIT_EXPORT_V2_FEATURES = [
   "recommendation-candidates",
   "garment-assets",
   "saved-outfits",
-  "feedback-availability"
+  "feedback-availability",
+  "diary-week-planner"
 ] as const;
 
 export const OUTFIT_EXPORT_JSON_ENTRY = "outfit-export-v2.json";
@@ -66,6 +70,9 @@ const GARMENT_AVAILABILITY_STATUSES = [
   "loaned",
   "packed"
 ] as const;
+const OUTFIT_OCCASIONS = ["casual", "smart-casual", "formal", "sport", "date", "dinner"] as const;
+const OUTFIT_PLAN_STATUSES = ["planned", "worn", "skipped"] as const;
+const DIARY_WEEK_PLANNER_FEATURE = "diary-week-planner";
 
 export interface BuildOutfitExportOptions {
   now?: () => Date;
@@ -140,7 +147,9 @@ export function buildOutfitExportV2(
       savedOutfits: listSavedOutfitsForExport(db),
       recommendationFeedback: listRecommendationFeedbackForExport(db),
       outfitPairStats: listOutfitPairStatsForExport(db),
-      garmentAvailabilityEvents: listGarmentAvailabilityEventsForExport(db)
+      garmentAvailabilityEvents: listGarmentAvailabilityEventsForExport(db),
+      wearEvents: listWearEventsForExport(db),
+      outfitPlanEntries: listOutfitPlanEntriesForExport(db)
     };
     validateOutfitExport(exported);
     db.exec("COMMIT");
@@ -243,6 +252,26 @@ export function validateOutfitExport(value: unknown): OutfitExport {
     ) {
       throw new OutfitExportError(
         "Invalid export envelope: garmentAvailabilityEvents contains an invalid entry"
+      );
+    }
+    const hasDiaryWeekPlanner = value.features.includes(DIARY_WEEK_PLANNER_FEATURE);
+    if (
+      (hasDiaryWeekPlanner && !Array.isArray(value.wearEvents)) ||
+      (value.wearEvents !== undefined &&
+        (!Array.isArray(value.wearEvents) || !value.wearEvents.every(isWearEventShape)))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: wearEvents contains an invalid entry or is missing"
+      );
+    }
+    if (
+      (hasDiaryWeekPlanner && !Array.isArray(value.outfitPlanEntries)) ||
+      (value.outfitPlanEntries !== undefined &&
+        (!Array.isArray(value.outfitPlanEntries) ||
+          !value.outfitPlanEntries.every(isOutfitPlanEntryShape)))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: outfitPlanEntries contains an invalid entry or is missing"
       );
     }
   }
@@ -495,6 +524,148 @@ function listAllWearLogs(db: AppDatabase): WearLogEntry[] {
       wornAt: row.worn_at
     };
   });
+}
+
+function listWearEventsForExport(db: AppDatabase): WearEvent[] {
+  const rows = db.prepare(`
+    SELECT id, worn_at, time_zone, outfit_id, occasion, weather_snapshot,
+      notes, legacy_snapshot
+    FROM wear_events
+    ORDER BY worn_at DESC, id DESC
+  `).all() as Array<{
+    id: number;
+    worn_at: string;
+    time_zone: string;
+    outfit_id: number | null;
+    occasion: string;
+    weather_snapshot: string | null;
+    notes: string;
+    legacy_snapshot: string | null;
+  }>;
+  const eventIds = new Set(rows.map((row) => row.id));
+  const itemRows = db.prepare(`
+    SELECT id, wear_event_id, item_id, position
+    FROM wear_event_items
+    ORDER BY wear_event_id ASC, position ASC, id ASC
+  `).all() as Array<{
+    id: number;
+    wear_event_id: number;
+    item_id: number;
+    position: number;
+  }>;
+  const itemsByEvent = new Map<number, WearEvent["items"]>();
+  for (const row of itemRows) {
+    const item: WearEvent["items"][number] = {
+      id: row.id,
+      wearEventId: row.wear_event_id,
+      itemId: row.item_id,
+      position: row.position
+    };
+    if (!eventIds.has(row.wear_event_id) || !isWearEventItemShape(item)) {
+      throw new OutfitExportError(`Cannot export wear_event_items row ${row.id}: invalid item data`);
+    }
+    const items = itemsByEvent.get(row.wear_event_id) ?? [];
+    items.push(item);
+    itemsByEvent.set(row.wear_event_id, items);
+  }
+
+  return rows.map((row) => {
+    const event: WearEvent = {
+      id: row.id,
+      wornAt: row.worn_at,
+      timeZone: row.time_zone,
+      ...(row.outfit_id === null ? {} : { outfitId: row.outfit_id }),
+      occasion: row.occasion as WearEvent["occasion"],
+      ...(row.weather_snapshot === null
+        ? {}
+        : { weatherSnapshot: parseWeatherSnapshotColumn("wear_events", row.id, "weather_snapshot", row.weather_snapshot) }),
+      ...(row.notes ? { notes: row.notes } : {}),
+      items: itemsByEvent.get(row.id) ?? [],
+      ...(row.legacy_snapshot === null
+        ? {}
+        : { legacySnapshot: parseLegacySnapshotColumn(row.id, row.legacy_snapshot) })
+    };
+    if (!isWearEventShape(event)) {
+      throw new OutfitExportError(`Cannot export wear_events row ${row.id}: invalid wear event data`);
+    }
+    return event;
+  });
+}
+
+function listOutfitPlanEntriesForExport(db: AppDatabase): OutfitPlanEntry[] {
+  const rows = db.prepare(`
+    SELECT id, planned_date, time_zone, outfit_id, occasion, weather_snapshot,
+      status, worn_at, wear_event_id, notes
+    FROM outfit_plan_entries
+    ORDER BY planned_date ASC, id ASC
+  `).all() as Array<{
+    id: number;
+    planned_date: string;
+    time_zone: string;
+    outfit_id: number;
+    occasion: string;
+    weather_snapshot: string | null;
+    status: string;
+    worn_at: string | null;
+    wear_event_id: number | null;
+    notes: string;
+  }>;
+  return rows.map((row) => {
+    const entry: OutfitPlanEntry = {
+      id: row.id,
+      plannedDate: row.planned_date,
+      timeZone: row.time_zone,
+      outfitId: row.outfit_id,
+      occasion: row.occasion as OutfitPlanEntry["occasion"],
+      ...(row.weather_snapshot === null
+        ? {}
+        : {
+            weatherSnapshot: parseWeatherSnapshotColumn(
+              "outfit_plan_entries",
+              row.id,
+              "weather_snapshot",
+              row.weather_snapshot
+            )
+          }),
+      status: row.status as OutfitPlanEntry["status"],
+      ...(row.worn_at === null ? {} : { wornAt: row.worn_at }),
+      ...(row.wear_event_id === null ? {} : { wearEventId: row.wear_event_id }),
+      ...(row.notes ? { notes: row.notes } : {})
+    };
+    if (!isOutfitPlanEntryShape(entry)) {
+      throw new OutfitExportError(`Cannot export outfit_plan_entries row ${row.id}: invalid plan entry data`);
+    }
+    return entry;
+  });
+}
+
+function parseWeatherSnapshotColumn(
+  table: string,
+  rowId: number,
+  column: string,
+  value: string
+): NonNullable<WearEvent["weatherSnapshot"]> {
+  const parsed = parseJsonColumn<unknown>(table, rowId, column, value);
+  if (!isWeatherSnapshotShape(parsed)) {
+    throw invalidColumnShape(table, rowId, column, "a valid WeatherSnapshot object");
+  }
+  return parsed;
+}
+
+function parseLegacySnapshotColumn(
+  rowId: number,
+  value: string
+): NonNullable<WearEvent["legacySnapshot"]> {
+  const parsed = parseJsonColumn<unknown>("wear_events", rowId, "legacy_snapshot", value);
+  if (!isWearEventLegacySnapshotShape(parsed)) {
+    throw invalidColumnShape(
+      "wear_events",
+      rowId,
+      "legacy_snapshot",
+      "positive originalGarmentIds and a JSON originalContext"
+    );
+  }
+  return parsed;
 }
 
 function listAllRecommendationRuns(db: AppDatabase): RecommendationRunEntry[] {
@@ -1211,6 +1382,133 @@ function isWearLogShape(value: unknown): boolean {
     hasOwn(value, "context") &&
     typeof value.wornAt === "string"
   );
+}
+
+function isWearEventShape(value: unknown): value is WearEvent {
+  if (!isRecord(value)) return false;
+  if (
+    !isSafeInteger(value.id) ||
+    value.id <= 0 ||
+    !isUtcIsoTimestamp(value.wornAt) ||
+    !isIanaTimeZone(value.timeZone) ||
+    !hasOptionalPositiveSafeInteger(value, "outfitId") ||
+    typeof value.occasion !== "string" ||
+    !includes(OUTFIT_OCCASIONS, value.occasion) ||
+    (value.weatherSnapshot !== undefined && !isWeatherSnapshotShape(value.weatherSnapshot)) ||
+    !hasOptionalString(value, "notes") ||
+    !Array.isArray(value.items) ||
+    (value.legacySnapshot !== undefined && !isWearEventLegacySnapshotShape(value.legacySnapshot))
+  ) {
+    return false;
+  }
+  return value.items.every((item) =>
+    isWearEventItemShape(item) && item.wearEventId === value.id
+  );
+}
+
+function isWearEventItemShape(value: unknown): value is WearEvent["items"][number] {
+  return Boolean(
+    isRecord(value) &&
+    isSafeInteger(value.id) &&
+    value.id > 0 &&
+    isSafeInteger(value.wearEventId) &&
+    value.wearEventId > 0 &&
+    isSafeInteger(value.itemId) &&
+    value.itemId > 0 &&
+    isSafeInteger(value.position) &&
+    value.position >= 0
+  );
+}
+
+function isWearEventLegacySnapshotShape(
+  value: unknown
+): value is NonNullable<WearEvent["legacySnapshot"]> {
+  return Boolean(
+    isRecord(value) &&
+    Array.isArray(value.originalGarmentIds) &&
+    value.originalGarmentIds.every((id) => isSafeInteger(id) && id > 0) &&
+    hasOwn(value, "originalContext") &&
+    isJsonValue(value.originalContext)
+  );
+}
+
+function isOutfitPlanEntryShape(value: unknown): value is OutfitPlanEntry {
+  if (!isRecord(value)) return false;
+  if (
+    !isSafeInteger(value.id) ||
+    value.id <= 0 ||
+    !isCalendarDate(value.plannedDate) ||
+    !isIanaTimeZone(value.timeZone) ||
+    !isSafeInteger(value.outfitId) ||
+    value.outfitId <= 0 ||
+    typeof value.occasion !== "string" ||
+    !includes(OUTFIT_OCCASIONS, value.occasion) ||
+    (value.weatherSnapshot !== undefined && !isWeatherSnapshotShape(value.weatherSnapshot)) ||
+    typeof value.status !== "string" ||
+    !includes(OUTFIT_PLAN_STATUSES, value.status) ||
+    !hasOptionalString(value, "notes")
+  ) {
+    return false;
+  }
+  if (value.status === "worn") {
+    return isUtcIsoTimestamp(value.wornAt) &&
+      isSafeInteger(value.wearEventId) && value.wearEventId > 0;
+  }
+  return value.wornAt === undefined && value.wearEventId === undefined;
+}
+
+function isWeatherSnapshotShape(
+  value: unknown
+): value is NonNullable<WearEvent["weatherSnapshot"]> {
+  return Boolean(
+    isRecord(value) &&
+    isCalendarDate(value.date) &&
+    isFiniteNumber(value.temperature) &&
+    isFiniteNumber(value.apparentTemperature) &&
+    isFiniteNumber(value.precipitationProbability) &&
+    isFiniteNumber(value.windSpeed) &&
+    isFiniteNumber(value.weatherCode) &&
+    typeof value.summary === "string"
+  );
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every(isJsonValue);
+}
+
+function isUtcIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
+}
+
+function isIanaTimeZone(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim() || value !== value.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isRecommendationRunShape(value: unknown): boolean {

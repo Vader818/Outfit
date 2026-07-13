@@ -18,7 +18,11 @@ import {
   clearRecommendationFeedback,
   createGarment,
   createGarmentCutout,
+  createOutfitPlan,
   createSavedOutfit,
+  createWearEvent,
+  deleteOutfitPlan,
+  deleteWearEvent,
   downloadCompleteBackup,
   downloadVisionModel,
   exportLocalData,
@@ -27,6 +31,7 @@ import {
   getGarmentThumbnailCandidates,
   getGarments,
   getInsights,
+  getOutfitPlans,
   getPersonalProfile,
   getRecommendationFeedback,
   getRecommendationRuns,
@@ -34,9 +39,12 @@ import {
   getSavedOutfits,
   getVisionModels,
   getWearLogs,
+  getWearEvents,
   getWeather,
+  getWeatherForecast,
   login,
   logout,
+  markOutfitPlanWorn,
   previewTaobaoImport,
   previewCompleteBackup,
   previewRecommendationFeedbackClear,
@@ -51,7 +59,9 @@ import {
   submitRecommendationFeedback,
   updateGarment,
   updateGarmentAvailability,
+  updateOutfitPlan,
   updateSavedOutfit,
+  updateWearEvent,
   uploadGarmentImage,
   verifyVisionModel,
   type CaptureStartResult,
@@ -60,7 +70,7 @@ import {
 import { getTaobaoBookmarklet } from "../bookmarklet/taobaoBookmarklet";
 import { AppMark, IconButton, Notice, Skeleton, cx } from "../components/ui";
 import { AuthView, SessionSummary } from "../features/auth/AuthView";
-import { HistoryInsightsView } from "../features/insights/HistoryInsightsView";
+import { HistoryInsightsView, type HistorySection } from "../features/insights/HistoryInsightsView";
 import { ImportView } from "../features/import/ImportView";
 import { OutfitBuilder } from "../features/outfits/OutfitBuilder";
 import { ReplacementDialog } from "../features/outfits/ReplacementDialog";
@@ -71,6 +81,11 @@ import { ThumbnailPicker } from "../features/wardrobe/ThumbnailDialog";
 import { ManualGarmentDialog } from "../features/wardrobe/ManualGarmentDialog";
 import { WardrobeView } from "../features/wardrobe/WardrobeView";
 import { FeedbackManagementDialog } from "../features/insights/FeedbackManagementDialog";
+import { OutfitPlanDialog } from "../features/planner/OutfitPlanDialog";
+import { PlannerView } from "../features/planner/PlannerView";
+import { WearDiaryPanel } from "../features/planner/WearDiaryPanel";
+import { WearEventDialog, type WearEventDialogInitial } from "../features/planner/WearEventDialog";
+import { addCalendarDays } from "../features/planner/WeekGrid";
 import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
 import { prepareGarmentImageForUpload } from "../lib/imageSanitization";
 import { applyGarmentPatch, isRecommendationEligibleGarment, isRecommendationPendingGarment, isWardrobeReviewPendingGarment } from "../lib/garments";
@@ -98,6 +113,9 @@ import type {
   ImportDecision,
   ManualGarmentCreate,
   OutfitRecommendation,
+  OutfitPlanEntry,
+  OutfitPlanInput,
+  OutfitPlanUpdate,
   OutfitReplacementSuggestion,
   PersonalProfile,
   RecommendationResult,
@@ -118,6 +136,8 @@ import type {
   VisionModelsResponse,
   WardrobeInsights,
   WearLogEntry,
+  WearEvent,
+  WearEventInput,
   WeatherSnapshot
 } from "../shared/types";
 
@@ -144,6 +164,18 @@ type FeedbackDialogState = {
   loading: boolean;
 } | null;
 
+type OutfitPlanDialogState = {
+  plan?: OutfitPlanEntry;
+  initial?: Partial<OutfitPlanInput>;
+  sourceRecommendation?: OutfitRecommendation;
+} | null;
+
+type WearEventDialogState = {
+  event?: WearEvent;
+  plan?: OutfitPlanEntry;
+  initial?: WearEventDialogInitial;
+} | null;
+
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: ReactNode }> = [
   { id: "recommend", label: "今日推荐", icon: <WandSparkles aria-hidden="true" /> },
   { id: "wardrobe", label: "衣服库", icon: <Database aria-hidden="true" /> },
@@ -160,6 +192,32 @@ const SAVED_OUTFIT_SLOT_ORDER: Record<Garment["category"], number> = {
   shoes: 4,
   accessory: 5
 };
+
+function resolveLocalTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function dateKeyInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const value = (type: "year" | "month" | "day") =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function weekStartDateKey(dateKey: string): string {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return addCalendarDays(dateKey, -(weekday === 0 ? 6 : weekday - 1));
+}
 
 export function findExactSavedRecommendationParent(
   savedOutfits: readonly SavedOutfit[],
@@ -312,6 +370,23 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [profile, setProfile] = useState<PersonalProfile>(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [wearLogs, setWearLogs] = useState<WearLogEntry[]>([]);
+  const [wearEvents, setWearEvents] = useState<WearEvent[]>([]);
+  const [outfitPlans, setOutfitPlans] = useState<OutfitPlanEntry[]>([]);
+  const [plannerForecasts, setPlannerForecasts] = useState<WeatherSnapshot[]>([]);
+  const [historySection, setHistorySection] = useState<HistorySection>("planner");
+  const [plannerTimeZone] = useState(resolveLocalTimeZone);
+  const [plannerToday] = useState(() => dateKeyInTimeZone(new Date(), resolveLocalTimeZone()));
+  const [plannerWeekStart, setPlannerWeekStart] = useState(() => weekStartDateKey(
+    dateKeyInTimeZone(new Date(), resolveLocalTimeZone())
+  ));
+  const [plannerBusy, setPlannerBusy] = useState(false);
+  const [plannerError, setPlannerError] = useState("");
+  const [busyPlanId, setBusyPlanId] = useState<number | null>(null);
+  const [busyWearEventId, setBusyWearEventId] = useState<number | null>(null);
+  const [schedulingOutfitId, setSchedulingOutfitId] = useState<string | null>(null);
+  const [outfitPlanDialog, setOutfitPlanDialog] = useState<OutfitPlanDialogState>(null);
+  const [wearEventDialog, setWearEventDialog] = useState<WearEventDialogState>(null);
+  const [planRepeatWarning, setPlanRepeatWarning] = useState("");
   const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
   const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
@@ -439,12 +514,61 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function refreshHistoryData() {
     setError("");
     try {
-      const [nextWearLogs, nextRuns, nextInsights] = await Promise.all([getWearLogs(), getRecommendationRuns(), getInsights()]);
+      const weekEnd = addCalendarDays(plannerWeekStart, 6);
+      const coordinates = parseLocationCoordinates(latitude, longitude);
+      const [nextWearLogs, nextRuns, nextInsights, nextWearEvents, nextPlans, nextForecasts] = await Promise.all([
+        getWearLogs(),
+        getRecommendationRuns(),
+        getInsights(),
+        getWearEvents({
+          timeZone: plannerTimeZone,
+          from: addCalendarDays(plannerToday, -3650),
+          to: plannerToday,
+          limit: 100
+        }),
+        getOutfitPlans({
+          timeZone: plannerTimeZone,
+          from: plannerWeekStart,
+          to: weekEnd
+        }),
+        coordinates
+          ? getWeatherForecast(coordinates.latitude, coordinates.longitude, 7)
+          : Promise.resolve([])
+      ]);
       setWearLogs(nextWearLogs);
       setRecommendationRuns(nextRuns);
       setInsights(nextInsights);
+      setWearEvents(nextWearEvents.events);
+      const hydratedPlans = await Promise.all(nextPlans.map(async (plan) => {
+        if (plan.status !== "planned" || plan.weatherSnapshot) return plan;
+        const snapshot = nextForecasts.find((forecast) => forecast.date === plan.plannedDate);
+        if (!snapshot) return plan;
+        try {
+          return (await updateOutfitPlan(plan.id, { weatherSnapshot: snapshot })).entry;
+        } catch {
+          return plan;
+        }
+      }));
+      setOutfitPlans(hydratedPlans);
+      setPlannerForecasts(nextForecasts);
     } catch (historyError) {
       setError(historyError instanceof Error ? historyError.message : "历史数据读取失败");
+    }
+  }
+
+  async function refreshPlannerWeek(weekStart = plannerWeekStart) {
+    setPlannerBusy(true);
+    setPlannerError("");
+    try {
+      setOutfitPlans(await getOutfitPlans({
+        timeZone: plannerTimeZone,
+        from: weekStart,
+        to: addCalendarDays(weekStart, 6)
+      }));
+    } catch (plannerLoadError) {
+      setPlannerError(plannerLoadError instanceof Error ? plannerLoadError.message : "周计划读取失败");
+    } finally {
+      setPlannerBusy(false);
     }
   }
 
@@ -1217,6 +1341,223 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  async function scheduleRecommendationOutfit(outfit: OutfitRecommendation) {
+    setSchedulingOutfitId(outfit.candidateId);
+    setError("");
+    try {
+      const resolved = await resolveSavedRecommendationParent(savedOutfits, outfit);
+      if (resolved.created) upsertSavedOutfit(resolved.parent);
+      setPlanRepeatWarning("");
+      setOutfitPlanDialog({
+        initial: {
+          plannedDate: plannerToday,
+          timeZone: plannerTimeZone,
+          outfitId: resolved.parent.id,
+          occasion
+        },
+        sourceRecommendation: outfit
+      });
+    } catch (scheduleError) {
+      setError(scheduleError instanceof Error ? scheduleError.message : "推荐搭配安排失败");
+    } finally {
+      setSchedulingOutfitId(null);
+    }
+  }
+
+  function scheduleSavedOutfit(outfit: SavedOutfit) {
+    setPlanRepeatWarning("");
+    setOutfitPlanDialog({
+      initial: {
+        plannedDate: plannerToday,
+        timeZone: plannerTimeZone,
+        outfitId: outfit.id,
+        occasion: "casual"
+      }
+    });
+  }
+
+  function openNewOutfitPlan() {
+    setPlanRepeatWarning("");
+    setOutfitPlanDialog({
+      initial: {
+        plannedDate: plannerToday,
+        timeZone: plannerTimeZone,
+        occasion: "casual"
+      }
+    });
+  }
+
+  function editOutfitPlan(plan: OutfitPlanEntry) {
+    setPlanRepeatWarning("");
+    setOutfitPlanDialog({
+      plan,
+      initial: {
+        plannedDate: plan.plannedDate,
+        timeZone: plan.timeZone,
+        outfitId: plan.outfitId,
+        occasion: plan.occasion,
+        notes: plan.notes,
+        weatherSnapshot: plan.weatherSnapshot
+      }
+    });
+  }
+
+  function closeOutfitPlanDialog() {
+    if (plannerBusy) return;
+    setOutfitPlanDialog(null);
+    setPlanRepeatWarning("");
+  }
+
+  async function submitOutfitPlan(input: OutfitPlanInput) {
+    if (!outfitPlanDialog) return;
+    if (planRepeatWarning && outfitPlanDialog.plan) {
+      setStatusMessage("重复提醒已关闭，已保存的计划保持不变");
+      closeOutfitPlanDialog();
+      return;
+    }
+    setPlannerBusy(true);
+    setPlannerError("");
+    try {
+      const result = outfitPlanDialog.plan
+        ? await updateOutfitPlan(outfitPlanDialog.plan.id, input as OutfitPlanUpdate)
+        : await createOutfitPlan(input);
+      setOutfitPlans((plans) => [result.entry, ...plans.filter((plan) => plan.id !== result.entry.id)]);
+      if (result.repeatWarning) {
+        setOutfitPlanDialog((current) => current ? { ...current, plan: result.entry } : current);
+        setPlanRepeatWarning(result.repeatWarning.message);
+        return;
+      }
+      setOutfitPlanDialog(null);
+      setStatusMessage("穿搭计划已保存");
+      setHistorySection("planner");
+      navigateTo("history");
+      await refreshHistoryData();
+    } catch (planError) {
+      setPlannerError(planError instanceof Error ? planError.message : "穿搭计划保存失败");
+    } finally {
+      setPlannerBusy(false);
+    }
+  }
+
+  function replaceRepeatedPlanOutfit() {
+    const recommendation = outfitPlanDialog?.sourceRecommendation;
+    const target = recommendation?.items.find((item) =>
+      recommendation.replacements.some((replacement) => replacement.targetGarmentId === item.id)
+    );
+    closeOutfitPlanDialog();
+    if (recommendation && target) {
+      openReplacementDialog(recommendation, target);
+      return;
+    }
+    setStatusMessage("当前计划仍会保留；可在今日推荐或保存搭配中换一件后另行安排");
+    navigateTo("recommend");
+  }
+
+  async function removeOutfitPlan(plan: OutfitPlanEntry) {
+    if (!globalThis.confirm(`确定删除 ${plan.plannedDate} 的计划吗？已生成的穿着日记不会删除。`)) return;
+    setBusyPlanId(plan.id);
+    setPlannerError("");
+    try {
+      await deleteOutfitPlan(plan.id);
+      setOutfitPlans((plans) => plans.filter((item) => item.id !== plan.id));
+      setStatusMessage("穿搭计划已删除");
+    } catch (planError) {
+      setPlannerError(planError instanceof Error ? planError.message : "穿搭计划删除失败");
+    } finally {
+      setBusyPlanId(null);
+    }
+  }
+
+  function markPlanWorn(plan: OutfitPlanEntry) {
+    const saved = savedOutfits.find((outfit) => outfit.id === plan.outfitId);
+    setWearEventDialog({
+      plan,
+      initial: {
+        timeZone: plan.timeZone,
+        outfitId: plan.outfitId,
+        occasion: plan.occasion,
+        notes: plan.notes,
+        itemIds: saved?.items
+          .map((item) => item.garmentId)
+          .filter((id): id is number => typeof id === "number") ?? []
+      }
+    });
+  }
+
+  function openNewWearEvent() {
+    setWearEventDialog({ initial: { timeZone: plannerTimeZone, occasion: "casual", itemIds: [] } });
+  }
+
+  function editWearEvent(event: WearEvent) {
+    setWearEventDialog({ event });
+  }
+
+  function closeWearEventDialog() {
+    if (plannerBusy) return;
+    setWearEventDialog(null);
+    setPlannerError("");
+  }
+
+  async function submitWearEvent(input: WearEventInput) {
+    if (!wearEventDialog) return;
+    setPlannerBusy(true);
+    setPlannerError("");
+    try {
+      if (wearEventDialog.plan) {
+        await markOutfitPlanWorn(wearEventDialog.plan.id, {
+          wornAt: input.wornAt,
+          timeZone: input.timeZone,
+          outfitId: input.outfitId ?? null,
+          occasion: input.occasion,
+          itemIds: input.itemIds,
+          ...(wearEventDialog.plan.weatherSnapshot
+            ? { weatherSnapshot: wearEventDialog.plan.weatherSnapshot }
+            : {}),
+          notes: input.notes ?? null
+        });
+      } else if (wearEventDialog.event) {
+        await updateWearEvent(wearEventDialog.event.id, input);
+      } else {
+        await createWearEvent(input);
+      }
+      setWearEventDialog(null);
+      setStatusMessage(wearEventDialog.plan ? "计划已标记为已穿" : "穿着日记已保存");
+      await refreshHistoryData();
+    } catch (wearError) {
+      setPlannerError(wearError instanceof Error ? wearError.message : "穿着日记保存失败");
+    } finally {
+      setPlannerBusy(false);
+    }
+  }
+
+  async function removeWearEvent(event: WearEvent) {
+    if (!globalThis.confirm("确定撤销这条穿着记录吗？相关统计会立即重算。")) return;
+    setBusyWearEventId(event.id);
+    setPlannerError("");
+    try {
+      await deleteWearEvent(event.id);
+      setWearEvents((events) => events.filter((item) => item.id !== event.id));
+      setStatusMessage("穿着记录已撤销，统计已更新");
+      await refreshHistoryData();
+    } catch (wearError) {
+      setPlannerError(wearError instanceof Error ? wearError.message : "穿着记录撤销失败");
+    } finally {
+      setBusyWearEventId(null);
+    }
+  }
+
+  function changePlannerWeek(amount: number) {
+    const next = addCalendarDays(plannerWeekStart, amount * 7);
+    setPlannerWeekStart(next);
+    void refreshPlannerWeek(next);
+  }
+
+  function returnPlannerToToday() {
+    const next = weekStartDateKey(plannerToday);
+    setPlannerWeekStart(next);
+    void refreshPlannerWeek(next);
+  }
+
   function openNewSavedOutfit() {
     setOutfitBuilderError("");
     setOutfitBuilderOutfit(null);
@@ -1401,6 +1742,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 busy={Boolean(busyAction)}
                 busyAction={busyAction}
                 savingOutfitId={savingOutfitId}
+                schedulingOutfitId={schedulingOutfitId}
                 feedbackBusyCandidateId={feedbackBusyCandidateId}
                 coreGarments={coreGarments}
                 recordingOutfitId={recordingOutfitId}
@@ -1411,6 +1753,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onRecordWearLog={recordRecommendationWear}
                 onRecommendationFeedback={openRecommendationFeedback}
                 onSaveOutfit={saveRecommendationOutfit}
+                onScheduleOutfit={scheduleRecommendationOutfit}
                 onUseGarmentAsCore={useGarmentAsCore}
                 onClearGarmentConstraints={clearGarmentConstraints}
                 onReplaceGarment={openReplacementDialog}
@@ -1455,8 +1798,11 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             ) : null}
             {tab === "history" ? (
               <HistoryInsightsView
+                activeSection={historySection}
+                onSectionChange={setHistorySection}
                 insights={insights}
                 wearLogs={wearLogs}
+                wearEventCount={wearEvents.length}
                 recommendationRuns={recommendationRuns}
                 savedOutfits={savedOutfits}
                 savedOutfitsBusy={savedOutfitBusy}
@@ -1470,7 +1816,39 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onOpenSavedOutfit={openSavedOutfit}
                 onFavoriteSavedOutfit={favoriteSavedOutfit}
                 onArchiveSavedOutfit={archiveOneSavedOutfit}
+                onScheduleSavedOutfit={scheduleSavedOutfit}
                 onManageFeedback={openFeedbackManagement}
+                plannerContent={(
+                  <PlannerView
+                    weekStart={plannerWeekStart}
+                    today={plannerToday}
+                    plans={outfitPlans}
+                    outfits={savedOutfits}
+                    busy={plannerBusy}
+                    busyPlanId={busyPlanId}
+                    error={plannerError}
+                    onPreviousWeek={() => changePlannerWeek(-1)}
+                    onNextWeek={() => changePlannerWeek(1)}
+                    onToday={returnPlannerToToday}
+                    onCreate={openNewOutfitPlan}
+                    onEdit={editOutfitPlan}
+                    onDelete={(plan) => { void removeOutfitPlan(plan); }}
+                    onMarkWorn={markPlanWorn}
+                  />
+                )}
+                diaryContent={(
+                  <WearDiaryPanel
+                    events={wearEvents}
+                    outfits={savedOutfits}
+                    garments={outfitBuilderGarments}
+                    busy={plannerBusy}
+                    busyEventId={busyWearEventId}
+                    error={plannerError}
+                    onCreate={openNewWearEvent}
+                    onEdit={editWearEvent}
+                    onDelete={(event) => { void removeWearEvent(event); }}
+                  />
+                )}
               />
             ) : null}
             {tab === "import" ? (
@@ -1604,6 +1982,34 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         onPreview={(scope) => { void previewFeedbackClear(scope); }}
         onConfirm={(scope) => { void confirmFeedbackClear(scope); }}
         onResetPreview={() => setFeedbackClearPreview(null)}
+      />
+
+      <OutfitPlanDialog
+        open={Boolean(outfitPlanDialog)}
+        mode={outfitPlanDialog?.plan ? "edit" : "create"}
+        initial={outfitPlanDialog?.initial}
+        outfits={savedOutfits}
+        forecasts={plannerForecasts}
+        minDate={plannerToday}
+        busy={plannerBusy}
+        error={plannerError}
+        repeatWarning={planRepeatWarning}
+        onClose={closeOutfitPlanDialog}
+        onSubmit={submitOutfitPlan}
+        onReplace={replaceRepeatedPlanOutfit}
+      />
+
+      <WearEventDialog
+        open={Boolean(wearEventDialog)}
+        event={wearEventDialog?.event}
+        initial={wearEventDialog?.initial}
+        outfits={savedOutfits}
+        garments={outfitBuilderGarments}
+        defaultTimeZone={plannerTimeZone}
+        busy={plannerBusy}
+        error={plannerError}
+        onClose={closeWearEventDialog}
+        onSubmit={submitWearEvent}
       />
     </div>
   );

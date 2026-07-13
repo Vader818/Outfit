@@ -319,6 +319,19 @@ export function validateWeatherQuery(latitudeValue: unknown, longitudeValue: unk
   return { latitude, longitude };
 }
 
+export function validateWeatherForecastQuery(
+  latitudeValue: unknown,
+  longitudeValue: unknown,
+  daysValue: unknown
+): { latitude: number; longitude: number; days: number } {
+  const { latitude, longitude } = validateWeatherQuery(latitudeValue, longitudeValue);
+  return {
+    latitude,
+    longitude,
+    days: boundedInteger(daysValue ?? 7, "days", 1, 7)
+  };
+}
+
 export function validatePositiveIntegerParam(value: unknown, name = "id"): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
