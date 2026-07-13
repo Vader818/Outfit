@@ -1,4 +1,4 @@
-import type { BodyType, CaptureEngine, ColorDisposition, FeedbackReason, FeedbackVerdict, Formality, GarmentAvailabilityStatus, GarmentCategory, GarmentWarmth, ImportDecision, ImportGarmentOverrides, ManualGarmentCreate, OutfitSlot, PersonalProfile, RecommendationConstraintField, RecommendationConstraintIssue, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, SaveRecommendationCandidateInput, SavedOutfitCreateInput, SavedOutfitItemInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, Season, SkinTone, TaobaoCapturedBatch, TaobaoImportCommitRequest, WeatherSnapshot } from "../src/shared/types";
+import type { BodyType, CaptureEngine, ColorDisposition, FeedbackReason, FeedbackVerdict, Formality, GarmentAvailabilityStatus, GarmentCategory, GarmentWarmth, ImportDecision, ImportGarmentOverrides, JsonValue, ManualGarmentCreate, OutfitSlot, PersonalProfile, RecommendationConstraintField, RecommendationConstraintIssue, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, SaveRecommendationCandidateInput, SavedOutfitCreateInput, SavedOutfitItemInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, Season, SkinTone, TaobaoCapturedBatch, TaobaoImportCommitRequest, WeatherSnapshot } from "../src/shared/types";
 import type { GarmentUpdate } from "./db";
 
 export class ApiError extends Error {
@@ -105,6 +105,8 @@ const SAVED_OUTFIT_UPDATE_FIELDS = new Set(["name", "notes", "favorite", "items"
 const SAVED_OUTFIT_ITEM_FIELDS = new Set(["garmentId", "slot", "position"]);
 const SAVE_RECOMMENDATION_CANDIDATE_FIELDS = new Set(["name", "notes", "favorite"]);
 const SAVED_OUTFIT_REPLACEMENT_FIELDS = new Set(["targetGarmentId", "replacementGarmentId", "name"]);
+const LEGACY_WEAR_LOG_FIELDS = new Set(["garmentIds", "context"]);
+const LEGACY_WEAR_LOG_MAX_ITEMS = 24;
 const RECOMMENDATION_FEEDBACK_FIELDS = new Set([
   "candidateId",
   "verdict",
@@ -518,13 +520,18 @@ export function validateRecommendationRequest(value: unknown): RecommendationReq
 
 export function validateWearLogRequest(value: unknown): { garmentIds: number[]; context: unknown } {
   const record = assertRecord(value, "穿着记录必须是 JSON 对象");
-  const garmentIds = normalizeGarmentIds(record.garmentIds);
-  if (!garmentIds.length) {
-    throw new ValidationError("garmentIds 必须是非空数字数组");
+  assertOnlyFields(record, LEGACY_WEAR_LOG_FIELDS, "穿着记录");
+  if (!Array.isArray(record.garmentIds) || !record.garmentIds.length ||
+    record.garmentIds.length > LEGACY_WEAR_LOG_MAX_ITEMS ||
+    !record.garmentIds.every((id) => typeof id === "number" && Number.isSafeInteger(id) && id > 0) ||
+    new Set(record.garmentIds).size !== record.garmentIds.length) {
+    throw new ValidationError(`garmentIds 必须是 1-${LEGACY_WEAR_LOG_MAX_ITEMS} 项不重复的正安全整数数组`);
   }
+  const context = record.context ?? null;
+  if (!isJsonValue(context)) throw new ValidationError("context 必须是有效 JSON 值");
   return {
-    garmentIds,
-    context: record.context ?? null
+    garmentIds: record.garmentIds as number[],
+    context
   };
 }
 
@@ -546,6 +553,14 @@ export function validateThumbnailSelectionRequest(value: unknown): { imageUrl: s
 export function normalizeGarmentIds(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.filter((id): id is number => Number.isInteger(id) && id > 0)));
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return Boolean(value) && typeof value === "object" &&
+    Object.values(value as Record<string, unknown>).every(isJsonValue);
 }
 
 function validateWeather(value: unknown): WeatherSnapshot {

@@ -18,7 +18,7 @@ legacyBaseline0 → 登记 schema_migrations baseline 0 → 顺序执行编号�
 
 - baseline 0 的名称为 `legacy-baseline`，负责把项目支持的未版本化历史数据库归一到 M0 之前的 schema，并在同一事务中登记版本 0。已经存在 `schema_migrations` 的数据库不会再次运行 baseline，而是校验已应用记录后继续编号迁移。
 - 当前编号迁移版本为 5：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`，版本 5 为 `diary-week-planner`。
-- 版本 5 在一个迁移事务中创建 `wear_events`、`wear_event_items`、`outfit_plan_entries`，为 `recommendation_feedback` 增加 `wear_event_id`，并迁移全部旧 `wear_logs`。旧 `garment_ids/context` 原样进入 `legacy_snapshot`；不存在的衣物 ID 仍保留在 `originalGarmentIds`，但不会创建无效外键。旧 SQLite UTC 时间会规范化为 UTC ISO timestamp，既有反馈关联同步回填到新事件。
+- 版本 5 在一个迁移事务中创建 `wear_events`、`wear_event_items`、`outfit_plan_entries`，为 `recommendation_feedback` 增加 `wear_event_id`，并迁移全部旧 `wear_logs`。旧 `garment_ids/context` 原样进入 `legacy_snapshot`；不存在的衣物 ID 仍保留在 `originalGarmentIds`，但不会创建无效外键。只有完全满足新 WeatherSnapshot 契约的旧 `context.weather` 才提升为权威天气快照，畸形天气仍只保留在 legacy snapshot，避免迁移后产生不可读事件。旧 SQLite UTC 时间会规范化为 UTC ISO timestamp，既有反馈关联同步回填到新事件。
 - 编号必须是正整数并严格递增；数据库中的已应用记录必须是当前迁移列表的精确前缀。由更新版本应用过未知迁移的数据库会拒绝由旧代码继续写入。
 - 每个迁移使用独立的 `BEGIN IMMEDIATE` 事务。失败时 schema 修改和版本登记一起回滚；重复启动不会重复应用已登记迁移。
 - 生产代码只提供前向迁移，不提供 down migration。
@@ -416,7 +416,7 @@ interface MarkWornResult {
 
 `plannedDate` 是指定 IANA 时区中的本地日历键，只按严格 `YYYY-MM-DD` 保存和导出；它不是 timestamp。`wornAt` 必须在请求中带 `Z` 或 UTC offset，服务端规范化为 UTC ISO timestamp，同时保存事件发生时的 `timeZone` 以便还原显示。`planned`/`skipped` 计划没有 `wornAt` 或 `wearEventId`；`worn` 计划必须同时拥有两者。
 
-更新 WearEvent 时，省略 `outfitId/notes` 表示保留，显式 `null` 表示清除。更新 OutfitPlan 时，`notes: null` 或 `notes: ""` 都会清空；省略仍保留。mark-worn 的可选 `outfitId`、`occasion`、`itemIds`、`weatherSnapshot`、`notes` 是实际 WearEvent 覆盖值：`outfitId: null` 可创建不关联保存搭配的事件，`notes: null` 清空，省略字段按计划或有效搭配继承；计划行自身只更新状态、实际时间和事件关联。
+更新 WearEvent 时，省略 `outfitId/notes` 表示保留，显式 `null` 表示清除。更新 OutfitPlan 时，`notes: null` 或 `notes: ""` 都会清空；省略仍保留。mark-worn 的可选 `outfitId`、`occasion`、`itemIds`、`weatherSnapshot`、`notes` 是实际 WearEvent 覆盖值：`outfitId: null` 可创建不关联保存搭配的事件，`notes: null` 清空，省略字段按计划或有效搭配继承；计划行自身只更新状态、实际时间和事件关联。日历范围查询以目标 IANA 时区中该日期的第一个有效瞬间为边界，因此也支持夏令时在午夜跳转、当天从 01:00 开始的区域。
 
 重复提醒以目标日期为中心做对称日历窗口检查：`formal` 前后各 28 天，`date/dinner` 前后各 14 天。服务比较规范化衣物集合，从计划和 WearEvent 中选择距离目标日期最近的冲突；更新时排除自身。`OutfitPlanMutationResult.entry` 在 warning 返回前已经保存，关闭提醒或进入换一件流程都不会撤销它。
 
@@ -1159,7 +1159,7 @@ M0 遗留穿着表。版本 5 迁移后，权威日记数据改为 `wear_events`
 | `created_at` | TEXT | NOT NULL | 创建时间 |
 | `updated_at` | TEXT | NOT NULL | 更新时间 |
 
-CHECK 保证 `worn` 同时拥有 `worn_at/wear_event_id`，而 `planned/skipped` 两者均为空。索引为 `idx_outfit_plan_entries_planned_date(planned_date,id)` 和 `idx_outfit_plan_entries_outfit_id(outfit_id)`。服务层另外拒绝不存在的日历日期、带时间的 plannedDate、未知时区和日期不匹配的天气快照。
+CHECK 保证 `worn` 同时拥有 `worn_at/wear_event_id`，而 `planned/skipped` 两者均为空。索引为 `idx_outfit_plan_entries_planned_date(planned_date,id)` 和 `idx_outfit_plan_entries_outfit_id(outfit_id)`。服务层另外拒绝不存在的日历日期、带时间的 plannedDate、未知时区和日期不匹配的天气快照；纠正关联 WearEvent 的 `worn_at` 时会在同一事务同步本表的实际时间副本。
 
 ### recommendation_runs
 

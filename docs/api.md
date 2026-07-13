@@ -909,7 +909,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## PUT /api/wear-events/:id
 
-编辑穿着时间、时区、搭配、场合、天气、备注和/或完整衣物列表。请求至少包含一个允许字段；省略字段会保留原值，`outfitId: null` 会显式解除保存搭配关联，`notes: null` 会显式清空备注。`itemIds` 如提供会原子替换全部明细。成功返回更新后的 `WearEvent`；不存在返回 404 `NOT_FOUND`。
+编辑穿着时间、时区、搭配、场合、天气、备注和/或完整衣物列表。请求至少包含一个允许字段；省略字段会保留原值，`outfitId: null` 会显式解除保存搭配关联，`notes: null` 会显式清空备注。`itemIds` 如提供会原子替换全部明细。若该事件来自计划的 mark-worn，纠正 `wornAt` 时会在同一事务同步计划行的实际时间。成功返回更新后的 `WearEvent`；不存在返回 404 `NOT_FOUND`。
 
 ## DELETE /api/wear-events/:id
 
@@ -1018,7 +1018,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/wear-logs（deprecated adapter）
 
-旧客户端兼容入口。它把 `{ garmentIds, context }` 转成新的 UTC WearEvent，原请求保存到 `legacySnapshot`；缺失衣物 ID 保留在 `originalGarmentIds`，但不会创建无效外键。新代码应使用 `/api/wear-events`。
+旧客户端兼容入口。它把 `{ garmentIds, context }` 转成新的 UTC WearEvent，原请求保存到 `legacySnapshot`；缺失衣物 ID 保留在 `originalGarmentIds`，但不会创建无效外键。请求只允许这两个字段；`garmentIds` 必须是 1–24 项不重复的正安全整数，`context` 必须是有效 JSON 值。新代码应使用 `/api/wear-events`。
 
 成功仍返回 `{ "ok": true }`。
 
@@ -1085,7 +1085,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 - `reasonCodes` 是必填的不重复数组，可以为空；元素只允许 `too-warm`、`too-cold`、`too-formal`、`too-casual`、`color`、`fit`、`repeat`、`unavailable`、`other`。
 - `comment` 可省略，最多 2000 字符；省略表示保留旧值，空字符串表示显式清空。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与最终 `actuallyWorn=true` 同时提交。
 - 除 `candidateId` 和空 `reasonCodes` 外，至少还要提供一个有意义信号：verdict、非空 rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId`。清空标记会先与旧值合并；若最终仍完全无信号则返回 400，不创建空反馈。
-- 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 `wear_logs` 在同一事务中写入；重放不会再建第二条关联穿着记录。一旦存在 `wearLogId`，实际穿着是不可逆事实，后续显式传 `actuallyWorn=false` 也仍返回并统计为 true。
+- 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 WearEvent 在同一事务中写入，并以 `wearEventId` 关联；重放不会再建第二条事件。迁移前旧反馈可同时保留兼容 `wearLogId` 与回填的 `wearEventId`，新反馈只写 `wearEventId`。普通反馈更新不能用 `actuallyWorn=false` 静默撤销已经落地的实穿事实；用户显式删除对应日记事件时，关联反馈的实穿标记会在同一事务撤销并重算组合统计。
 - 未知字段、错误类型、越界评分或重复/未知原因返回 400 `VALIDATION_ERROR`。写接口继续要求有效本地 session，并经过 Origin/Sec-Fetch-Site 校验。
 
 组合学习分采用固定、有界公式：

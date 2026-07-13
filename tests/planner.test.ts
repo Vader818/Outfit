@@ -143,6 +143,53 @@ describe("M4 diary-week-planner migration", () => {
     expect(db.prepare("SELECT id FROM wear_events").all()).toEqual([{ id: 10 }]);
     expect(db.prepare("SELECT item_id FROM wear_event_items").all()).toEqual([{ item_id: 1 }]);
   });
+
+  it("keeps malformed legacy weather only in the legacy snapshot", () => {
+    const db = new DatabaseSync(":memory:");
+    legacyBaseline0(db);
+    insertGarment(db, "旧天气上衣", "top", 1);
+    const invalidWeather = [
+      { ...weather, date: "2026-02-30" },
+      { ...weather, summary: "" },
+      { ...weather, extra: true }
+    ];
+    const insert = db.prepare(`
+      INSERT INTO wear_logs (id, garment_ids, context, worn_at)
+      VALUES (?, '[1]', ?, ?)
+    `);
+    invalidWeather.forEach((snapshot, index) => insert.run(
+      index + 1,
+      JSON.stringify({ occasion: "casual", weather: snapshot }),
+      `2026-07-0${index + 1} 08:30:00`
+    ));
+
+    migrate(db);
+
+    expect(db.prepare("SELECT weather_snapshot FROM wear_events ORDER BY id").all()).toEqual([
+      { weather_snapshot: null },
+      { weather_snapshot: null },
+      { weather_snapshot: null }
+    ]);
+    expect(listWearEvents(db, {
+      from: "2026-07-01",
+      to: "2026-07-03",
+      timeZone: "UTC"
+    }).events).toHaveLength(3);
+    expect(JSON.parse((db.prepare("SELECT legacy_snapshot FROM wear_events WHERE id = 1").get() as {
+      legacy_snapshot: string;
+    }).legacy_snapshot).originalContext.weather).toEqual(invalidWeather[0]);
+  });
+
+  it("rejects impossible legacy calendar timestamps instead of normalizing them", () => {
+    const db = new DatabaseSync(":memory:");
+    legacyBaseline0(db);
+    db.prepare(`
+      INSERT INTO wear_logs (id, garment_ids, context, worn_at)
+      VALUES (1, '[1]', NULL, '2026-02-30 08:00:00')
+    `).run();
+
+    expect(() => migrate(db)).toThrow(/wear_logs row 1.*worn_at is invalid/);
+  });
 });
 
 describe("wear event service", () => {
@@ -227,6 +274,49 @@ describe("wear event service", () => {
     expect(page.events[0].wornAt).toBe("2026-03-09T07:30:00.000Z");
   });
 
+  it("queries a valid calendar day whose DST transition skips local midnight", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "夏令时上衣", "top");
+    const previousDay = createWearEvent(db, {
+      wornAt: "2018-11-04T02:30:00Z",
+      timeZone: "America/Sao_Paulo",
+      occasion: "casual",
+      itemIds: [top]
+    });
+    const transitionDay = createWearEvent(db, {
+      wornAt: "2018-11-04T03:30:00Z",
+      timeZone: "America/Sao_Paulo",
+      occasion: "casual",
+      itemIds: [top]
+    });
+
+    const page = listWearEvents(db, {
+      from: "2018-11-04",
+      to: "2018-11-04",
+      timeZone: "America/Sao_Paulo"
+    });
+
+    expect(page.events.map((event) => event.id)).toEqual([transitionDay.id]);
+    expect(page.events.map((event) => event.id)).not.toContain(previousDay.id);
+  });
+
+  it("uses the next valid instant as an exclusive end when the following local date was skipped", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "日期线外套", "top");
+    const event = createWearEvent(db, {
+      wornAt: "2011-12-29T20:00:00Z",
+      timeZone: "Pacific/Apia",
+      occasion: "casual",
+      itemIds: [top]
+    });
+
+    expect(listWearEvents(db, {
+      from: "2011-12-29",
+      to: "2011-12-29",
+      timeZone: "Pacific/Apia"
+    }).events.map((item) => item.id)).toEqual([event.id]);
+  });
+
   it("rejects timestamps without an offset, unknown zones, extra fields, and missing garments", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "测试上衣", "top");
@@ -237,6 +327,7 @@ describe("wear event service", () => {
       itemIds: [top]
     };
     expect(() => createWearEvent(db, { ...base, wornAt: "2026-07-14T08:00:00" })).toThrow(/UTC|时区|offset/i);
+    expect(() => createWearEvent(db, { ...base, wornAt: "2026-02-30T08:00:00Z" })).toThrow(/wornAt|日期|时间戳/);
     expect(() => createWearEvent(db, { ...base, timeZone: "Mars/Olympus" })).toThrow(/时区/);
     expect(() => createWearEvent(db, { ...base, forged: true })).toThrow(/forged|字段/);
     expect(() => createWearEvent(db, { ...base, itemIds: [999] })).toThrow(/999|衣物/);
@@ -463,6 +554,37 @@ describe("outfit planner service", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
   });
 
+  it("keeps a linked plan's actual timestamp in sync when the diary event is corrected", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "同步上衣", "top");
+    const bottom = insertGarment(db, "同步下装", "bottom");
+    const outfit = insertSavedOutfit(db, "同步搭配", [top, bottom]);
+    const plan = createOutfitPlan(db, {
+      plannedDate: "2026-07-14",
+      timeZone: "Asia/Shanghai",
+      outfitId: outfit,
+      occasion: "casual"
+    }).entry;
+    const worn = markOutfitPlanWorn(db, plan.id, {
+      wornAt: "2026-07-14T19:30:00+08:00",
+      timeZone: "Asia/Shanghai"
+    });
+
+    updateWearEvent(db, worn.wearEvent.id, {
+      wornAt: "2026-07-14T20:15:00+08:00"
+    });
+
+    expect(listOutfitPlans(db, {
+      from: "2026-07-14",
+      to: "2026-07-14",
+      timeZone: "Asia/Shanghai"
+    })[0]).toMatchObject({
+      id: plan.id,
+      wornAt: "2026-07-14T12:15:00.000Z",
+      wearEventId: worn.wearEvent.id
+    });
+  });
+
   it("uses the explicitly submitted actual outfit, items, occasion, and cleared notes when marking worn", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "计划上衣", "top");
@@ -512,6 +634,7 @@ describe("outfit planner service", () => {
     expect(() => createOutfitPlan(db, { ...base, plannedDate: "2026-02-30" })).toThrow(/plannedDate|日期/);
     expect(() => createOutfitPlan(db, { ...base, timeZone: "Invalid/Zone" })).toThrow(/时区/);
   });
+
 });
 
 function insertGarment(

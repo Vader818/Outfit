@@ -718,3 +718,63 @@
 - 移动端页面本身没有横向溢出；2344px 的七日网格被约束在 375px 的 `overflow-x:auto` 容器内，五项移动主导航未发生 M4 信息架构膨胀。
 - 最终回归为 Vitest 455/455、Python 25/25 与 33/33、typecheck/构建/diff check 全通过；npm 和 Python 依赖均无已知漏洞。最终浏览器控制台无 warn/error。
 - M4 当前无已知阻断项；仅保留本机 `node_modules` 的既有 extraneous 辅助包卫生提示，不执行删除清理。
+
+## 2026-07-13 Outfit M4 独立验收与修复
+
+### 验收原则
+- 本轮针对 `docs/2026-07-10-outfit-m4-diary-week-plan.md` 重新建立计划条目—实现—测试证据链，不把上一轮“已完成”记录直接视为通过。
+- 对彼此独立的后端与前端区域使用只读子 Agent 并行审查；修复仅在主线确认可复现后进行，避免多个 Agent 修改同一逻辑。
+- 不删除任何电脑文件，不原地迁移或写入真实数据库；现有未提交改动一律先识别来源并保留。
+
+### 待验证问题
+- 十二项实施任务是否全部进入生产路径，而非只存在类型或孤立测试。
+- 四项验收标准是否同时具备自动化和关键真实交互证据。
+- 上一轮 455 项 Vitest 通过后，当前工作区是否仍保持相同契约且没有新回归。
+
+### 恢复与工作区基线
+- session catchup 仅提示 1 条未同步工具调用；Git 实际状态确认产品源码干净，只有本轮新增的三份规划记录差异（60 行新增、1 行替换）。
+- M4 计划正文已勾选十二项任务并记录 455/455 测试与真实交互，但这些仍属于待独立核验的完成声明。
+- 项目内唯一 `AGENTS.md` 只补充中文计划/回答要求；用户消息中的 PowerShell、删除与子 Agent 约束继续适用。
+- 当前 HEAD 为 `bcd5ab4 feat(planner): complete M4 diary and weekly planning`，M4 产品代码已提交；工作树产品代码干净。
+- M4 相关生产文件、专项测试和 API/Schema 文档均存在；项目标准验证入口是 `npm run typecheck`、`npm test`、`npm run build`。
+- 当前独立基线：`npm run typecheck` 通过；M4 五个核心专项文件共 54/54 通过。
+- M4 提交实际覆盖 46 个文件、约 7568 行新增/170 行删除，包含生产接线、测试和文档，不是仅更新计划勾选。
+
+### 主线静态审查（进行中）
+- `outfitPlanner` 对 create/update/mark-worn 使用 `BEGIN IMMEDIATE`，计划日期、UTC 实穿时间、IANA 时区、天气日期匹配与对称重复窗口均进入生产路径。
+- 重复提醒按衣物组合签名而非 outfit ID，检查目标日前后窗口并在更新时排除自身；formal=28 天、date/dinner=14 天、其他=0。
+- 待交叉确认一项边界：服务端 `assertOutfitCanBePlanned()` 当前只验证 saved outfit 存在和有有效衣物，未显式排除已归档保存搭配；UI 是否足以封闭该路径不能替代 API 校验。
+- `wearEvents` 的创建、更新、删除都在即时事务中；删除会把关联计划恢复为 planned、撤销反馈实穿事实并重建 pair stats，统计回滚进入生产路径。
+- 迁移 5 创建三张 STRICT 表、所需索引，并保留全部 legacy context JSON 与缺失衣物 ID；M3 feedback 的 `wear_event_id` 也被回填。
+- 已复现并修复一个一致性缺口：关联计划的 WearEvent 修改 `wornAt` 后，旧实现只更新 `wear_events.worn_at`，计划 API 继续返回旧时间。新增回归先稳定失败（12/13），随后在同一 WearEvent 更新事务内同步 `outfit_plan_entries.worn_at/updated_at`。
+- 修复后 `tests/planner.test.ts` 13/13、`npm run typecheck` 与 `git diff --check` 通过。
+- 天气 forecast 路由对经纬度与 1–7 days 做结构化校验，缓存 key 含坐标和天数，缓存 payload 会重新验证数组长度/shape，失败时按新鲜→陈旧→估算顺序回退。
+- 子 Agent 复现 DST 午夜跳转缺口：`America/Sao_Paulo` 的 2018-11-04 与 `America/Santiago` 的 2019-09-08 当日从 01:00 开始，旧日界算法强制要求本地 00:00 存在，导致合法日期查询失败；计划的“夏令时边界”验收并未覆盖该类区域。
+- 修复 DST 后继续覆盖国际日期线极端边界：`Pacific/Apia` 跳过 2011-12-30 时，查询有效的 12-29 不能因 exclusive end 日期不存在而失败；结束边界现允许取目标日期之后的第一个有效 instant，起始日期仍必须真实存在。
+- 子 Agent 确认天气补全接线缺口：首次历史刷新会为已进入 7 天预报的当前周计划补天气，但切换周的 `refreshPlannerWeek()` 只 GET 计划，不执行相同 hydration，因此周中/周末查看下一周时仍可能保留空快照。
+- 子 Agent 确认已穿计划 UX 缺口：周卡对 `worn` 状态仍显示“编辑”，但服务固定返回 409 并要求修改日记，当前按钮是必失败操作。
+- 后端审查发现旧 `/api/wear-logs` 兼容写入口会静默过滤非法 garment ID、接受未知字段，甚至可持久化非安全整数，随后新 WearEvent 读取器报错；已新增 API 回归并收紧为仅允许 garmentIds/context、1–24 项不重复正安全整数、合法 JsonValue。
+- 迁移天气提升原先只检查字段类型，非法日期、空 summary、额外字段仍会进入权威 weather_snapshot 并导致读取失败；新增三类 fixture 后改为与新读取契约完全一致的严格 shape，畸形原值继续保留在 legacySnapshot。
+- `docs/api.md` 的反馈段仍沿用 M3 `wear_logs`/不可逆口径；已同步为 M4 WearEvent、兼容双 ID 和显式删除日记撤销事实的真实行为。
+- 新旧 `wornAt` 校验都曾依赖 JavaScript `Date`，会把不存在的 `2026-02-30` 静默归一到 3 月；现已在 Date 解析前严格验证日历日期、时间和 UTC offset，迁移与新 API 口径一致。
+
+### 前端缺口修复结果
+- 历史计划编辑会把原 plannedDate 纳入有效最小日期；已穿计划改为打开关联日记事件，不再发必然 409 的计划 PUT。
+- planned/skipped 卡片现提供“跳过/恢复计划”，恢复触发的非阻断重复提醒复用既有提醒弹窗。
+- `hydratePlannerPlansWeather()` 被启动刷新和切周刷新共用；进入七天 forecast 的计划可在切换周时补写冻结快照。
+- `loadAllWearEvents()` 会逐页消费 nextCursor 并检测游标循环，日记不再静默截断第 101 条之后的记录。
+- plannerToday 改为可更新状态，每 30 秒检测本地日历日；若仍在原当前周，跨周会推进周起点并刷新，否则保留用户正在查看的历史/未来周。
+- 不完整的 ARIA grid/gridcell 声明改为 list/listitem；横向滚动容器和原生按钮键盘路径保留。
+- 主线逐段复核上述生产接线；前端专项 4 文件 105/105、统一 typecheck 与 diff check 通过。
+
+### 边界决策
+- “超出 7 天只保存场合、临近后补天气”由 forecast 获取和前端 hydration 流程保证；不新增服务端按当前时钟拒绝 `weatherSnapshot` 的规则，因为 API 接受的是可选冻结事实，现有契约没有声明服务端可判断其来源/时效。主线短暂实现后经后端交叉审查撤回，避免破坏离线旧快照或既有客户端编辑。
+- 已归档保存搭配仍是存在且可长期引用的历史实体；生产 UI 不给它新建计划入口，API 保持“存在即可引用”的当前契约，本轮不擅自扩展为新的 409 产品规则。
+
+### 最终真实浏览器复验
+- 使用隔离数据库与本地 QA 服务完成真实交互；未写入真实数据库，未删除任何文件。
+- 历史 2026-07-12 计划编辑时 date input 的 `min=value=2026-07-12`、`checkValidity=true`、`rangeUnderflow=false`，备注可成功改为“历史计划编辑已验证”。
+- 2026-07-13 计划可从 planned→skipped→planned，UI 分别显示“恢复计划”和成功状态反馈。
+- 正式计划 mark-worn 后卡片不再提供计划编辑，只显示“编辑穿着”；实际时间从 11:28 改为 12:15 后，计划卡同步显示 12:15，验证前后端时间副本一致。
+- 390×844 视口下 document 为 375/375 无横向溢出；周网格容器为 375/2344、`overflow-x:auto`；移动导航精确 5 项。
+- 浏览器控制台 0 warning、0 error。QA 浏览器已关闭，8788/5174 服务进程已停止；临时数据库、日志与快照保留。

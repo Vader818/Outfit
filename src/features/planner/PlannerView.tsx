@@ -3,7 +3,7 @@ import { Button, Notice } from "../../components/ui";
 import type { OutfitPlanEntry, SavedOutfit } from "../../shared/types";
 import { WeekGrid, addCalendarDays, formatCalendarDay, type WeekGridProps } from "./WeekGrid";
 
-export interface PlannerViewProps extends Pick<WeekGridProps, "weekStart" | "today" | "plans" | "outfits" | "busyPlanId" | "onEdit" | "onDelete" | "onMarkWorn"> {
+export interface PlannerViewProps extends Pick<WeekGridProps, "weekStart" | "today" | "plans" | "outfits" | "busyPlanId" | "onEdit" | "onEditWearEvent" | "onDelete" | "onMarkWorn" | "onToggleSkipped"> {
   busy: boolean;
   error?: string;
   onPreviousWeek: () => void;
@@ -81,8 +81,10 @@ export function PlannerView(props: PlannerViewProps) {
         outfits={props.outfits}
         busyPlanId={props.busyPlanId}
         onEdit={props.onEdit}
+        onEditWearEvent={props.onEditWearEvent}
         onDelete={props.onDelete}
         onMarkWorn={props.onMarkWorn}
+        onToggleSkipped={props.onToggleSkipped}
       />
     </section>
   );

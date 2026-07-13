@@ -24,6 +24,15 @@ const OUTFIT_OCCASIONS = new Set<OutfitOccasion>([
   "date",
   "dinner"
 ]);
+const WEATHER_SNAPSHOT_FIELDS = new Set([
+  "date",
+  "temperature",
+  "apparentTemperature",
+  "precipitationProbability",
+  "windSpeed",
+  "weatherCode",
+  "summary"
+]);
 
 export type AppDatabase = DatabaseSyncType;
 
@@ -462,11 +471,22 @@ function canonicalLegacyWornAt(rowId: number, value: string): string {
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
     ? `${value.replace(" ", "T")}Z`
     : value;
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/i.exec(normalized);
+  if (!match || !isCalendarDate(match[1]) || Number(match[2]) > 23 ||
+    Number(match[3]) > 59 || Number(match[4]) > 59 || !isValidUtcOffset(match[5])) {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: worn_at is invalid`);
+  }
   const timestamp = new Date(normalized);
   if (!Number.isFinite(timestamp.getTime())) {
     throw new Error(`Cannot migrate wear_logs row ${rowId}: worn_at is invalid`);
   }
   return timestamp.toISOString();
+}
+
+function isValidUtcOffset(value: string): boolean {
+  if (value.toUpperCase() === "Z") return true;
+  const [hour, minute] = value.slice(1).split(":").map(Number);
+  return hour <= 23 && minute <= 59;
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
@@ -483,13 +503,24 @@ function isJsonRecord(value: unknown): value is { [key: string]: JsonValue } {
 function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return typeof record.date === "string" &&
+  return Object.keys(record).length === WEATHER_SNAPSHOT_FIELDS.size &&
+    Object.keys(record).every((field) => WEATHER_SNAPSHOT_FIELDS.has(field)) &&
+    isCalendarDate(record.date) &&
     typeof record.temperature === "number" && Number.isFinite(record.temperature) &&
     typeof record.apparentTemperature === "number" && Number.isFinite(record.apparentTemperature) &&
     typeof record.precipitationProbability === "number" && Number.isFinite(record.precipitationProbability) &&
     typeof record.windSpeed === "number" && Number.isFinite(record.windSpeed) &&
     typeof record.weatherCode === "number" && Number.isFinite(record.weatherCode) &&
-    typeof record.summary === "string";
+    typeof record.summary === "string" && record.summary.length > 0 && record.summary.length <= 200;
+}
+
+function isCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() + 1 === month &&
+    date.getUTCDate() === day;
 }
 
 export interface DbImportResult {

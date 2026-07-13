@@ -102,7 +102,7 @@ API：
 - [x] 实现场合化重复提醒：正式类同套 28 天、约会/晚餐类 14 天、日常不拦截；只提醒并提供换一件，不禁止。
 - [x] 更新洞察口径，把“近期未穿”和“从未穿过”分开，并统一按 active garments 计算分布。
 - [x] 扩展 OutfitExportV2，加入 wear events、legacy snapshots 与 plan entries；固定跨时区 fixture 验证往返 JSON 不改变 plannedDate。
-- [x] 更新文档并完成全量验证。API、Schema、README 已同步；`typecheck`、Vitest 32 文件 455/455、Python unittest 25/25、pytest 33/33、npm/Python 依赖审计、`git diff --check` 与非破坏性生产构建全部通过。
+- [x] 更新文档并完成全量验证。API、Schema、README 已同步；独立复验与修复后 `typecheck`、Vitest 32 文件 464/464、Python unittest 25/25、pytest 33/33、npm/Python 依赖审计、`git diff --check` 与非破坏性生产构建全部通过。
 
 ### 验收标准
 
@@ -116,5 +116,6 @@ API：
 - 隔离数据库真实交互完成周计划创建/编辑、天气冻结、28 天正式搭配提醒、计划与实际穿着差异、日记编辑/显式清空/撤销、统计回滚、保存搭配安排入口及洞察口径验证。
 - 390×844 移动端页面无整体横向溢出，周网格仅在自身容器横向滚动，五项移动主导航保持不变；浏览器控制台无 warn/error。
 - QA 数据库、日志和两个生产构建证据目录均保留在系统临时目录；未删除任何电脑文件，真实数据库未原地迁移或写入。
+- 2026-07-13 独立复验补齐关联计划实际时间同步、午夜 DST/日期线边界、legacy 天气与 wear-log 严格校验、日记分页、切周天气补写、历史计划编辑、跳过/恢复和 worn→日记编辑；隔离浏览器再次验证桌面/390×844 交互，控制台无警告或错误。
 
 ---

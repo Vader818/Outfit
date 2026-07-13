@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { existsSync, readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, AuthView, HistoryInsightsView, ImportView, MainApp, OutfitBuilder, RecommendationView, SavedOutfitsPanel, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView } from "../src/App";
+import { App, AuthView, HistoryInsightsView, ImportView, MainApp, OutfitBuilder, RecommendationView, SavedOutfitsPanel, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView, hydratePlannerPlansWeather, loadAllWearEvents, rollPlannerCalendarDay } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
 import { ImportReviewTable } from "../src/features/import/ImportReviewTable";
 import { ManualGarmentDialog, yuanToCents } from "../src/features/wardrobe/ManualGarmentDialog";
@@ -29,7 +29,7 @@ import {
   DEFAULT_PROFILE,
   parseLocationCoordinates
 } from "../src/shared/presentation";
-import type { CaptureEngine, Garment, OutfitRecommendation, RecommendationResult, SavedOutfit, SavedOutfitItemInput, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WeatherSnapshot } from "../src/shared/types";
+import type { CaptureEngine, Garment, OutfitPlanEntry, OutfitRecommendation, RecommendationResult, SavedOutfit, SavedOutfitItemInput, TaobaoImportPreview, ThumbnailCandidate, VisionModelsResponse, WardrobeInsights, WearEvent, WeatherSnapshot } from "../src/shared/types";
 
 const TEST_CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
 const TEST_OUTFIT_SIGNATURE = "a".repeat(64);
@@ -39,6 +39,50 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("读取全部穿着日记分页并拒绝重复游标，避免静默截断", async () => {
+    const first = { id: 1, wornAt: "2026-07-13T00:00:00.000Z", timeZone: "UTC", occasion: "casual", items: [] } satisfies WearEvent;
+    const second = { id: 2, wornAt: "2026-07-12T00:00:00.000Z", timeZone: "UTC", occasion: "casual", items: [] } satisfies WearEvent;
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce({ events: [first], nextCursor: "page-2" })
+      .mockResolvedValueOnce({ events: [second] });
+
+    await expect(loadAllWearEvents({ timeZone: "UTC", limit: 100 }, fetchPage)).resolves.toEqual([first, second]);
+    expect(fetchPage).toHaveBeenNthCalledWith(1, { timeZone: "UTC", limit: 100 });
+    expect(fetchPage).toHaveBeenNthCalledWith(2, { timeZone: "UTC", limit: 100, cursor: "page-2" });
+
+    const repeatedCursor = vi.fn().mockResolvedValue({ events: [], nextCursor: "same" });
+    await expect(loadAllWearEvents({ timeZone: "UTC" }, repeatedCursor)).rejects.toThrow("重复分页游标");
+  });
+
+  it("为新加载周复用天气快照补写，并保留已穿或已有快照计划", async () => {
+    const forecast = { ...makeWeather(), date: "2026-06-11" };
+    const plans: OutfitPlanEntry[] = [
+      { id: 1, plannedDate: "2026-06-11", timeZone: "UTC", outfitId: 1, occasion: "formal", status: "planned" },
+      { id: 2, plannedDate: "2026-06-11", timeZone: "UTC", outfitId: 1, occasion: "formal", status: "worn", wornAt: "2026-06-11T08:00:00.000Z", wearEventId: 2 },
+      { id: 3, plannedDate: "2026-06-11", timeZone: "UTC", outfitId: 1, occasion: "formal", status: "planned", weatherSnapshot: { ...forecast, summary: "已冻结" } }
+    ];
+    const persist = vi.fn(async (plan: OutfitPlanEntry, snapshot: WeatherSnapshot) => ({ ...plan, weatherSnapshot: snapshot }));
+
+    const hydrated = await hydratePlannerPlansWeather(plans, [forecast], persist);
+
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith(plans[0], forecast);
+    expect(hydrated[0].weatherSnapshot).toEqual(forecast);
+    expect(hydrated[1]).toBe(plans[1]);
+    expect(hydrated[2]).toBe(plans[2]);
+  });
+
+  it("跨午夜只在用户仍查看原今日周时推进周起点", () => {
+    expect(rollPlannerCalendarDay("2026-07-12", "2026-07-06", "2026-07-13")).toEqual({
+      today: "2026-07-13",
+      weekStart: "2026-07-13"
+    });
+    expect(rollPlannerCalendarDay("2026-07-12", "2026-07-20", "2026-07-13")).toEqual({
+      today: "2026-07-13",
+      weekStart: "2026-07-20"
+    });
+  });
+
   it("starts with truly unset location and profile values and parses coordinates strictly", () => {
     expect(DEFAULT_LATITUDE).toBe("");
     expect(DEFAULT_LONGITUDE).toBe("");

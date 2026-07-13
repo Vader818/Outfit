@@ -781,3 +781,51 @@
 - 十二项实施任务和四项验收标准全部具备代码、测试、文档与隔离真实交互证据。
 - 最终只读复核发现的四项一致性缺口已修复并回归；当前无已知阻断项。
 - QA 数据库、日志和构建证据均按“不擅自删除”约束保留；真实数据库未原地迁移或写入，本轮未删除任何电脑文件。
+
+## 会话：2026-07-13（Outfit M4 独立验收与修复）
+
+### 阶段 55：独立验收基线与证据映射
+- **状态：** in_progress
+- 已执行：
+  - 沿用系统已建立且与本次请求完全一致的 active goal；重复创建 goal 被拒绝后已读取并确认现有目标。
+  - 完整读取 `planning-with-files-zh` 技能说明，并恢复三份既有规划记录及 M4 上轮结论。
+  - 建立阶段 55–58；本轮不直接采信旧签收，将重新核对源码、测试、文档与运行证据。
+  - 全程不删除电脑文件，不原地迁移或写入真实数据库。
+  - session catchup 报告 1 条未同步工具调用；Git 复核确认产品源码无未提交修改，仅三份规划文件存在本轮差异。
+  - 已完整读取 M4 计划正文和项目 `AGENTS.md`；启动三个互斥只读审查 Agent，分别覆盖后端、前端、计划/测试/文档。
+  - 确认 M4 产品实现位于 HEAD 提交 `bcd5ab4`，当前产品工作树干净；已盘点 planner、迁移、天气、洞察、导出、API、前端组件和专项测试文件。
+  - 独立运行 `npm run typecheck` 通过；M4 核心专项（planner、planner UI、M4 insights、weather、export）5 文件 54/54 通过。
+  - 核对 M4 提交范围：46 个文件，生产实现、前后端接线、自动化测试与 README/API/schema 文档均在同一提交中。
+  - 主线已逐行审查 `outfitPlanner.ts`：确认事务、日期/时区、天气冻结、mark-worn 和对称重复提醒生产实现；记录“归档保存搭配能否被 API 新建计划”待交叉确认边界。
+  - 主线已逐行审查 `wearEvents.ts` 和迁移 5：确认 CRUD、分页、DST 边界、旧日志迁移、删除回滚与反馈统计重算；记录“修改关联日记时间后计划 wornAt 不同步”待复现缺口。
+  - 新增关联计划实际时间同步回归；旧实现准确复现为 12/13（计划仍返回 11:30Z，日记已改为 12:15Z）。
+  - 在 WearEvent 更新事务内同步关联计划的 `worn_at/updated_at`，并更新 API/schema 契约说明；待定向与全量复验。
+  - 修复后 planner 专项 13/13、typecheck 和 diff check 通过。
+  - 计划/测试子 Agent 进一步报告并提供代码证据：午夜 DST 日界查询、切周天气补全、已穿计划编辑入口三处缺口；主线已逐项交叉确认，进入回归测试与修复。
+  - 新增圣保罗 2018-11-04 午夜跳转回归，旧实现稳定失败；将日界计算改为二分查找该本地日期的第一个有效 instant，不再强制 00:00 必须存在。
+  - 新增 legacy weather 三类畸形迁移回归与旧 wear-log 非安全/混合 ID、未知字段 API 回归；旧实现两项均稳定失败，修复后 planner+API 78/78 通过。
+  - 收紧旧兼容输入和迁移天气提升，并同步 API/schema 的 legacy、WearEvent 与反馈撤销口径。
+  - 一次统一 typecheck 命中前端 Agent 正处于 TDD 红灯期的新增 helper/props 尚未实现；不越界修改其独占文件，等待其完成后统一复验。
+  - 前端 Agent 完成历史计划编辑、worn→日记编辑、跳过/恢复、切周天气补全、日记分页、跨午夜日期更新和 ARIA 语义修复；专项 105/105 与 typecheck 通过。
+  - 主线逐段复核前端 helper、effect、状态处理与组件接线；后端 planner+API 当前 80/80、统一 typecheck 和 diff check 通过。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+
+### 阶段 56：并行静态审查与缺口确认
+- **状态：** complete
+- 三个只读 Agent 已全部返回并等待完成：后端、前端和计划/测试/文档矩阵均由主线交叉核验；所有可复现高/中缺口均已进入修复。
+
+### 阶段 57：动态验证与必要修复
+- **状态：** complete
+- 全量 Vitest 32 文件、464/464 通过；Python unittest 25/25、pytest 33/33 通过。
+- `npm run build` 使用独立临时目录并关闭 emptyOutDir，1600 模块、3 个产物成功；现有 dist 未触碰。构建保留于 `C:\Users\Vader\AppData\Local\Temp\outfit-m4-accept-33fbb28b8c984142a11240241dcffc7e`。
+- npm 生产/全量审计均 0 漏洞；pip check 无破损依赖，pip-audit 0 已知漏洞。
+- 隔离真实浏览器完成历史计划编辑、skip/restore、mark-worn、worn→日记编辑、实际时间同步、移动端溢出与五项导航复验；控制台 0 warning/error。
+- QA 目录保留于 `C:\Users\Vader\AppData\Local\Temp\outfit-m4-browser-accept-1783913162416`；浏览器已关闭，8788/5174 监听为 0，本轮未删除任何文件。
+- Playwright 默认目录同时含有 17 个项目既有跟踪证据；首次批量移动后立即按 `git ls-files` 精确原样移回，仅将本轮 13 个新证据保留到 `output/playwright/m4-accept-20260713`，没有留下历史文件删除或修改。
+
+### 阶段 58：最终签收
+- **状态：** complete
+- 独立结论：原 M4 实现主体已完成，但验收时存在时间副本、极端时区、legacy 数据、分页和前端交互等真实缺口；本轮已全部修复并通过自动化与隔离浏览器复验，当前可按 M4 计划签收。

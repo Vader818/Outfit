@@ -65,7 +65,8 @@ import {
   uploadGarmentImage,
   verifyVisionModel,
   type CaptureStartResult,
-  type ImportSummary
+  type ImportSummary,
+  type PlannerRangeQuery
 } from "../api";
 import { getTaobaoBookmarklet } from "../bookmarklet/taobaoBookmarklet";
 import { AppMark, IconButton, Notice, Skeleton, cx } from "../components/ui";
@@ -137,6 +138,7 @@ import type {
   WardrobeInsights,
   WearLogEntry,
   WearEvent,
+  WearEventPage,
   WearEventInput,
   WeatherSnapshot
 } from "../shared/types";
@@ -217,6 +219,68 @@ function weekStartDateKey(dateKey: string): string {
   const [year, month, day] = dateKey.split("-").map(Number);
   const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
   return addCalendarDays(dateKey, -(weekday === 0 ? 6 : weekday - 1));
+}
+
+type WearEventPageFetcher = (query: PlannerRangeQuery) => Promise<WearEventPage>;
+
+export async function loadAllWearEvents(
+  query: PlannerRangeQuery,
+  fetchPage: WearEventPageFetcher = getWearEvents
+): Promise<WearEvent[]> {
+  const events: WearEvent[] = [];
+  let cursor = query.cursor;
+  const seenCursors = new Set<string>();
+  if (cursor) seenCursors.add(cursor);
+
+  while (true) {
+    const page = await fetchPage(cursor ? { ...query, cursor } : { ...query });
+    events.push(...page.events);
+    const nextCursor = page.nextCursor;
+    if (!nextCursor) return events;
+    if (seenCursors.has(nextCursor)) {
+      throw new Error("穿着日记返回了重复分页游标");
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+}
+
+type PersistPlannerWeather = (
+  plan: OutfitPlanEntry,
+  snapshot: WeatherSnapshot
+) => Promise<OutfitPlanEntry>;
+
+export async function hydratePlannerPlansWeather(
+  plans: OutfitPlanEntry[],
+  forecasts: WeatherSnapshot[],
+  persist: PersistPlannerWeather = async (plan, snapshot) =>
+    (await updateOutfitPlan(plan.id, { weatherSnapshot: snapshot })).entry
+): Promise<OutfitPlanEntry[]> {
+  return Promise.all(plans.map(async (plan) => {
+    if (plan.status !== "planned" || plan.weatherSnapshot) return plan;
+    const snapshot = forecasts.find((forecast) => forecast.date === plan.plannedDate);
+    if (!snapshot) return plan;
+    try {
+      return await persist(plan, snapshot);
+    } catch {
+      return plan;
+    }
+  }));
+}
+
+export function rollPlannerCalendarDay(
+  currentToday: string,
+  currentWeekStart: string,
+  nextToday: string
+): { today: string; weekStart: string } {
+  if (nextToday === currentToday) {
+    return { today: currentToday, weekStart: currentWeekStart };
+  }
+  const viewingCurrentWeek = currentWeekStart === weekStartDateKey(currentToday);
+  return {
+    today: nextToday,
+    weekStart: viewingCurrentWeek ? weekStartDateKey(nextToday) : currentWeekStart
+  };
 }
 
 export function findExactSavedRecommendationParent(
@@ -375,7 +439,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [plannerForecasts, setPlannerForecasts] = useState<WeatherSnapshot[]>([]);
   const [historySection, setHistorySection] = useState<HistorySection>("planner");
   const [plannerTimeZone] = useState(resolveLocalTimeZone);
-  const [plannerToday] = useState(() => dateKeyInTimeZone(new Date(), resolveLocalTimeZone()));
+  const [plannerToday, setPlannerToday] = useState(() => dateKeyInTimeZone(new Date(), resolveLocalTimeZone()));
   const [plannerWeekStart, setPlannerWeekStart] = useState(() => weekStartDateKey(
     dateKeyInTimeZone(new Date(), resolveLocalTimeZone())
   ));
@@ -482,6 +546,22 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }, [tab]);
 
   useEffect(() => {
+    const syncCalendarDay = () => {
+      const nextToday = dateKeyInTimeZone(new Date(), plannerTimeZone);
+      const next = rollPlannerCalendarDay(plannerToday, plannerWeekStart, nextToday);
+      if (next.today === plannerToday) return;
+      setPlannerToday(next.today);
+      setPlannerWeekStart(next.weekStart);
+      if (next.weekStart !== plannerWeekStart) {
+        void refreshPlannerWeek(next.weekStart);
+      }
+    };
+    syncCalendarDay();
+    const interval = window.setInterval(syncCalendarDay, 30_000);
+    return () => window.clearInterval(interval);
+  }, [plannerTimeZone, plannerToday, plannerWeekStart]);
+
+  useEffect(() => {
     if (!statusMessage) return;
     const timeout = window.setTimeout(() => setStatusMessage(""), 4500);
     return () => window.clearTimeout(timeout);
@@ -520,7 +600,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         getWearLogs(),
         getRecommendationRuns(),
         getInsights(),
-        getWearEvents({
+        loadAllWearEvents({
           timeZone: plannerTimeZone,
           from: addCalendarDays(plannerToday, -3650),
           to: plannerToday,
@@ -538,17 +618,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setWearLogs(nextWearLogs);
       setRecommendationRuns(nextRuns);
       setInsights(nextInsights);
-      setWearEvents(nextWearEvents.events);
-      const hydratedPlans = await Promise.all(nextPlans.map(async (plan) => {
-        if (plan.status !== "planned" || plan.weatherSnapshot) return plan;
-        const snapshot = nextForecasts.find((forecast) => forecast.date === plan.plannedDate);
-        if (!snapshot) return plan;
-        try {
-          return (await updateOutfitPlan(plan.id, { weatherSnapshot: snapshot })).entry;
-        } catch {
-          return plan;
-        }
-      }));
+      setWearEvents(nextWearEvents);
+      const hydratedPlans = await hydratePlannerPlansWeather(nextPlans, nextForecasts);
       setOutfitPlans(hydratedPlans);
       setPlannerForecasts(nextForecasts);
     } catch (historyError) {
@@ -560,11 +631,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setPlannerBusy(true);
     setPlannerError("");
     try {
-      setOutfitPlans(await getOutfitPlans({
-        timeZone: plannerTimeZone,
-        from: weekStart,
-        to: addCalendarDays(weekStart, 6)
-      }));
+      const coordinates = parseLocationCoordinates(latitude, longitude);
+      const [nextPlans, nextForecasts] = await Promise.all([
+        getOutfitPlans({
+          timeZone: plannerTimeZone,
+          from: weekStart,
+          to: addCalendarDays(weekStart, 6)
+        }),
+        coordinates
+          ? getWeatherForecast(coordinates.latitude, coordinates.longitude, 7)
+          : Promise.resolve([])
+      ]);
+      setOutfitPlans(await hydratePlannerPlansWeather(nextPlans, nextForecasts));
+      setPlannerForecasts(nextForecasts);
     } catch (plannerLoadError) {
       setPlannerError(plannerLoadError instanceof Error ? plannerLoadError.message : "周计划读取失败");
     } finally {
@@ -1402,6 +1481,50 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     });
   }
 
+  function editWornPlanEvent(plan: OutfitPlanEntry) {
+    const event = plan.wearEventId
+      ? wearEvents.find((candidate) => candidate.id === plan.wearEventId)
+      : undefined;
+    if (!event) {
+      setPlannerError("没有找到这条计划对应的穿着记录，请刷新穿搭历史后重试");
+      return;
+    }
+    setPlannerError("");
+    setWearEventDialog({ event });
+  }
+
+  async function toggleOutfitPlanSkipped(plan: OutfitPlanEntry) {
+    if (plan.status === "worn") return;
+    const nextStatus = plan.status === "skipped" ? "planned" : "skipped";
+    setBusyPlanId(plan.id);
+    setPlannerError("");
+    setPlanRepeatWarning("");
+    try {
+      const result = await updateOutfitPlan(plan.id, { status: nextStatus });
+      setOutfitPlans((plans) => [result.entry, ...plans.filter((item) => item.id !== result.entry.id)]);
+      if (result.repeatWarning) {
+        setOutfitPlanDialog({
+          plan: result.entry,
+          initial: {
+            plannedDate: result.entry.plannedDate,
+            timeZone: result.entry.timeZone,
+            outfitId: result.entry.outfitId,
+            occasion: result.entry.occasion,
+            notes: result.entry.notes,
+            weatherSnapshot: result.entry.weatherSnapshot
+          }
+        });
+        setPlanRepeatWarning(result.repeatWarning.message);
+      } else {
+        setStatusMessage(nextStatus === "skipped" ? "计划已跳过" : "计划已恢复");
+      }
+    } catch (planError) {
+      setPlannerError(planError instanceof Error ? planError.message : "计划状态更新失败");
+    } finally {
+      setBusyPlanId(null);
+    }
+  }
+
   function closeOutfitPlanDialog() {
     if (plannerBusy) return;
     setOutfitPlanDialog(null);
@@ -1832,8 +1955,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                     onToday={returnPlannerToToday}
                     onCreate={openNewOutfitPlan}
                     onEdit={editOutfitPlan}
+                    onEditWearEvent={editWornPlanEvent}
                     onDelete={(plan) => { void removeOutfitPlan(plan); }}
                     onMarkWorn={markPlanWorn}
+                    onToggleSkipped={(plan) => { void toggleOutfitPlanSkipped(plan); }}
                   />
                 )}
                 diaryContent={(

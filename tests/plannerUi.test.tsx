@@ -52,8 +52,10 @@ describe("M4 周计划", () => {
       makePlan(3, "2026-07-15", "skipped")
     ];
     const onEdit = vi.fn();
+    const onEditWearEvent = vi.fn();
     const onDelete = vi.fn();
     const onMarkWorn = vi.fn();
+    const onToggleSkipped = vi.fn();
     const tree = WeekGrid({
       weekStart: "2026-07-13",
       today: "2026-07-14",
@@ -61,8 +63,10 @@ describe("M4 周计划", () => {
       outfits: [outfit],
       busyPlanId: null,
       onEdit,
+      onEditWearEvent,
       onDelete,
-      onMarkWorn
+      onMarkWorn,
+      onToggleSkipped
     });
     const markup = renderToStaticMarkup(<>{tree}</>);
 
@@ -76,11 +80,20 @@ describe("M4 周计划", () => {
     expect(markup).toContain("暂无安排");
 
     findButtonsByText(tree, "编辑 周一通勤 2026-07-13")[0].props.onClick();
+    findButtonsByText(tree, "编辑穿着 周一通勤 2026-07-14")[0].props.onClick();
     findButtonsByText(tree, "删除 周一通勤 2026-07-13")[0].props.onClick();
     findButtonsByText(tree, "标记已穿 周一通勤 2026-07-13")[0].props.onClick();
+    findButtonsByText(tree, "跳过计划 周一通勤 2026-07-13")[0].props.onClick();
+    findButtonsByText(tree, "恢复计划 周一通勤 2026-07-15")[0].props.onClick();
     expect(onEdit).toHaveBeenCalledWith(plans[0]);
+    expect(onEdit).not.toHaveBeenCalledWith(plans[1]);
+    expect(onEditWearEvent).toHaveBeenCalledWith(plans[1]);
     expect(onDelete).toHaveBeenCalledWith(plans[0]);
     expect(onMarkWorn).toHaveBeenCalledWith(plans[0]);
+    expect(onToggleSkipped).toHaveBeenNthCalledWith(1, plans[0]);
+    expect(onToggleSkipped).toHaveBeenNthCalledWith(2, plans[2]);
+    expect(markup).toContain('role="list"');
+    expect(markup.match(/role="listitem"/g)).toHaveLength(7);
   });
 
   it("周视图提供上周、下周、今日和新建入口且不私自维护导航状态", () => {
@@ -100,7 +113,8 @@ describe("M4 周计划", () => {
       onCreate,
       onEdit: vi.fn(),
       onDelete: vi.fn(),
-      onMarkWorn: vi.fn()
+      onMarkWorn: vi.fn(),
+      onToggleSkipped: vi.fn()
     });
     const markup = renderToStaticMarkup(<>{tree}</>);
 
@@ -200,6 +214,32 @@ describe("M4 周计划", () => {
       originalWeatherSnapshot: frozen
     });
     expect(changedWithoutForecast).not.toHaveProperty("weatherSnapshot");
+  });
+
+  it("编辑历史计划时把原计划日期作为最小值，避免原生表单阻止备注修改", () => {
+    const markup = renderToStaticMarkup(
+      <OutfitPlanDialog
+        open
+        mode="edit"
+        outfits={[makeSavedOutfit()]}
+        forecasts={[]}
+        minDate="2026-07-13"
+        initial={{
+          plannedDate: "2026-07-12",
+          timeZone: "Asia/Shanghai",
+          outfitId: 9,
+          occasion: "formal",
+          notes: "历史计划"
+        }}
+        busy={false}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('type="date"');
+    expect(markup).toContain('value="2026-07-12"');
+    expect(markup).toContain('min="2026-07-12"');
   });
 });
 

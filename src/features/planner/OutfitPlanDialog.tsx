@@ -73,6 +73,10 @@ export function OutfitPlanDialog(props: OutfitPlanDialogProps) {
   const descriptionId = `${id}-description`;
   const [draft, setDraft] = useState<OutfitPlanDraft>(() => initialDraft(props));
   const [localError, setLocalError] = useState("");
+  const effectiveMinDate = props.mode === "edit" && props.initial?.plannedDate && props.minDate &&
+    props.initial.plannedDate < props.minDate
+    ? props.initial.plannedDate
+    : props.minDate;
 
   useEffect(() => {
     if (!props.open) return;
@@ -147,7 +151,7 @@ export function OutfitPlanDialog(props: OutfitPlanDialogProps) {
             label="计划日期"
             type="date"
             required
-            min={props.minDate}
+            min={effectiveMinDate}
             max={props.maxDate}
             value={draft.plannedDate}
             disabled={props.busy}

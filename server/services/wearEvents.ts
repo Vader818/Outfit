@@ -103,7 +103,7 @@ export function listWearEvents(
     throw new ValidationError("from 不能晚于 to");
   }
   const start = zonedCalendarStart(from, parsed.timeZone).toISOString();
-  const end = zonedCalendarStart(addCalendarDays(to, 1), parsed.timeZone).toISOString();
+  const end = zonedCalendarStart(addCalendarDays(to, 1), parsed.timeZone, true).toISOString();
   const cursor = parsed.cursor === undefined ? undefined : decodeCursor(parsed.cursor);
   const rows = db.prepare(`
     SELECT id, worn_at, time_zone, outfit_id, occasion, weather_snapshot, notes, legacy_snapshot
@@ -218,6 +218,11 @@ export function updateWearEvent(
       db.prepare("DELETE FROM wear_event_items WHERE wear_event_id = ?").run(eventId);
       insertWearEventItems(db, eventId, merged.itemIds);
     }
+    db.prepare(`
+      UPDATE outfit_plan_entries
+      SET worn_at = ?, updated_at = ?
+      WHERE wear_event_id = ?
+    `).run(merged.wornAt, now, eventId);
     return getWearEvent(db, eventId);
   });
 }
@@ -253,8 +258,22 @@ export function canonicalUtcTimestamp(value: unknown, field = "wornAt"): string 
   if (typeof value !== "string" || !value.trim()) {
     throw new ValidationError(`${field} 必须是带 UTC offset 的时间戳`);
   }
-  if (!/T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/i.exec(value);
+  if (!match) {
     throw new ValidationError(`${field} 必须包含 Z 或 UTC offset`);
+  }
+  validateCalendarDate(match[1], field);
+  const hour = Number(match[2]);
+  const minute = Number(match[3]);
+  const second = match[4] === undefined ? 0 : Number(match[4]);
+  if (hour > 23 || minute > 59 || second > 59) {
+    throw new ValidationError(`${field} 不是有效时间戳`);
+  }
+  if (match[5].toUpperCase() !== "Z") {
+    const [offsetHour, offsetMinute] = match[5].slice(1).split(":").map(Number);
+    if (offsetHour > 23 || offsetMinute > 59) {
+      throw new ValidationError(`${field} 不是有效时间戳`);
+    }
   }
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) {
@@ -544,24 +563,26 @@ function dateKeyInZone(date: Date, timeZone: string): string {
   return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
-function zonedCalendarStart(dateKey: string, timeZone: string): Date {
+function zonedCalendarStart(dateKey: string, timeZone: string, allowNextValidDate = false): Date {
   validateCalendarDate(dateKey);
   validateIanaTimeZone(timeZone);
   const [year, month, day] = dateKey.split("-").map(Number);
-  const target = Date.UTC(year, month - 1, day, 0, 0, 0);
-  let guess = target;
-  for (let pass = 0; pass < 6; pass += 1) {
-    const parts = dateParts(new Date(guess), timeZone, true);
-    const represented = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
-    const adjustment = target - represented;
-    guess += adjustment;
-    if (adjustment === 0) break;
+  const utcDate = Date.UTC(year, month - 1, day);
+  let lower = utcDate - 36 * 60 * 60 * 1000;
+  let upper = utcDate + 36 * 60 * 60 * 1000;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if (dateKeyInZone(new Date(middle), timeZone) < dateKey) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
+    }
   }
-  const actual = dateParts(new Date(guess), timeZone, true);
-  if (actual.year !== year || actual.month !== month || actual.day !== day || actual.hour !== 0) {
-    throw new ValidationError(`${dateKey} 在时区 ${timeZone} 中没有有效的本地午夜`);
+  const firstInstant = new Date(lower);
+  if (!allowNextValidDate && dateKeyInZone(firstInstant, timeZone) !== dateKey) {
+    throw new ValidationError(`${dateKey} 在时区 ${timeZone} 中不存在`);
   }
-  return new Date(guess);
+  return firstInstant;
 }
 
 function dateParts(date: Date, timeZone: string, includeTime = false): {
