@@ -1,4 +1,11 @@
-export { App, MainApp, buildTaobaoOrderCaptureOptions } from "./app/App";
+export {
+  App,
+  MainApp,
+  buildTaobaoOrderCaptureOptions,
+  hydratePlannerPlansWeather,
+  loadAllWearEvents,
+  rollPlannerCalendarDay
+} from "./app/App";
 export { AuthView, SessionSummary } from "./features/auth/AuthView";
 export { ImportView } from "./features/import/ImportView";
 export { ImportReviewTable } from "./features/import/ImportReviewTable";

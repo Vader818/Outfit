@@ -1,4 +1,4 @@
-import { CalendarCheck, Check, Pencil, Trash2 } from "lucide-react";
+import { CalendarCheck, CalendarX2, Check, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { Badge, Button, EmptyState, Surface } from "../../components/ui";
 import type { OutfitPlanEntry, SavedOutfit } from "../../shared/types";
 
@@ -26,8 +26,10 @@ export interface WeekGridProps {
   outfits: SavedOutfit[];
   busyPlanId?: number | null;
   onEdit: (plan: OutfitPlanEntry) => void;
+  onEditWearEvent?: (plan: OutfitPlanEntry) => void;
   onDelete: (plan: OutfitPlanEntry) => void;
   onMarkWorn: (plan: OutfitPlanEntry) => void;
+  onToggleSkipped?: (plan: OutfitPlanEntry) => void;
 }
 
 export function isCalendarDateKey(value: string): boolean {
@@ -104,7 +106,7 @@ export function WeekGrid(props: WeekGridProps) {
 
   return (
     <div className="week-grid-scroll" tabIndex={0} aria-label="可横向滚动的一周穿搭计划">
-      <div className="week-grid" role="grid" aria-label="一周穿搭计划">
+      <div className="week-grid" role="list" aria-label="一周穿搭计划">
         {days.map((dateKey) => {
           const label = formatCalendarDay(dateKey);
           const dayPlans = props.plans.filter((plan) => plan.plannedDate === dateKey);
@@ -114,7 +116,7 @@ export function WeekGrid(props: WeekGridProps) {
               className={`week-day${dateKey === props.today ? " is-today" : ""}`}
               data-today={dateKey === props.today || undefined}
               aria-labelledby={dayId}
-              role="gridcell"
+              role="listitem"
               key={dateKey}
             >
               <header className="week-day__header">
@@ -168,16 +170,44 @@ export function WeekGrid(props: WeekGridProps) {
                               标记已穿
                             </Button>
                           ) : null}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            aria-label={`编辑 ${outfitName} ${dateKey}`}
-                            disabled={anyBusy}
-                            onClick={() => props.onEdit(plan)}
-                          >
-                            <Pencil aria-hidden="true" size={15} />
-                            编辑
-                          </Button>
+                          {props.onToggleSkipped && plan.status !== "worn" ? (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              aria-label={`${plan.status === "skipped" ? "恢复计划" : "跳过计划"} ${outfitName} ${dateKey}`}
+                              disabled={anyBusy}
+                              aria-busy={busy || undefined}
+                              onClick={() => props.onToggleSkipped?.(plan)}
+                            >
+                              {plan.status === "skipped"
+                                ? <RotateCcw aria-hidden="true" size={15} />
+                                : <CalendarX2 aria-hidden="true" size={15} />}
+                              {plan.status === "skipped" ? "恢复计划" : "跳过"}
+                            </Button>
+                          ) : null}
+                          {plan.status !== "worn" ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`编辑 ${outfitName} ${dateKey}`}
+                              disabled={anyBusy}
+                              onClick={() => props.onEdit(plan)}
+                            >
+                              <Pencil aria-hidden="true" size={15} />
+                              编辑
+                            </Button>
+                          ) : plan.wearEventId && props.onEditWearEvent ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`编辑穿着 ${outfitName} ${dateKey}`}
+                              disabled={anyBusy}
+                              onClick={() => props.onEditWearEvent?.(plan)}
+                            >
+                              <Pencil aria-hidden="true" size={15} />
+                              编辑穿着
+                            </Button>
+                          ) : null}
                           <Button
                             variant="ghost"
                             size="sm"

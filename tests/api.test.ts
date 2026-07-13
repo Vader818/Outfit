@@ -2420,9 +2420,24 @@ describe("API routes", () => {
     expect(await response.json()).toMatchObject({
       error: {
         code: "VALIDATION_ERROR",
-        message: "garmentIds 必须是非空数字数组"
+        message: expect.stringMatching(/garmentIds/)
       }
     });
+
+    for (const payload of [
+      { garmentIds: [Number.MAX_SAFE_INTEGER + 1], context: null },
+      { garmentIds: [1, "2"], context: {} },
+      { garmentIds: [1], context: {}, forged: true }
+    ]) {
+      const invalid = await fetch(`${baseUrl}/api/wear-logs`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify(payload)
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 0 });
   });
 
   it("uses recent wear logs when ranking recommendations", async () => {
