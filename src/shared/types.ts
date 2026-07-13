@@ -170,6 +170,124 @@ export interface WeatherSnapshot {
   summary: string;
 }
 
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type OutfitOccasion =
+  | "casual"
+  | "smart-casual"
+  | "formal"
+  | "sport"
+  | "date"
+  | "dinner";
+
+export interface WearEventItem {
+  id: number;
+  wearEventId: number;
+  itemId: number;
+  position: number;
+}
+
+export interface WearEventLegacySnapshot {
+  originalGarmentIds: number[];
+  originalContext: JsonValue;
+}
+
+export interface WearEvent {
+  id: number;
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string;
+  items: WearEventItem[];
+  legacySnapshot?: WearEventLegacySnapshot;
+}
+
+export interface WearEventInput {
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number | null;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string | null;
+  itemIds: number[];
+}
+
+export interface WearEventPage {
+  events: WearEvent[];
+  nextCursor?: string;
+}
+
+export type OutfitPlanStatus = "planned" | "worn" | "skipped";
+
+export interface OutfitPlanEntry {
+  id: number;
+  plannedDate: string;
+  timeZone: string;
+  outfitId: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  status: OutfitPlanStatus;
+  wornAt?: string;
+  wearEventId?: number;
+  notes?: string;
+}
+
+export interface OutfitPlanInput {
+  plannedDate: string;
+  timeZone: string;
+  outfitId: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string;
+}
+
+export interface OutfitPlanUpdate {
+  plannedDate?: string;
+  timeZone?: string;
+  outfitId?: number;
+  occasion?: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot | null;
+  status?: "planned" | "skipped";
+  notes?: string | null;
+}
+
+export interface RepeatWarning {
+  code: "RECENT_OUTFIT_REPEAT";
+  windowDays: 14 | 28;
+  previousDate: string;
+  message: string;
+  canIgnore: true;
+  action: "replace-one-item";
+}
+
+export interface OutfitPlanMutationResult {
+  entry: OutfitPlanEntry;
+  repeatWarning?: RepeatWarning;
+}
+
+export interface MarkWornInput {
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number | null;
+  occasion?: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string | null;
+  itemIds?: number[];
+}
+
+export interface MarkWornResult {
+  plan: OutfitPlanEntry;
+  wearEvent: WearEvent;
+}
+
 export interface RecommendationRequest {
   weather: WeatherSnapshot;
   occasion: Formality;
@@ -286,6 +404,7 @@ export interface RecommendationFeedback extends Omit<RecommendationFeedbackInput
   actuallyWorn: boolean;
   comment: string;
   wearLogId?: number;
+  wearEventId?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -381,6 +500,7 @@ export interface WornGarmentInsight {
   category?: GarmentCategory;
   color?: string;
   wearCount?: number;
+  lastWornAt?: string;
 }
 
 export interface WardrobeDistributionEntry<Key extends string = string> {
@@ -437,6 +557,7 @@ export interface WardrobeInsights {
   shoppingSuggestions: WardrobeSuggestion[];
   bodySuggestions: WardrobeSuggestion[];
   mostWorn: WornGarmentInsight[];
+  recentlyUnworn?: WornGarmentInsight[];
   neverWorn: WornGarmentInsight[];
   feedbackSummary?: RecommendationFeedbackInsights;
 }
@@ -488,6 +609,8 @@ export interface OutfitExportV2 extends OutfitExportBase {
   recommendationFeedback?: RecommendationFeedback[];
   outfitPairStats?: OutfitPairStat[];
   garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
+  wearEvents?: WearEvent[];
+  outfitPlanEntries?: OutfitPlanEntry[];
 }
 
 export type OutfitExport = OutfitExportV1 | OutfitExportV2;

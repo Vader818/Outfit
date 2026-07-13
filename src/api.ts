@@ -1,4 +1,4 @@
-import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, GarmentUpdateInput, ManualGarmentCreate, OutfitExport, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, GarmentUpdateInput, ManualGarmentCreate, MarkWornInput, MarkWornResult, OutfitExport, OutfitPlanEntry, OutfitPlanInput, OutfitPlanMutationResult, OutfitPlanUpdate, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearEvent, WearEventInput, WearEventPage, WearLogEntry, WeatherSnapshot } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -337,6 +337,19 @@ export async function getWeather(latitude: number, longitude: number): Promise<W
   return request<WeatherSnapshot>(`/api/weather?latitude=${latitude}&longitude=${longitude}`);
 }
 
+export async function getWeatherForecast(
+  latitude: number,
+  longitude: number,
+  days = 7
+): Promise<WeatherSnapshot[]> {
+  const query = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    days: String(days)
+  });
+  return request<WeatherSnapshot[]>(`/api/weather/forecast?${query.toString()}`);
+}
+
 export async function getRecommendations(input: RecommendationRequest): Promise<RecommendationResult> {
   return request<RecommendationResult>("/api/recommendations", {
     method: "POST",
@@ -396,6 +409,68 @@ export async function getWearLogs(): Promise<WearLogEntry[]> {
   });
 }
 
+export interface PlannerRangeQuery {
+  timeZone: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export async function getWearEvents(query: PlannerRangeQuery): Promise<WearEventPage> {
+  return request<WearEventPage>(`/api/wear-events?${plannerRangeQuery(query)}`);
+}
+
+export async function createWearEvent(input: WearEventInput): Promise<WearEvent> {
+  return request<WearEvent>("/api/wear-events", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateWearEvent(id: number, input: Partial<WearEventInput>): Promise<WearEvent> {
+  return request<WearEvent>(`/api/wear-events/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteWearEvent(id: number): Promise<WearEvent> {
+  return request<WearEvent>(`/api/wear-events/${id}`, { method: "DELETE" });
+}
+
+export async function getOutfitPlans(query: Omit<PlannerRangeQuery, "cursor" | "limit">): Promise<OutfitPlanEntry[]> {
+  return request<OutfitPlanEntry[]>(`/api/outfit-plans?${plannerRangeQuery(query)}`);
+}
+
+export async function createOutfitPlan(input: OutfitPlanInput): Promise<OutfitPlanMutationResult> {
+  return request<OutfitPlanMutationResult>("/api/outfit-plans", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateOutfitPlan(
+  id: number,
+  input: OutfitPlanUpdate
+): Promise<OutfitPlanMutationResult> {
+  return request<OutfitPlanMutationResult>(`/api/outfit-plans/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteOutfitPlan(id: number): Promise<OutfitPlanEntry> {
+  return request<OutfitPlanEntry>(`/api/outfit-plans/${id}`, { method: "DELETE" });
+}
+
+export async function markOutfitPlanWorn(id: number, input: MarkWornInput): Promise<MarkWornResult> {
+  return request<MarkWornResult>(`/api/outfit-plans/${id}/mark-worn`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function getRecommendationRuns(): Promise<RecommendationRunEntry[]> {
   return request<RecommendationRunEntry[]>("/api/recommendation-runs", {
     method: "GET"
@@ -446,6 +521,15 @@ function recommendationFeedbackClearQuery(scope: RecommendationFeedbackClearScop
     query.set("to", scope.to);
   }
   return query.toString();
+}
+
+function plannerRangeQuery(query: PlannerRangeQuery): string {
+  const params = new URLSearchParams({ timeZone: query.timeZone });
+  if (query.from !== undefined) params.set("from", query.from);
+  if (query.to !== undefined) params.set("to", query.to);
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  return params.toString();
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

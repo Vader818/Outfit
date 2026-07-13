@@ -1,6 +1,6 @@
 # 数据库与类型 Schema
 
-Outfit 使用本地 SQLite 数据库保存衣橱、淘宝来源记录、天气缓存、穿着记录和推荐历史。默认路径：
+Outfit 使用本地 SQLite 数据库保存衣橱、淘宝来源记录、天气缓存、穿着日记、周计划和推荐历史。默认路径：
 
 ```text
 data/outfit.sqlite
@@ -17,7 +17,8 @@ legacyBaseline0 → 登记 schema_migrations baseline 0 → 顺序执行编号�
 ```
 
 - baseline 0 的名称为 `legacy-baseline`，负责把项目支持的未版本化历史数据库归一到 M0 之前的 schema，并在同一事务中登记版本 0。已经存在 `schema_migrations` 的数据库不会再次运行 baseline，而是校验已应用记录后继续编号迁移。
-- 当前编号迁移版本为 4：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`。
+- 当前编号迁移版本为 5：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`，版本 5 为 `diary-week-planner`。
+- 版本 5 在一个迁移事务中创建 `wear_events`、`wear_event_items`、`outfit_plan_entries`，为 `recommendation_feedback` 增加 `wear_event_id`，并迁移全部旧 `wear_logs`。旧 `garment_ids/context` 原样进入 `legacy_snapshot`；不存在的衣物 ID 仍保留在 `originalGarmentIds`，但不会创建无效外键。旧 SQLite UTC 时间会规范化为 UTC ISO timestamp，既有反馈关联同步回填到新事件。
 - 编号必须是正整数并严格递增；数据库中的已应用记录必须是当前迁移列表的精确前缀。由更新版本应用过未知迁移的数据库会拒绝由旧代码继续写入。
 - 每个迁移使用独立的 `BEGIN IMMEDIATE` 事务。失败时 schema 修改和版本登记一起回滚；重复启动不会重复应用已登记迁移。
 - 生产代码只提供前向迁移，不提供 down migration。
@@ -47,6 +48,8 @@ type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
 type ColorDisposition = "cool-clean" | "neutral" | "warm-soft";
 type SavedOutfitSource = "recommendation" | "manual" | "replacement";
 type OutfitSlot = GarmentCategory;
+type OutfitOccasion = "casual" | "smart-casual" | "formal" | "sport" | "date" | "dinner";
+type OutfitPlanStatus = "planned" | "worn" | "skipped";
 ```
 
 说明：
@@ -296,6 +299,126 @@ interface WeatherSnapshot {
   summary: string;
 }
 ```
+
+逐日天气接口返回 `WeatherSnapshot[]`。逐日 `temperature` 和 `apparentTemperature` 分别是 Open-Meteo 当日 max/min 的四舍五入均值，`windSpeed` 使用当日最大值。
+
+### WearEvent 与 OutfitPlanEntry
+
+```ts
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+interface WearEventItem {
+  id: number;
+  wearEventId: number;
+  itemId: number;
+  position: number;
+}
+
+interface WearEventLegacySnapshot {
+  originalGarmentIds: number[];
+  originalContext: JsonValue;
+}
+
+interface WearEvent {
+  id: number;
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string;
+  items: WearEventItem[];
+  legacySnapshot?: WearEventLegacySnapshot;
+}
+
+interface WearEventInput {
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number | null;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string | null;
+  itemIds: number[];
+}
+
+interface WearEventPage {
+  events: WearEvent[];
+  nextCursor?: string;
+}
+
+interface OutfitPlanEntry {
+  id: number;
+  plannedDate: string;
+  timeZone: string;
+  outfitId: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  status: OutfitPlanStatus;
+  wornAt?: string;
+  wearEventId?: number;
+  notes?: string;
+}
+
+interface OutfitPlanInput {
+  plannedDate: string;
+  timeZone: string;
+  outfitId: number;
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string;
+}
+
+interface OutfitPlanUpdate {
+  plannedDate?: string;
+  timeZone?: string;
+  outfitId?: number;
+  occasion?: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot | null;
+  status?: "planned" | "skipped";
+  notes?: string | null;
+}
+
+interface RepeatWarning {
+  code: "RECENT_OUTFIT_REPEAT";
+  windowDays: 14 | 28;
+  previousDate: string;
+  message: string;
+  canIgnore: true;
+  action: "replace-one-item";
+}
+
+interface OutfitPlanMutationResult {
+  entry: OutfitPlanEntry;
+  repeatWarning?: RepeatWarning;
+}
+
+interface MarkWornInput {
+  wornAt: string;
+  timeZone: string;
+  outfitId?: number | null;
+  occasion?: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+  notes?: string | null;
+  itemIds?: number[];
+}
+
+interface MarkWornResult {
+  plan: OutfitPlanEntry;
+  wearEvent: WearEvent;
+}
+```
+
+`plannedDate` 是指定 IANA 时区中的本地日历键，只按严格 `YYYY-MM-DD` 保存和导出；它不是 timestamp。`wornAt` 必须在请求中带 `Z` 或 UTC offset，服务端规范化为 UTC ISO timestamp，同时保存事件发生时的 `timeZone` 以便还原显示。`planned`/`skipped` 计划没有 `wornAt` 或 `wearEventId`；`worn` 计划必须同时拥有两者。
+
+更新 WearEvent 时，省略 `outfitId/notes` 表示保留，显式 `null` 表示清除。更新 OutfitPlan 时，`notes: null` 或 `notes: ""` 都会清空；省略仍保留。mark-worn 的可选 `outfitId`、`occasion`、`itemIds`、`weatherSnapshot`、`notes` 是实际 WearEvent 覆盖值：`outfitId: null` 可创建不关联保存搭配的事件，`notes: null` 清空，省略字段按计划或有效搭配继承；计划行自身只更新状态、实际时间和事件关联。
+
+重复提醒以目标日期为中心做对称日历窗口检查：`formal` 前后各 28 天，`date/dinner` 前后各 14 天。服务比较规范化衣物集合，从计划和 WearEvent 中选择距离目标日期最近的冲突；更新时排除自身。`OutfitPlanMutationResult.entry` 在 warning 返回前已经保存，关闭提醒或进入换一件流程都不会撤销它。
 
 ### OutfitRecommendation
 
@@ -606,14 +729,16 @@ interface OutfitExportV2 extends OutfitExportBase {
   recommendationFeedback?: RecommendationFeedback[];
   outfitPairStats?: OutfitPairStat[];
   garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
+  wearEvents?: WearEvent[];
+  outfitPlanEntries?: OutfitPlanEntry[];
 }
 
 type OutfitExport = OutfitExportV1 | OutfitExportV2;
 ```
 
-`GET /api/export` 当前只生成 V2，envelope 继续使用 `version=2`，数据库迁移自动报告 `schemaVersion=4`。当前 builder 始终输出 `saved-outfits`、`feedback-availability` feature，以及完整 `savedOutfits`、`recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`；反馈按 `createdAt,id`、组合统计按衣物 ID 对、状态事件按 `changedAt,id` 确定排序，所有表都在同一个 SQLite 读快照中取得。反馈评论、实际穿着选择、拒绝原因和衣物状态历史属于敏感本地数据；损坏或含未知值的 `reason_codes_json` 会使导出失败，不会静默漏行。
+`GET /api/export` 当前只生成 V2，envelope 继续使用 `version=2`，数据库迁移自动报告 `schemaVersion=5`。当前 builder 始终输出 `saved-outfits`、`feedback-availability`、`diary-week-planner` feature，以及完整 `savedOutfits`、`recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`、`wearEvents`、`outfitPlanEntries`。穿着事件按 `wornAt DESC,id DESC`、事件衣物按 `position,id`、计划按 `plannedDate,id` 确定排序；所有表都在同一个 deferred SQLite 读快照中取得。`plannedDate` 直接读取文本，不经过 `Date` 或 UTC 转换。
 
-内部校验器仍识别 V1，以及没有 `garmentAssets`、`savedOutfits` 或 M3 三个新数组的旧 V2。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 还导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
+内部校验器仍识别 V1，以及没有 M2/M3/M4 可选数组的旧 V2；但声明 `diary-week-planner` feature 的 V2 必须同时包含 `wearEvents` 与 `outfitPlanEntries`。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 还导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径。损坏的天气、legacy JsonValue、反馈或搭配快照会明确中止导出。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
 
 ### 淘宝采集类型
 
@@ -959,10 +1084,10 @@ ON garment_assets(garment_id, kind) WHERE active = 1;
 
 | 列 | 类型 | 约束/默认值 | 说明 |
 | --- | --- | --- | --- |
-| `cache_key` | TEXT | PRIMARY KEY | `weather:<lat>:<lon>`，经纬度保留 4 位 |
+| `cache_key` | TEXT | PRIMARY KEY | 单日为 `weather:<lat>:<lon>`；逐日为 `weather-forecast:<lat>:<lon>:<days>`，经纬度保留 4 位 |
 | `latitude` | REAL | NOT NULL | 纬度 |
 | `longitude` | REAL | NOT NULL | 经度 |
-| `payload` | TEXT | NOT NULL | JSON 编码的 `WeatherSnapshot` |
+| `payload` | TEXT | NOT NULL | JSON 编码的 `WeatherSnapshot` 或固定长度 `WeatherSnapshot[]` |
 | `fetched_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 拉取时间 |
 
 缓存策略：
@@ -970,10 +1095,11 @@ ON garment_assets(garment_id, kind) WHERE active = 1;
 - 默认有效期 30 分钟。
 - Open-Meteo 失败时可返回过期缓存。
 - 没有缓存时返回本地估算天气。
+- 逐日缓存把 `days` 纳入 key，并在读取时校验数组长度与每个快照形状，不会与旧单日 payload 混用。
 
 ### wear_logs
 
-保存穿着记录。
+M0 遗留穿着表。版本 5 迁移后，权威日记数据改为 `wear_events`；该表仍因旧导出、推荐反馈兼容字段和历史数据库兼容而保留，不应作为新 CRUD 的写入目标。
 
 | 列 | 类型 | 约束/默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -982,7 +1108,58 @@ ON garment_assets(garment_id, kind) WHERE active = 1;
 | `context` | TEXT |  | JSON 编码的场合、天气等上下文 |
 | `worn_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 穿着记录时间 |
 
-推荐时会读取最近 8 条穿着记录，并降低重复核心单品的得分。
+旧 `/api/wear-logs` 已是兼容适配器：POST 写入新 WearEvent 与 `legacy_snapshot`，GET 从新事件投影旧 DTO。部分 M3 推荐反馈逻辑仍保留 `wear_log_id` 兼容列。
+
+### wear_events
+
+保存权威穿着日记事件。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 事件 ID；迁移旧日志时保留原 ID |
+| `worn_at` | TEXT | NOT NULL，非空 CHECK | UTC ISO timestamp |
+| `time_zone` | TEXT | NOT NULL，长度 1–255 | 记录时 IANA 时区；服务层验证有效性 |
+| `outfit_id` | INTEGER | 可空，FK RESTRICT | 可选保存搭配 |
+| `occasion` | TEXT | NOT NULL，枚举 CHECK | `OutfitOccasion` |
+| `weather_snapshot` | TEXT | 可空，JSON object CHECK | 冻结的 `WeatherSnapshot` |
+| `notes` | TEXT | NOT NULL DEFAULT `''`，最长 4000 | 日记备注 |
+| `legacy_snapshot` | TEXT | 可空，JSON object CHECK | 旧 `garment_ids/context` 的无损快照 |
+| `created_at` | TEXT | NOT NULL | 创建时间 |
+| `updated_at` | TEXT | NOT NULL | 更新时间 |
+
+索引：`idx_wear_events_worn_at(worn_at,id)`、`idx_wear_events_outfit_id(outfit_id)`。删除事件会级联删除 items；服务层在同一事务中把关联计划恢复为 `planned`，撤销反馈穿着事实并重算组合统计。
+
+### wear_event_items
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 明细 ID |
+| `wear_event_id` | INTEGER | NOT NULL，FK CASCADE | 关联 `wear_events.id` |
+| `item_id` | INTEGER | NOT NULL，FK RESTRICT | 关联 `garments.id` |
+| `position` | INTEGER | NOT NULL，非负 CHECK | 事件内稳定顺序 |
+
+同一事件不能重复同一 `item_id`。索引为 `idx_wear_event_items_item_id(item_id)` 和 `idx_wear_event_items_wear_event_id(wear_event_id)`。迁移时不存在的旧衣物 ID 不创建本表行，只保留在 `legacy_snapshot.originalGarmentIds`。
+
+### outfit_plan_entries
+
+保存用户时区下的本地日历计划。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 计划 ID |
+| `planned_date` | TEXT | NOT NULL，`YYYY-MM-DD` 形状 CHECK | 本地日历键，绝不保存为 timestamp |
+| `time_zone` | TEXT | NOT NULL，长度 1–255 | IANA 时区；服务层验证有效性 |
+| `outfit_id` | INTEGER | NOT NULL，FK RESTRICT | 保存搭配 |
+| `occasion` | TEXT | NOT NULL，枚举 CHECK | `OutfitOccasion` |
+| `weather_snapshot` | TEXT | 可空，JSON object CHECK | 与 planned_date 同日的冻结天气 |
+| `status` | TEXT | NOT NULL DEFAULT `planned`，枚举 CHECK | `planned`、`worn`、`skipped` |
+| `worn_at` | TEXT | 可空 | 标记已穿后的 UTC ISO timestamp |
+| `wear_event_id` | INTEGER | 可空 UNIQUE，FK RESTRICT | 原子 mark-worn 生成的事件 |
+| `notes` | TEXT | NOT NULL DEFAULT `''`，最长 4000 | 计划备注 |
+| `created_at` | TEXT | NOT NULL | 创建时间 |
+| `updated_at` | TEXT | NOT NULL | 更新时间 |
+
+CHECK 保证 `worn` 同时拥有 `worn_at/wear_event_id`，而 `planned/skipped` 两者均为空。索引为 `idx_outfit_plan_entries_planned_date(planned_date,id)` 和 `idx_outfit_plan_entries_outfit_id(outfit_id)`。服务层另外拒绝不存在的日历日期、带时间的 plannedDate、未知时区和日期不匹配的天气快照。
 
 ### recommendation_runs
 
@@ -1101,6 +1278,7 @@ CREATE INDEX idx_saved_outfit_items_outfit_id ON saved_outfit_items(outfit_id);
 | `comment` | TEXT | NOT NULL DEFAULT `''`，最多 2000 字符 CHECK | 自由文本反馈 |
 | `wore_instead_outfit_id` | INTEGER | 可空，FK RESTRICT | 实际改穿的保存搭配；与 `actually_worn=1` 互斥由服务层保证 |
 | `wear_log_id` | INTEGER | 可空 UNIQUE，FK RESTRICT | `actually_worn` 首次写入时同事务创建的穿着记录 |
+| `wear_event_id` | INTEGER | 可空 UNIQUE，FK SET NULL | M4 权威日记事件；版本 5 从既有 `wear_log_id` 回填 |
 | `created_at` | TEXT | NOT NULL | 首次反馈时间 |
 | `updated_at` | TEXT | NOT NULL | 最近更新与日期范围清理依据 |
 
@@ -1109,9 +1287,11 @@ CREATE INDEX idx_recommendation_feedback_created_at
 ON recommendation_feedback(created_at);
 CREATE INDEX idx_recommendation_feedback_verdict
 ON recommendation_feedback(verdict);
+CREATE UNIQUE INDEX idx_recommendation_feedback_wear_event_id
+ON recommendation_feedback(wear_event_id) WHERE wear_event_id IS NOT NULL;
 ```
 
-upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `comment` 可显式清除旧值，但合并后不允许留下完全无信号的空反馈。只要 `wear_log_id` 非空，服务映射、后续 upsert 与组合统计都把 `actually_worn` 视为 true，后续输入不能撤销已经落盘的穿着事实。清空先按 `all`、`candidate` 或 `updated_at` 日期闭区间预览；实际 DELETE 与重算 `outfit_pair_stats` 在同一事务中提交，空范围和重放不会留下旧权重。
+upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `comment` 可显式清除旧值，但合并后不允许留下完全无信号的空反馈。旧反馈写入仍保留 `wear_log_id` 兼容语义；版本 5 为已有记录补上 `wear_event_id`，以便撤销日记时同步撤销实际穿着事实并重算统计。清空先按 `all`、`candidate` 或 `updated_at` 日期闭区间预览；实际 DELETE 与重算 `outfit_pair_stats` 在同一事务中提交，空范围和重放不会留下旧权重。
 
 ### outfit_pair_stats
 

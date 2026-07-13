@@ -1,0 +1,506 @@
+.planner-view,
+.wear-diary {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-5);
+}
+
+.planner-view__header,
+.wear-diary__header,
+.planner-toolbar,
+.planner-dialog__header,
+.planner-dialog__footer,
+.week-day__header,
+.plan-card__header,
+.plan-card__actions,
+.wear-event-card__header,
+.wear-event-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.planner-view__header,
+.wear-diary__header,
+.planner-dialog__header,
+.week-day__header,
+.wear-event-card__header {
+  align-items: flex-start;
+}
+
+.planner-view__header > div,
+.wear-diary__header > div,
+.planner-dialog__header > div,
+.wear-event-card__header > div {
+  min-width: 0;
+}
+
+.planner-view__header > div > span,
+.wear-diary__header > div > span,
+.planner-dialog__header > div > span {
+  color: var(--color-accent-strong);
+  font-size: 0.74rem;
+  font-weight: 730;
+}
+
+.planner-view__header h2,
+.planner-view__header p,
+.wear-diary__header h2,
+.wear-diary__header p,
+.planner-dialog__header h2,
+.planner-dialog__header p {
+  margin: 0;
+}
+
+.planner-view__header h2,
+.wear-diary__header h2,
+.planner-dialog__header h2 {
+  margin-top: 0.2rem;
+  color: var(--color-ink);
+  font-size: 1.35rem;
+  letter-spacing: -0.025em;
+}
+
+.planner-view__header p,
+.wear-diary__header p,
+.planner-dialog__header p {
+  margin-top: 0.3rem;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.planner-toolbar {
+  flex-wrap: wrap;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.planner-toolbar__navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.planner-toolbar__range {
+  color: var(--color-ink-soft);
+  font-size: 0.9rem;
+}
+
+.week-grid-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0.15rem 0.15rem var(--space-3);
+  scrollbar-color: var(--color-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.week-grid-scroll:focus-visible {
+  border-radius: var(--radius-control);
+}
+
+.week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--space-3);
+  min-width: 68rem;
+}
+
+.week-day {
+  display: flex;
+  min-width: 0;
+  min-height: 25rem;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-muted);
+}
+
+.week-day.is-today {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-line));
+  box-shadow: inset 0 3px 0 var(--color-accent);
+}
+
+.week-day__header > div > span,
+.week-day__header > div > strong {
+  display: block;
+}
+
+.week-day__header > div > span {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.week-day__header > div > strong {
+  margin-top: 0.15rem;
+  color: var(--color-ink);
+  font-size: 0.92rem;
+}
+
+.week-day__plans {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.week-day > .ui-empty {
+  min-height: 8rem;
+  align-content: center;
+  padding: var(--space-3);
+}
+
+.week-day > .ui-empty .ui-empty__icon {
+  display: none;
+}
+
+.plan-card {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface-raised);
+}
+
+.plan-card__header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.plan-card__header > span:last-child {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.plan-card__title {
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+  font-size: 0.88rem;
+}
+
+.plan-card__weather {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  color: var(--color-ink-soft);
+  font-size: 0.74rem;
+}
+
+.plan-card__weather-empty,
+.plan-card__worn-time {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.plan-card__notes,
+.wear-event-card__notes,
+.wear-event-card__weather,
+.wear-event-card__empty {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plan-card__actions {
+  align-items: stretch;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-line);
+}
+
+.plan-card__actions .ui-button,
+.wear-event-card__actions .ui-button {
+  min-height: 2.75rem;
+  flex: 1 1 auto;
+}
+
+.wear-diary__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wear-event-card {
+  display: grid;
+  min-width: 0;
+  height: 100%;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.wear-event-card__header time,
+.wear-event-card__header span,
+.wear-event-card__outfit {
+  display: block;
+}
+
+.wear-event-card__header time {
+  color: var(--color-ink);
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+.wear-event-card__header > div > span {
+  margin-top: 0.2rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.wear-event-card__outfit {
+  color: var(--color-accent-strong);
+  font-size: 0.88rem;
+}
+
+.wear-event-card__items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wear-event-card__items li {
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.wear-event-card__items span,
+.wear-event-card__items strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wear-event-card__items span {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.wear-event-card__items strong {
+  margin-top: 0.15rem;
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.wear-event-card__actions {
+  align-self: end;
+  align-items: stretch;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-line);
+}
+
+.wear-event-dialog,
+.outfit-plan-dialog {
+  width: min(46rem, calc(100vw - 2rem));
+}
+
+.wear-event-dialog__panel,
+.outfit-plan-dialog__panel {
+  display: grid;
+  gap: var(--space-5);
+  padding: clamp(1rem, 3vw, 1.6rem);
+}
+
+.planner-dialog__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.planner-dialog__notes textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.wear-event-dialog__items {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+}
+
+.wear-event-dialog__items legend {
+  padding-inline: var(--space-2);
+  color: var(--color-ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.wear-event-dialog__items > p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.wear-event-dialog__item-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.wear-event-dialog__item-grid label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.wear-event-dialog__item-grid small,
+.wear-event-dialog__item-grid strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wear-event-dialog__item-grid small {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.wear-event-dialog__item-grid strong {
+  margin-top: 0.15rem;
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+}
+
+.outfit-plan-dialog__snapshot {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.outfit-plan-dialog__snapshot > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.outfit-plan-dialog__snapshot span,
+.outfit-plan-dialog__snapshot strong {
+  display: block;
+}
+
+.outfit-plan-dialog__snapshot span {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.outfit-plan-dialog__snapshot strong {
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
+  color: var(--color-ink-soft);
+  font-size: 0.82rem;
+}
+
+.planner-dialog__footer {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+@media (max-width: 760px) {
+  .planner-view__header,
+  .wear-diary__header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .planner-view__header > .ui-button,
+  .wear-diary__header > .ui-button {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .planner-toolbar {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .planner-toolbar__navigation {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .planner-toolbar__navigation .ui-button {
+    min-height: 2.75rem;
+    padding-inline: var(--space-2);
+  }
+
+  .week-grid-scroll {
+    margin-inline: -1rem;
+    padding-inline: 1rem;
+    scroll-padding-inline: 1rem;
+    scroll-snap-type: x mandatory;
+  }
+
+  .week-grid {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(16rem, 82vw);
+    min-width: max-content;
+  }
+
+  .week-day {
+    min-height: 22rem;
+    scroll-snap-align: start;
+  }
+
+  .planner-dialog__fields,
+  .wear-event-dialog__item-grid,
+  .outfit-plan-dialog__snapshot {
+    grid-template-columns: 1fr;
+  }
+
+  .planner-dialog__footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .planner-dialog__footer .ui-button {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .planner-toolbar__navigation {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-card__actions,
+  .wear-event-card__actions {
+    flex-direction: column;
+  }
+}

@@ -2,8 +2,8 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, ThumbnailRefreshOptions } from "./db";
-import type { WeatherSnapshot } from "../src/shared/types";
-import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, listWearLogs, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, saveWearLog, selectGarmentThumbnail } from "./db";
+import type { OutfitOccasion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, selectGarmentThumbnail } from "./db";
 import { buildOutfitExportV2, previewOutfitExportZip, writeOutfitExportZip } from "./services/export";
 import { recommendOutfits } from "./services/recommend";
 import { persistRecommendationSnapshot } from "./services/recommendationCandidates";
@@ -12,11 +12,13 @@ import { getRecommendationFeedbackInsights, listOutfitPairStats } from "./servic
 import { cancelTaobaoCaptureJob, getTaobaoCaptureJob, readLatestTaobaoCapture, readTaobaoCaptureJobArtifact, startTaobaoCaptureJob } from "./services/taobaoCapture";
 import { defaultThumbnailOutputDir, defaultThumbnailPublicBasePath } from "./services/thumbnails";
 import { createGarmentCutout, createGarmentVisionTags, getVisionModelResponse, startVisionModelDownload, startVisionModelVerification, type VisionServiceOptions } from "./services/vision";
-import { buildEstimatedWeather, fetchWeather } from "./services/weather";
-import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateTaobaoImportCommitRequest, validateThumbnailSelectionRequest, validateWeatherQuery, validateWearLogRequest } from "./validation";
+import { buildEstimatedWeather, buildEstimatedWeatherForecast, fetchWeather, fetchWeatherForecast } from "./services/weather";
+import { ApiError, validateAuthCredentials, validateCaptureJobRequest, validatePersonalProfile, validatePositiveIntegerParam, validateRecommendationRequest, validateTaobaoImportCommitRequest, validateThumbnailSelectionRequest, validateWeatherForecastQuery, validateWeatherQuery, validateWearLogRequest } from "./validation";
 import { registerGarmentRoutes } from "./routes/garments";
 import { registerOutfitRoutes } from "./routes/outfits";
 import { registerFeedbackRoutes } from "./routes/feedback";
+import { registerPlannerRoutes } from "./routes/planner";
+import { listWearEvents } from "./services/wearEvents";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -108,6 +110,7 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   registerGarmentRoutes(app, db, { assetRoot: options.garmentAssetRoot });
   registerOutfitRoutes(app, db);
   registerFeedbackRoutes(app, db);
+  registerPlannerRoutes(app, db);
 
   app.post("/api/import/taobao-batch", (request, response) => {
     handle(response, () => {
@@ -205,13 +208,28 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   app.post("/api/wear-logs", (request, response) => {
     handle(response, () => {
       const wearLog = validateWearLogRequest(request.body);
-      saveWearLog(db, wearLog.garmentIds, wearLog.context);
+      const context = asRecord(wearLog.context);
+      saveLegacyWearEventAdapter(db, wearLog.garmentIds, wearLog.context, legacyOccasion(context?.occasion));
       return { ok: true };
     });
   });
 
   app.get("/api/wear-logs", (_request, response) => {
-    handle(response, () => listWearLogs(db));
+    handle(response, () => listWearEvents(db, {
+      timeZone: "UTC",
+      from: "1900-01-01",
+      to: "9999-12-30",
+      limit: 50
+    }).events.map((event): WearLogEntry => ({
+      id: event.id,
+      garmentIds: event.legacySnapshot?.originalGarmentIds ?? event.items.map((item) => item.itemId),
+      context: event.legacySnapshot?.originalContext ?? {
+        source: "wear-event",
+        occasion: event.occasion,
+        ...(event.outfitId === undefined ? {} : { outfitId: event.outfitId })
+      },
+      wornAt: event.wornAt
+    })));
   });
 
   app.get("/api/recommendation-runs", (_request, response) => {
@@ -264,6 +282,38 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
       }
       response.destroy(error instanceof Error ? error : new Error("ZIP 导出失败"));
     });
+  });
+
+  app.get("/api/weather/forecast", async (request, response) => {
+    try {
+      const { latitude, longitude, days } = validateWeatherForecastQuery(
+        request.query.latitude,
+        request.query.longitude,
+        request.query.days
+      );
+      const cached = getCachedWeatherForecast(db, latitude, longitude, days);
+      if (cached) {
+        response.json(cached);
+        return;
+      }
+      let forecast: WeatherSnapshot[];
+      try {
+        forecast = await fetchWeatherForecast(latitude, longitude, days);
+      } catch {
+        const staleCached = getCachedWeatherForecast(
+          db,
+          latitude,
+          longitude,
+          days,
+          Number.POSITIVE_INFINITY
+        );
+        forecast = staleCached ?? buildEstimatedWeatherForecast(latitude, longitude, days);
+      }
+      saveWeatherForecastCache(db, latitude, longitude, days, forecast);
+      response.json(forecast);
+    } catch (error) {
+      sendError(response, error);
+    }
   });
 
   app.get("/api/weather", async (request, response) => {
@@ -344,6 +394,143 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   return app;
+}
+
+const WEATHER_FORECAST_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function getCachedWeatherForecast(
+  db: AppDatabase,
+  latitude: number,
+  longitude: number,
+  days: number,
+  maxAgeMs = WEATHER_FORECAST_CACHE_TTL_MS
+): WeatherSnapshot[] | null {
+  const row = db.prepare(`
+    SELECT payload, fetched_at
+    FROM weather_cache
+    WHERE cache_key = ?
+  `).get(weatherForecastCacheKey(latitude, longitude, days)) as {
+    payload: string;
+    fetched_at: string;
+  } | undefined;
+  if (!row) return null;
+  const fetchedAt = Date.parse(row.fetched_at);
+  if (Number.isFinite(maxAgeMs) && (!Number.isFinite(fetchedAt) || Date.now() - fetchedAt > maxAgeMs)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(row.payload) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== days || !parsed.every(isWeatherSnapshot)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveWeatherForecastCache(
+  db: AppDatabase,
+  latitude: number,
+  longitude: number,
+  days: number,
+  forecast: WeatherSnapshot[]
+): void {
+  db.prepare(`
+    INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(cache_key) DO UPDATE SET
+      latitude = excluded.latitude,
+      longitude = excluded.longitude,
+      payload = excluded.payload,
+      fetched_at = excluded.fetched_at
+  `).run(
+    weatherForecastCacheKey(latitude, longitude, days),
+    latitude,
+    longitude,
+    JSON.stringify(forecast),
+    new Date().toISOString()
+  );
+}
+
+function weatherForecastCacheKey(latitude: number, longitude: number, days: number): string {
+  return `weather-forecast:${latitude.toFixed(4)}:${longitude.toFixed(4)}:${days}`;
+}
+
+function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Partial<WeatherSnapshot>;
+  return typeof snapshot.date === "string" &&
+    typeof snapshot.temperature === "number" &&
+    typeof snapshot.apparentTemperature === "number" &&
+    typeof snapshot.precipitationProbability === "number" &&
+    typeof snapshot.windSpeed === "number" &&
+    typeof snapshot.weatherCode === "number" &&
+    typeof snapshot.summary === "string";
+}
+
+const LEGACY_WEAR_OCCASIONS = new Set<OutfitOccasion>([
+  "casual",
+  "smart-casual",
+  "formal",
+  "sport",
+  "date",
+  "dinner"
+]);
+
+function legacyOccasion(value: unknown): OutfitOccasion {
+  return typeof value === "string" && LEGACY_WEAR_OCCASIONS.has(value as OutfitOccasion)
+    ? value as OutfitOccasion
+    : "casual";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function positiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function saveLegacyWearEventAdapter(
+  db: AppDatabase,
+  garmentIds: number[],
+  context: unknown,
+  occasion: OutfitOccasion
+): void {
+  if (db.isTransaction) throw new Error("Legacy wear adapter cannot start inside a transaction");
+  const now = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = db.prepare(`
+      INSERT INTO wear_events (
+        worn_at, time_zone, outfit_id, occasion, weather_snapshot, notes,
+        legacy_snapshot, created_at, updated_at
+      ) VALUES (?, 'UTC', NULL, ?, NULL, '', ?, ?, ?)
+    `).run(now, occasion, JSON.stringify({
+      originalGarmentIds: garmentIds,
+      originalContext: context ?? null
+    }), now, now);
+    const wearEventId = Number(result.lastInsertRowid);
+    if (!Number.isSafeInteger(wearEventId) || wearEventId <= 0) {
+      throw new Error("SQLite returned an invalid legacy wear event id");
+    }
+    const existing = db.prepare("SELECT id FROM garments WHERE id = ?");
+    const insertItem = db.prepare(`
+      INSERT INTO wear_event_items (wear_event_id, item_id, position)
+      VALUES (?, ?, ?)
+    `);
+    let position = 0;
+    for (const garmentId of garmentIds) {
+      if (!existing.get(garmentId)) continue;
+      insertItem.run(wearEventId, garmentId, position);
+      position += 1;
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function handle<T>(response: Response, callback: () => T): void {

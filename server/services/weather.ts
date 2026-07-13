@@ -11,8 +11,13 @@ interface OpenMeteoPayload {
   };
   daily?: {
     time?: string[];
+    temperature_2m_max?: number[];
+    temperature_2m_min?: number[];
+    apparent_temperature_max?: number[];
+    apparent_temperature_min?: number[];
     precipitation_probability_max?: number[];
     weather_code?: number[];
+    wind_speed_10m_max?: number[];
   };
 }
 
@@ -21,6 +26,18 @@ interface FetchWeatherOptions {
 }
 
 const DEFAULT_WEATHER_TIMEOUT_MS = 4000;
+const DEFAULT_FORECAST_DAYS = 7;
+const MIN_FORECAST_DAYS = 1;
+const MAX_FORECAST_DAYS = 7;
+const DAILY_FORECAST_FIELDS = [
+  "temperature_2m_max",
+  "temperature_2m_min",
+  "apparent_temperature_max",
+  "apparent_temperature_min",
+  "precipitation_probability_max",
+  "weather_code",
+  "wind_speed_10m_max"
+] as const;
 
 export async function fetchWeather(latitude: number, longitude: number, options: FetchWeatherOptions = {}): Promise<WeatherSnapshot> {
   const params = new URLSearchParams({
@@ -31,6 +48,30 @@ export async function fetchWeather(latitude: number, longitude: number, options:
     timezone: "auto",
     forecast_days: "4"
   });
+  return mapOpenMeteoForecast(await requestOpenMeteo(params, options));
+}
+
+export async function fetchWeatherForecast(
+  latitude: number,
+  longitude: number,
+  days = DEFAULT_FORECAST_DAYS,
+  options: FetchWeatherOptions = {}
+): Promise<WeatherSnapshot[]> {
+  assertForecastDays(days);
+  const params = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    daily: DAILY_FORECAST_FIELDS.join(","),
+    timezone: "auto",
+    forecast_days: String(days)
+  });
+  return mapOpenMeteoForecastDays(await requestOpenMeteo(params, options), days);
+}
+
+async function requestOpenMeteo(
+  params: URLSearchParams,
+  options: FetchWeatherOptions
+): Promise<OpenMeteoPayload> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_WEATHER_TIMEOUT_MS);
   let response: Response;
@@ -49,7 +90,7 @@ export async function fetchWeather(latitude: number, longitude: number, options:
   if (!response.ok) {
     throw new Error(`Open-Meteo 请求失败: ${response.status}`);
   }
-  return mapOpenMeteoForecast((await response.json()) as OpenMeteoPayload);
+  return (await response.json()) as OpenMeteoPayload;
 }
 
 export function buildEstimatedWeather(latitude: number, longitude: number, date = new Date()): WeatherSnapshot {
@@ -69,6 +110,20 @@ export function buildEstimatedWeather(latitude: number, longitude: number, date 
   };
 }
 
+export function buildEstimatedWeatherForecast(
+  latitude: number,
+  longitude: number,
+  days = DEFAULT_FORECAST_DAYS,
+  startDate = new Date()
+): WeatherSnapshot[] {
+  assertForecastDays(days);
+  return Array.from({ length: days }, (_value, index) => {
+    const date = new Date(startDate.getTime());
+    date.setDate(date.getDate() + index);
+    return buildEstimatedWeather(latitude, longitude, date);
+  });
+}
+
 export function mapOpenMeteoForecast(payload: OpenMeteoPayload): WeatherSnapshot {
   const current = payload.current || {};
   const daily = payload.daily || {};
@@ -84,6 +139,33 @@ export function mapOpenMeteoForecast(payload: OpenMeteoPayload): WeatherSnapshot
   };
 }
 
+export function mapOpenMeteoForecastDays(
+  payload: OpenMeteoPayload,
+  days = DEFAULT_FORECAST_DAYS
+): WeatherSnapshot[] {
+  assertForecastDays(days);
+  const daily = payload.daily || {};
+  const fallbackDate = forecastFallbackDate(payload);
+  return Array.from({ length: days }, (_value, index) => {
+    const code = roundNumber(daily.weather_code?.[index]);
+    return {
+      date: daily.time?.[index] || addCalendarDays(fallbackDate, index),
+      temperature: roundedMean(
+        daily.temperature_2m_max?.[index],
+        daily.temperature_2m_min?.[index]
+      ),
+      apparentTemperature: roundedMean(
+        daily.apparent_temperature_max?.[index],
+        daily.apparent_temperature_min?.[index]
+      ),
+      precipitationProbability: roundNumber(daily.precipitation_probability_max?.[index]),
+      windSpeed: roundNumber(daily.wind_speed_10m_max?.[index]),
+      weatherCode: code,
+      summary: weatherCodeToSummary(code)
+    };
+  });
+}
+
 export function weatherCodeToSummary(code: number): string {
   if (code === 0) return "晴";
   if ([1, 2, 3].includes(code)) return "多云";
@@ -97,6 +179,18 @@ export function weatherCodeToSummary(code: number): string {
 
 function roundNumber(value: number | undefined): number {
   return Math.round(Number.isFinite(value) ? Number(value) : 0);
+}
+
+function roundedMean(maximum: number | undefined, minimum: number | undefined): number {
+  const safeMaximum = Number.isFinite(maximum) ? Number(maximum) : 0;
+  const safeMinimum = Number.isFinite(minimum) ? Number(minimum) : 0;
+  return Math.round((safeMaximum + safeMinimum) / 2);
+}
+
+function assertForecastDays(days: number): void {
+  if (!Number.isInteger(days) || days < MIN_FORECAST_DAYS || days > MAX_FORECAST_DAYS) {
+    throw new RangeError("days 必须是 1 到 7 的整数");
+  }
 }
 
 function isAbortError(error: unknown): boolean {
@@ -149,4 +243,18 @@ function formatLocalDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function forecastFallbackDate(payload: OpenMeteoPayload): string {
+  const dailyDate = payload.daily?.time?.find((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
+  if (dailyDate) return dailyDate;
+  const currentDate = payload.current?.time?.slice(0, 10);
+  if (currentDate && /^\d{4}-\d{2}-\d{2}$/.test(currentDate)) return currentDate;
+  return formatLocalDate(new Date());
+}
+
+function addCalendarDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return next.toISOString().slice(0, 10);
 }

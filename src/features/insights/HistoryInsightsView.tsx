@@ -1,4 +1,5 @@
 import { Activity, Download, RefreshCw, ShoppingBag } from "lucide-react";
+import type { ReactNode } from "react";
 import { Badge, Button, EmptyState, PageIntro, Surface } from "../../components/ui";
 import {
   CATEGORY_LABELS,
@@ -41,8 +42,23 @@ export type HistoryInsightsViewProps = {
   onOpenSavedOutfit?: (outfit: SavedOutfit) => void;
   onFavoriteSavedOutfit?: (outfit: SavedOutfit, favorite: boolean) => void;
   onArchiveSavedOutfit?: (outfit: SavedOutfit) => void;
+  onScheduleSavedOutfit?: (outfit: SavedOutfit) => void;
   onManageFeedback?: () => void;
+  activeSection?: HistorySection;
+  onSectionChange?: (section: HistorySection) => void;
+  plannerContent?: ReactNode;
+  diaryContent?: ReactNode;
+  wearEventCount?: number;
 };
+
+export type HistorySection = "planner" | "diary" | "saved" | "insights";
+
+const HISTORY_SECTIONS: Array<{ id: HistorySection; label: string }> = [
+  { id: "planner", label: "周计划" },
+  { id: "diary", label: "穿着日记" },
+  { id: "saved", label: "保存搭配" },
+  { id: "insights", label: "洞察" }
+];
 
 const PRIORITY_ORDER: Record<WardrobeSuggestion["priority"], number> = {
   high: 0,
@@ -81,6 +97,7 @@ function GarmentInsightList({ items, empty, showWearCount }: {
 
 export function HistoryInsightsView(props: HistoryInsightsViewProps) {
   const insights = props.insights;
+  const activeSection = props.activeSection ?? "insights";
   const refreshing = props.busyAction === "history";
   const exporting = props.busyAction === "export";
   const exportingComplete = props.busyAction === "export-complete";
@@ -94,8 +111,8 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
   return (
     <section className="history-insights-view view-shell" aria-labelledby="history-insights-title" aria-busy={props.busy || undefined}>
       <PageIntro
-        title={<span id="history-insights-title">历史洞察</span>}
-        description={insights ? `${insights.totalGarments} 件衣物，${props.wearLogs.length} 条穿着记录。` : "本地穿着记录和推荐历史。"}
+        title={<span id="history-insights-title">穿搭历史</span>}
+        description={insights ? `${insights.totalGarments} 件衣物，${props.wearEventCount ?? props.wearLogs.length} 条穿着记录。` : "本地周计划、穿着日记、保存搭配和洞察。"}
         actions={(
           <>
             <Button variant="secondary" disabled={refreshing} aria-busy={refreshing || undefined} onClick={props.onRefresh}>
@@ -126,7 +143,23 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
         )}
       />
 
-      {canManageSavedOutfits ? (
+      <nav className="history-subnav" aria-label="穿搭历史分区">
+        {HISTORY_SECTIONS.map((section) => (
+          <Button
+            key={section.id}
+            variant={activeSection === section.id ? "primary" : "ghost"}
+            aria-pressed={activeSection === section.id}
+            onClick={() => props.onSectionChange?.(section.id)}
+          >
+            {section.label}
+          </Button>
+        ))}
+      </nav>
+
+      {activeSection === "planner" ? props.plannerContent : null}
+      {activeSection === "diary" ? props.diaryContent : null}
+
+      {activeSection === "saved" && canManageSavedOutfits ? (
         <SavedOutfitsPanel
           outfits={props.savedOutfits ?? []}
           busy={props.savedOutfitsBusy}
@@ -135,10 +168,11 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
           onOpen={props.onOpenSavedOutfit as (outfit: SavedOutfit) => void}
           onFavorite={props.onFavoriteSavedOutfit as (outfit: SavedOutfit, favorite: boolean) => void}
           onArchive={props.onArchiveSavedOutfit as (outfit: SavedOutfit) => void}
+          onSchedule={props.onScheduleSavedOutfit}
         />
       ) : null}
 
-      {insights ? <InsightsContent insights={insights} recommendationRuns={props.recommendationRuns} /> : (
+      {activeSection === "insights" && (insights ? <InsightsContent insights={insights} recommendationRuns={props.recommendationRuns} /> : (
         <Surface className="history-insights-empty">
           <EmptyState
             icon={<Activity aria-hidden="true" />}
@@ -146,7 +180,7 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
             description="确认衣物并记录穿着后，这里会显示利用率、分布和建议。"
           />
         </Surface>
-      )}
+      ))}
     </section>
   );
 }
@@ -240,14 +274,18 @@ function InsightsContent({ insights, recommendationRuns }: {
         ) : null}
       </section>
 
-      <div className="wear-insight-grid grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="wear-insight-grid grid grid-cols-1 gap-4 md:grid-cols-3">
         <section className="insight-section" aria-labelledby="most-worn-title">
           <header><h2 id="most-worn-title">常穿单品</h2></header>
           <GarmentInsightList items={insights.mostWorn} empty="还没有穿着统计。" showWearCount />
         </section>
+        <section className="insight-section" aria-labelledby="recently-unworn-title">
+          <header><h2 id="recently-unworn-title">近期未穿</h2></header>
+          <GarmentInsightList items={insights.recentlyUnworn ?? []} empty="近 30 天没有久未穿的衣物。" showWearCount />
+        </section>
         <section className="insight-section" aria-labelledby="never-worn-title">
-          <header><h2 id="never-worn-title">近期未穿</h2></header>
-          <GarmentInsightList items={insights.neverWorn} empty="所有衣物都有穿着记录。" />
+          <header><h2 id="never-worn-title">从未穿过</h2></header>
+          <GarmentInsightList items={insights.neverWorn} empty="所有衣物都已有穿着记录。" />
         </section>
       </div>
 

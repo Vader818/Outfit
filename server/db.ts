@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Formality, Garment, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, ImportDecision, ImportDisposition, ImportGarmentOverrides, ManualGarmentCreate, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoImportPreviewItem, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
+import type { Formality, Garment, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, ImportDecision, ImportDisposition, ImportGarmentOverrides, JsonValue, ManualGarmentCreate, OutfitOccasion, PersonalProfile, RecommendationRunEntry, Season, TaobaoDetailProp, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoImportPreviewItem, ThumbnailCandidate, ThumbnailCandidateSource, VisionTagSuggestion, WardrobeInsights, WardrobeSuggestion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
 import { classifyGarment } from "./services/classify";
 import { buildGarmentDisplayInfo, computeLegacyTaobaoSourceItemKey, isTrustedProductImage, isWardrobeImportCategory, normalizeTaobaoBatch, preferredImage, type NormalizedTaobaoBatch, type SourceOrderItemDraft } from "./services/importTaobao";
 import { defaultThumbnailOutputDir, downloadGarmentThumbnail, rankThumbnailCandidates, type ThumbnailRefreshResult } from "./services/thumbnails";
@@ -16,6 +16,14 @@ const MAX_SELECTABLE_THUMBNAIL_CANDIDATES = 24;
 const INSIGHT_SEASONS: Season[] = ["spring", "summer", "autumn", "winter"];
 const INSIGHT_FORMALITIES: Formality[] = ["casual", "smart-casual", "formal", "sport"];
 const INSIGHT_BASIC_COLORS = new Set(["black", "white", "gray", "beige", "brown"]);
+const OUTFIT_OCCASIONS = new Set<OutfitOccasion>([
+  "casual",
+  "smart-casual",
+  "formal",
+  "sport",
+  "date",
+  "dinner"
+]);
 
 export type AppDatabase = DatabaseSyncType;
 
@@ -250,8 +258,239 @@ const NUMBERED_MIGRATIONS: readonly Migration[] = [
         ON garment_availability_events(garment_id, changed_at, id);
       `);
     }
+  },
+  {
+    version: 5,
+    name: "diary-week-planner",
+    up(db) {
+      db.exec(`
+        CREATE TABLE wear_events (
+          id INTEGER PRIMARY KEY,
+          worn_at TEXT NOT NULL CHECK (length(trim(worn_at)) > 0),
+          time_zone TEXT NOT NULL CHECK (length(trim(time_zone)) BETWEEN 1 AND 255),
+          outfit_id INTEGER,
+          occasion TEXT NOT NULL CHECK (
+            occasion IN ('casual', 'smart-casual', 'formal', 'sport', 'date', 'dinner')
+          ),
+          weather_snapshot TEXT CHECK (
+            weather_snapshot IS NULL OR
+            (json_valid(weather_snapshot) AND json_type(weather_snapshot) = 'object')
+          ),
+          notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+          legacy_snapshot TEXT CHECK (
+            legacy_snapshot IS NULL OR
+            (json_valid(legacy_snapshot) AND json_type(legacy_snapshot) = 'object')
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (outfit_id) REFERENCES saved_outfits(id) ON DELETE RESTRICT
+        ) STRICT;
+
+        CREATE INDEX idx_wear_events_worn_at
+        ON wear_events(worn_at, id);
+
+        CREATE INDEX idx_wear_events_outfit_id
+        ON wear_events(outfit_id);
+
+        CREATE TABLE wear_event_items (
+          id INTEGER PRIMARY KEY,
+          wear_event_id INTEGER NOT NULL,
+          item_id INTEGER NOT NULL,
+          position INTEGER NOT NULL CHECK (position >= 0),
+          FOREIGN KEY (wear_event_id) REFERENCES wear_events(id) ON DELETE CASCADE,
+          FOREIGN KEY (item_id) REFERENCES garments(id) ON DELETE RESTRICT,
+          UNIQUE (wear_event_id, item_id)
+        ) STRICT;
+
+        CREATE INDEX idx_wear_event_items_item_id
+        ON wear_event_items(item_id);
+
+        CREATE INDEX idx_wear_event_items_wear_event_id
+        ON wear_event_items(wear_event_id);
+
+        CREATE TABLE outfit_plan_entries (
+          id INTEGER PRIMARY KEY,
+          planned_date TEXT NOT NULL CHECK (
+            length(planned_date) = 10 AND
+            planned_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          ),
+          time_zone TEXT NOT NULL CHECK (length(trim(time_zone)) BETWEEN 1 AND 255),
+          outfit_id INTEGER NOT NULL,
+          occasion TEXT NOT NULL CHECK (
+            occasion IN ('casual', 'smart-casual', 'formal', 'sport', 'date', 'dinner')
+          ),
+          weather_snapshot TEXT CHECK (
+            weather_snapshot IS NULL OR
+            (json_valid(weather_snapshot) AND json_type(weather_snapshot) = 'object')
+          ),
+          status TEXT NOT NULL DEFAULT 'planned' CHECK (
+            status IN ('planned', 'worn', 'skipped')
+          ),
+          worn_at TEXT,
+          wear_event_id INTEGER UNIQUE,
+          notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (outfit_id) REFERENCES saved_outfits(id) ON DELETE RESTRICT,
+          FOREIGN KEY (wear_event_id) REFERENCES wear_events(id) ON DELETE RESTRICT,
+          CHECK (
+            (status = 'worn' AND worn_at IS NOT NULL AND wear_event_id IS NOT NULL) OR
+            (status IN ('planned', 'skipped') AND worn_at IS NULL AND wear_event_id IS NULL)
+          )
+        ) STRICT;
+
+        CREATE INDEX idx_outfit_plan_entries_planned_date
+        ON outfit_plan_entries(planned_date, id);
+
+        CREATE INDEX idx_outfit_plan_entries_outfit_id
+        ON outfit_plan_entries(outfit_id);
+
+        ALTER TABLE recommendation_feedback
+        ADD COLUMN wear_event_id INTEGER REFERENCES wear_events(id) ON DELETE SET NULL;
+
+        CREATE UNIQUE INDEX idx_recommendation_feedback_wear_event_id
+        ON recommendation_feedback(wear_event_id)
+        WHERE wear_event_id IS NOT NULL;
+      `);
+
+      migrateLegacyWearLogs(db);
+      db.exec(`
+        UPDATE recommendation_feedback
+        SET wear_event_id = wear_log_id
+        WHERE wear_log_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM wear_events WHERE wear_events.id = recommendation_feedback.wear_log_id
+          );
+      `);
+    }
   }
 ];
+
+function migrateLegacyWearLogs(db: AppDatabase): void {
+  const rows = db.prepare(`
+    SELECT id, garment_ids, context, worn_at
+    FROM wear_logs
+    ORDER BY id ASC
+  `).all() as Array<{
+    id: number;
+    garment_ids: string;
+    context: string | null;
+    worn_at: string;
+  }>;
+  const garmentExists = db.prepare("SELECT 1 AS present FROM garments WHERE id = ?");
+  const outfitExists = db.prepare("SELECT 1 AS present FROM saved_outfits WHERE id = ?");
+  const insertEvent = db.prepare(`
+    INSERT INTO wear_events (
+      id, worn_at, time_zone, outfit_id, occasion, weather_snapshot, notes,
+      legacy_snapshot, created_at, updated_at
+    ) VALUES (?, ?, 'UTC', ?, ?, ?, '', ?, ?, ?)
+  `);
+  const insertItem = db.prepare(`
+    INSERT INTO wear_event_items (wear_event_id, item_id, position)
+    VALUES (?, ?, ?)
+  `);
+
+  for (const row of rows) {
+    const originalGarmentIds = parseLegacyGarmentIds(row.id, row.garment_ids);
+    const originalContext = parseLegacyContext(row.id, row.context);
+    const contextRecord = isJsonRecord(originalContext) ? originalContext : undefined;
+    const occasion = typeof contextRecord?.occasion === "string" &&
+      OUTFIT_OCCASIONS.has(contextRecord.occasion as OutfitOccasion)
+      ? contextRecord.occasion as OutfitOccasion
+      : "casual";
+    const contextOutfitId = contextRecord?.outfitId;
+    const numericOutfitId = Number.isSafeInteger(contextOutfitId) ? Number(contextOutfitId) : null;
+    const outfitId = numericOutfitId !== null && numericOutfitId > 0 &&
+      outfitExists.get(numericOutfitId) !== undefined
+      ? numericOutfitId
+      : null;
+    const contextWeather = contextRecord?.weather;
+    const weatherSnapshot = isWeatherSnapshot(contextWeather) ? contextWeather : null;
+    const wornAt = canonicalLegacyWornAt(row.id, row.worn_at);
+    const legacySnapshot = {
+      originalGarmentIds,
+      originalContext
+    } satisfies { originalGarmentIds: number[]; originalContext: JsonValue };
+    insertEvent.run(
+      row.id,
+      wornAt,
+      outfitId,
+      occasion,
+      weatherSnapshot === null ? null : JSON.stringify(weatherSnapshot),
+      JSON.stringify(legacySnapshot),
+      wornAt,
+      wornAt
+    );
+
+    const inserted = new Set<number>();
+    originalGarmentIds.forEach((garmentId, position) => {
+      if (inserted.has(garmentId) || garmentExists.get(garmentId) === undefined) return;
+      insertItem.run(row.id, garmentId, position);
+      inserted.add(garmentId);
+    });
+  }
+}
+
+function parseLegacyGarmentIds(rowId: number, value: string): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: garment_ids is invalid JSON`);
+  }
+  if (!Array.isArray(parsed) || !parsed.every((id) => Number.isSafeInteger(id) && Number(id) > 0)) {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: garment_ids must be a positive integer array`);
+  }
+  return parsed as number[];
+}
+
+function parseLegacyContext(rowId: number, value: string | null): JsonValue {
+  if (value === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: context is invalid JSON`);
+  }
+  if (!isJsonValue(parsed)) {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: context is not a JSON value`);
+  }
+  return parsed;
+}
+
+function canonicalLegacyWornAt(rowId: number, value: string): string {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const timestamp = new Date(normalized);
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new Error(`Cannot migrate wear_logs row ${rowId}: worn_at is invalid`);
+  }
+  return timestamp.toISOString();
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isJsonRecord(value) && Object.values(value).every(isJsonValue);
+}
+
+function isJsonRecord(value: unknown): value is { [key: string]: JsonValue } {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.date === "string" &&
+    typeof record.temperature === "number" && Number.isFinite(record.temperature) &&
+    typeof record.apparentTemperature === "number" && Number.isFinite(record.apparentTemperature) &&
+    typeof record.precipitationProbability === "number" && Number.isFinite(record.precipitationProbability) &&
+    typeof record.windSpeed === "number" && Number.isFinite(record.windSpeed) &&
+    typeof record.weatherCode === "number" && Number.isFinite(record.weatherCode) &&
+    typeof record.summary === "string";
+}
 
 export interface DbImportResult {
   batchId: string;
@@ -302,6 +541,11 @@ export interface ThumbnailSelectionOptions extends ThumbnailRefreshOptions {}
 
 export interface ListGarmentsOptions {
   scope?: "active" | "archived" | "all";
+}
+
+export interface WardrobeInsightsOptions {
+  now?: () => Date;
+  recentDays?: number;
 }
 
 interface PurchasedSourceRow {
@@ -1734,17 +1978,22 @@ export function saveWearLog(db: AppDatabase, garmentIds: number[], context: unkn
 }
 
 export function listRecentlyWornGarmentIds(db: AppDatabase, limit = 8): number[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) return [];
   const rows = db.prepare(`
-    SELECT garment_ids
-    FROM wear_logs
-    ORDER BY worn_at DESC, id DESC
-    LIMIT ?
-  `).all(limit) as Array<{ garment_ids: string }>;
+    WITH recent_events AS (
+      SELECT id, worn_at
+      FROM wear_events
+      ORDER BY worn_at DESC, id DESC
+      LIMIT ?
+    )
+    SELECT items.item_id
+    FROM recent_events AS recent
+    JOIN wear_event_items AS items ON items.wear_event_id = recent.id
+    ORDER BY recent.worn_at DESC, recent.id DESC, items.position ASC, items.id ASC
+  `).all(limit) as Array<{ item_id: number }>;
   const seen = new Set<number>();
   for (const row of rows) {
-    for (const id of safeJson<number[]>(row.garment_ids, [])) {
-      if (Number.isFinite(id)) seen.add(id);
-    }
+    seen.add(row.item_id);
   }
   return Array.from(seen);
 }
@@ -1811,14 +2060,32 @@ export function savePersonalProfile(db: AppDatabase, profile: PersonalProfile): 
   return next;
 }
 
-export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
+export function getWardrobeInsights(
+  db: AppDatabase,
+  options: WardrobeInsightsOptions = {}
+): WardrobeInsights {
   const garments = listGarments(db);
-  const wornCounts = new Map<number, number>();
-  for (const log of listWearLogs(db, 500)) {
-    for (const id of log.garmentIds) {
-      wornCounts.set(id, (wornCounts.get(id) ?? 0) + 1);
-    }
+  const now = options.now?.() ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new ValidationError("洞察统计时间无效");
+  const recentDays = options.recentDays ?? 30;
+  if (!Number.isSafeInteger(recentDays) || recentDays < 1 || recentDays > 3650) {
+    throw new ValidationError("recentDays 必须是 1-3650 的整数");
   }
+  const cutoff = now.getTime() - recentDays * 24 * 60 * 60 * 1000;
+  const wornStats = new Map<number, { wearCount: number; lastWornAt: string }>();
+  const wearRows = db.prepare(`
+    SELECT items.item_id, COUNT(*) AS wear_count, MAX(events.worn_at) AS last_worn_at
+    FROM wear_event_items AS items
+    JOIN wear_events AS events ON events.id = items.wear_event_id
+    GROUP BY items.item_id
+  `).all() as Array<{ item_id: number; wear_count: number; last_worn_at: string }>;
+  for (const row of wearRows) {
+    wornStats.set(row.item_id, {
+      wearCount: row.wear_count,
+      lastWornAt: row.last_worn_at
+    });
+  }
+  const wornCounts = new Map([...wornStats].map(([id, stat]) => [id, stat.wearCount]));
   const activeGarments = garments;
   const categoryDistribution: WardrobeInsights["categoryDistribution"] = {};
   const colorDistribution: WardrobeInsights["colorDistribution"] = {};
@@ -1834,16 +2101,24 @@ export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
   const shoppingSuggestions = buildShoppingSuggestions(activeGarments, seasonDistribution);
   const bodySuggestions = buildBodySuggestions(getPersonalProfile(db));
   const worn = garments
-    .filter((garment) => (wornCounts.get(garment.id) ?? 0) > 0)
-    .map((garment) => ({
-      id: garment.id,
-      name: displayInsightName(garment),
-      category: garment.category,
-      color: garment.color,
-      wearCount: wornCounts.get(garment.id) ?? 0
-    }))
-    .sort((left, right) => (right.wearCount ?? 0) - (left.wearCount ?? 0))
+    .filter((garment) => wornStats.has(garment.id))
+    .map((garment) => insightGarment(garment, wornStats.get(garment.id)!))
+    .sort((left, right) =>
+      (right.wearCount ?? 0) - (left.wearCount ?? 0) ||
+      String(right.lastWornAt).localeCompare(String(left.lastWornAt)) ||
+      left.id - right.id
+    )
     .slice(0, 5);
+  const recentlyUnworn = garments
+    .filter((garment) => {
+      const lastWornAt = wornStats.get(garment.id)?.lastWornAt;
+      return lastWornAt !== undefined && Date.parse(lastWornAt) < cutoff;
+    })
+    .map((garment) => insightGarment(garment, wornStats.get(garment.id)!))
+    .sort((left, right) =>
+      String(left.lastWornAt).localeCompare(String(right.lastWornAt)) || left.id - right.id
+    )
+    .slice(0, 8);
   return {
     totalGarments: garments.length,
     ownedGarments: garments.filter((garment) => garment.owned).length,
@@ -1863,10 +2138,31 @@ export function getWardrobeInsights(db: AppDatabase): WardrobeInsights {
     shoppingSuggestions,
     bodySuggestions,
     mostWorn: worn,
+    recentlyUnworn,
     neverWorn: garments
-      .filter((garment) => !wornCounts.has(garment.id))
+      .filter((garment) => !wornStats.has(garment.id))
       .slice(0, 8)
-      .map((garment) => ({ id: garment.id, name: displayInsightName(garment), category: garment.category, color: garment.color }))
+      .map((garment) => ({
+        id: garment.id,
+        name: displayInsightName(garment),
+        category: garment.category,
+        color: garment.color,
+        wearCount: 0
+      }))
+  };
+}
+
+function insightGarment(
+  garment: Garment,
+  stat: { wearCount: number; lastWornAt: string }
+): WardrobeInsights["mostWorn"][number] {
+  return {
+    id: garment.id,
+    name: displayInsightName(garment),
+    category: garment.category,
+    color: garment.color,
+    wearCount: stat.wearCount,
+    lastWornAt: stat.lastWornAt
   };
 }
 

@@ -828,50 +828,203 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 - 成功：HTTP 204，无响应体
 - 不存在：HTTP 404，`{ "error": { "code": "NOT_FOUND", "message": "衣服不存在" } }`
 
-## POST /api/wear-logs
+## GET /api/wear-events
 
-记录一次穿着，用于后续推荐时降低近期重复穿着概率。
+按用户日历日期范围读取穿着日记，返回稳定游标分页。查询范围会先在指定 IANA 时区中换算为本地午夜边界，再与数据库中的 UTC `worn_at` 比较；跨午夜和 DST 边界不会把事件错误归到相邻日期。
 
-请求体：
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `timeZone` | string | 否 | IANA 时区；省略时为 `UTC` |
+| `from` | `YYYY-MM-DD` | 否 | 本地日期闭区间起点；必须与 `to` 同时提供 |
+| `to` | `YYYY-MM-DD` | 否 | 本地日期闭区间终点；必须与 `from` 同时提供 |
+| `limit` | integer | 否 | 1–100，默认 50 |
+| `cursor` | string | 否 | 上一页返回的 opaque `nextCursor`，调用方不得解析或改写 |
+
+省略 `from/to` 时，默认读取该时区当前周的周一至周日。结果按 `wornAt DESC, id DESC` 排序。
+
+响应：`WearEventPage`
 
 ```json
 {
-  "garmentIds": [1, 2, 3],
-  "context": {
-    "occasion": "casual",
-    "weather": "小雨"
-  }
+  "events": [
+    {
+      "id": 21,
+      "wornAt": "2026-07-13T15:30:00.000Z",
+      "timeZone": "Asia/Shanghai",
+      "outfitId": 7,
+      "occasion": "formal",
+      "weatherSnapshot": {
+        "date": "2026-07-13",
+        "temperature": 29,
+        "apparentTemperature": 31,
+        "precipitationProbability": 20,
+        "windSpeed": 8,
+        "weatherCode": 1,
+        "summary": "多云"
+      },
+      "notes": "晚间会议",
+      "items": [
+        { "id": 31, "wearEventId": 21, "itemId": 3, "position": 0 }
+      ]
+    }
+  ],
+  "nextCursor": "opaque-base64url-cursor"
+}
+```
+
+## POST /api/wear-events
+
+补录一次实际穿着，成功返回 HTTP 201 和创建后的 `WearEvent`。
+
+```json
+{
+  "wornAt": "2026-07-13T23:30:00+08:00",
+  "timeZone": "Asia/Shanghai",
+  "outfitId": 7,
+  "occasion": "formal",
+  "weatherSnapshot": {
+    "date": "2026-07-13",
+    "temperature": 29,
+    "apparentTemperature": 31,
+    "precipitationProbability": 20,
+    "windSpeed": 8,
+    "weatherCode": 1,
+    "summary": "多云"
+  },
+  "notes": "晚间会议",
+  "itemIds": [3, 8]
 }
 ```
 
 规则：
 
-- `garmentIds` 必须是非空正整数数组。
-- 重复 ID 会去重。
-- `context` 可省略，会以 JSON 存入 `wear_logs.context`。
+- `wornAt` 必须包含 `Z` 或明确 UTC offset；服务端统一保存并返回 UTC ISO timestamp。
+- `timeZone` 必须是运行环境识别的 IANA 时区。
+- `occasion` 只能是 `casual`、`smart-casual`、`formal`、`sport`、`date`、`dinner`。
+- `itemIds` 为 1–24 个不重复正整数，且衣物必须存在；`outfitId` 如提供也必须存在。
+- `weatherSnapshot` 必须只包含完整 `WeatherSnapshot` 字段；未知字段会返回 400 `VALIDATION_ERROR`。
+- 客户端不能写 `legacySnapshot`。它只用于迁移旧 `wear_logs` 或兼容适配器保存原始事实。
 
-响应：
+## PUT /api/wear-events/:id
+
+编辑穿着时间、时区、搭配、场合、天气、备注和/或完整衣物列表。请求至少包含一个允许字段；省略字段会保留原值，`outfitId: null` 会显式解除保存搭配关联，`notes: null` 会显式清空备注。`itemIds` 如提供会原子替换全部明细。成功返回更新后的 `WearEvent`；不存在返回 404 `NOT_FOUND`。
+
+## DELETE /api/wear-events/:id
+
+撤销误记并返回被删除的 `WearEvent`。删除与以下修正位于同一事务：关联计划恢复为 `planned`；关联推荐反馈撤销实际穿着事实，已经没有其他信号的空反馈被删除；衣物组合统计从剩余反馈重算。
+
+## GET /api/outfit-plans
+
+读取穿搭计划，按 `plannedDate ASC, id ASC` 排序。参数为 `timeZone`、`from`、`to`；日期参数必须成对出现，省略时默认指定时区当前周的周一至周日。`timeZone` 省略时为 `UTC`。该列表不使用游标。
+
+## POST /api/outfit-plans
+
+为已有保存搭配创建计划，成功返回 HTTP 201。请求体：
 
 ```json
-{ "ok": true }
+{
+  "plannedDate": "2026-07-14",
+  "timeZone": "Asia/Shanghai",
+  "outfitId": 7,
+  "occasion": "formal",
+  "weatherSnapshot": {
+    "date": "2026-07-14",
+    "temperature": 30,
+    "apparentTemperature": 33,
+    "precipitationProbability": 25,
+    "windSpeed": 9,
+    "weatherCode": 2,
+    "summary": "多云"
+  },
+  "notes": "客户会议"
+}
 ```
 
-## GET /api/wear-logs
+`plannedDate` 是用户时区下的本地日历键，必须是实际存在的严格 `YYYY-MM-DD`；带时间部分或 `2026-02-30` 会返回 400。服务端不会把它转换成 UTC timestamp。天气可省略；如提供，`weatherSnapshot.date` 必须与 `plannedDate` 完全相同。
 
-返回最近的穿着记录，按 `worn_at`、`id` 从新到旧排序。当前接口不接收分页参数，默认最多返回 50 条。
-
-响应：`WearLogEntry[]`
+响应：`OutfitPlanMutationResult`
 
 ```json
-[
-  {
-    "id": 1,
-    "garmentIds": [1, 2, 3],
-    "context": { "occasion": "casual" },
-    "wornAt": "2026-07-11 08:00:00"
+{
+  "entry": {
+    "id": 12,
+    "plannedDate": "2026-07-14",
+    "timeZone": "Asia/Shanghai",
+    "outfitId": 7,
+    "occasion": "formal",
+    "status": "planned",
+    "notes": "客户会议"
+  },
+  "repeatWarning": {
+    "code": "RECENT_OUTFIT_REPEAT",
+    "windowDays": 28,
+    "previousDate": "2026-06-20",
+    "message": "这套搭配在 28 天提醒窗口内已经安排或穿过；你仍可保留计划，或换一件。",
+    "canIgnore": true,
+    "action": "replace-one-item"
   }
-]
+}
 ```
+
+重复提醒比较保存搭配的规范化衣物 ID 集合，而不只比较 `outfitId`：以目标 `plannedDate` 为中心，`formal` 检查前后各 28 天的对称闭区间，`date/dinner` 检查前后各 14 天，其余场合不提醒。若计划和穿着事件中有多个冲突，`previousDate` 返回离目标日期最近的一条；距离相同时选择较早日期。更新计划时会排除当前计划自身，不会因原记录产生自冲突。
+
+`repeatWarning` 是保存成功后的附加响应：收到提醒时 `entry` 已经提交数据库。提醒不会阻止创建或更新；UI 关闭提醒或点击“换一件”都不会撤销当前计划，“换一件”只会继续创建/选择替代版本。
+
+## PUT /api/outfit-plans/:id
+
+可更新 `plannedDate`、`timeZone`、`outfitId`、`occasion`、`weatherSnapshot`、`notes`，以及 `status="planned" | "skipped"`。省略字段保留原值；`notes: null` 或空字符串都会清空备注。计划日期变化且未同时提供天气时会清除旧天气；传 `weatherSnapshot: null` 也会清除天气。已经 `worn` 的计划返回 409 `PLAN_ALREADY_WORN`，必须编辑对应 WearEvent。
+
+响应仍为 `OutfitPlanMutationResult`，可能带非阻塞 `repeatWarning`。
+
+## DELETE /api/outfit-plans/:id
+
+删除计划并返回删除前的 `OutfitPlanEntry`。该操作不删除已经独立存在的穿着事件。
+
+## POST /api/outfit-plans/:id/mark-worn
+
+原子地把计划标记为已穿并创建对应 WearEvent。请求体：
+
+```json
+{
+  "wornAt": "2026-07-14T19:30:00+08:00",
+  "timeZone": "Asia/Shanghai",
+  "outfitId": null,
+  "occasion": "dinner",
+  "itemIds": [3, 8, 11],
+  "weatherSnapshot": {
+    "date": "2026-07-14",
+    "temperature": 30,
+    "apparentTemperature": 33,
+    "precipitationProbability": 25,
+    "windSpeed": 9,
+    "weatherCode": 2,
+    "summary": "多云"
+  },
+  "notes": null
+}
+```
+
+`wornAt`、`timeZone` 必填；其余字段都是对实际 WearEvent 的可选覆盖：
+
+- `outfitId` 省略时继承计划搭配；传 `null` 时事件不关联保存搭配；传其他 ID 时事件关联该搭配。
+- `occasion` 省略时继承计划场合。
+- `itemIds` 省略时从有效搭配读取；如提供则完整尊重该列表并执行 WearEvent 衣物校验。
+- `weatherSnapshot` 省略时继承计划快照，提供时使用请求快照，日期仍必须匹配 `plannedDate`。
+- `notes` 省略时继承计划备注，传 `null` 时显式清空。
+
+这些覆盖只决定新 WearEvent 的完整事实；计划本身仍保留原 `outfitId`、`occasion` 和计划备注，只更新为 `worn` 并关联事件。成功返回 `{ "plan": OutfitPlanEntry, "wearEvent": WearEvent }`。重复调用已经完成的计划是幂等读取，不会创建第二条事件；任何一步失败时计划和事件一起回滚。
+
+## POST /api/wear-logs（deprecated adapter）
+
+旧客户端兼容入口。它把 `{ garmentIds, context }` 转成新的 UTC WearEvent，原请求保存到 `legacySnapshot`；缺失衣物 ID 保留在 `originalGarmentIds`，但不会创建无效外键。新代码应使用 `/api/wear-events`。
+
+成功仍返回 `{ "ok": true }`。
+
+## GET /api/wear-logs（deprecated adapter）
+
+把最新 50 条 WearEvent 投影为旧 `WearLogEntry[]`。迁移记录优先返回原始 `legacySnapshot`；新事件会合成最小兼容 context。该入口没有范围或游标参数，新代码应使用 `/api/wear-events`。
 
 ## GET /api/recommendation-runs
 
@@ -999,14 +1152,15 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 ```json
 {
   "version": 2,
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "exportedAt": "2026-07-11T08:00:00.000Z",
   "features": [
     "versioned-migrations",
     "recommendation-candidates",
     "garment-assets",
     "saved-outfits",
-    "feedback-availability"
+    "feedback-availability",
+    "diary-week-planner"
   ],
   "profile": {},
   "garments": [],
@@ -1105,6 +1259,29 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
       "status": "laundry",
       "changedAt": "2026-07-11T09:00:00.000Z"
     }
+  ],
+  "wearEvents": [
+    {
+      "id": 21,
+      "wornAt": "2026-07-13T16:15:00.000Z",
+      "timeZone": "Asia/Shanghai",
+      "occasion": "formal",
+      "items": [{ "id": 31, "wearEventId": 21, "itemId": 12, "position": 0 }],
+      "legacySnapshot": {
+        "originalGarmentIds": [12, 999999],
+        "originalContext": { "occasion": "formal" }
+      }
+    }
+  ],
+  "outfitPlanEntries": [
+    {
+      "id": 8,
+      "plannedDate": "2026-07-14",
+      "timeZone": "Asia/Shanghai",
+      "outfitId": 7,
+      "occasion": "formal",
+      "status": "planned"
+    }
   ]
 }
 ```
@@ -1113,9 +1290,11 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 
 - 前端在请求前会显示敏感备份确认；直接调用 API 不会触发这层 UI 确认，但仍要求有效本地 session。调用方必须自行确认备份的接收方和存放位置可信。
 - JSON 不内嵌图片二进制；`garmentAssets` 包含 active 与 inactive 资产的可移植元数据，但不含 `storage_key`、绝对路径或原始文件名。`savedOutfits` 包含 active、归档和派生搭配及保存时的衣物快照；即使来源衣物后来改名或归档，快照仍保持不变。
-- `recommendationFeedback`、`outfitPairStats` 与 `garmentAvailabilityEvents` 导出全部记录，不受 UI 列表限制；其中包含用户评价、自由文本评论、实际穿着选择和完整状态变更历史，属于敏感本地数据。三组读取与其余 JSON 数据位于同一个 SQLite 快照，并使用确定性排序；损坏的 `reason_codes_json` 会让导出明确失败，不会静默跳过。
+- `recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`、`wearEvents` 与 `outfitPlanEntries` 都导出完整记录，不受 UI 列表限制；穿着备注、天气、时区、旧 context、计划和反馈属于敏感本地数据。所有表位于同一个 deferred SQLite 读快照，并使用确定性排序。
+- `wearLogs` 为旧 V1/V2 消费者继续保留；M4 的权威日记数据在 `wearEvents`，其中包含迁移得到的 `legacySnapshot`。`plannedDate` 直接按数据库日历键导出，不经过 `Date` 或 UTC 转换。
+- 损坏的 `reason_codes_json`、`weather_snapshot`、`legacy_snapshot` 或不符合类型的 JsonValue 会让导出明确失败并带表/行/列上下文，不会静默漏行。
 - 图片、来源字段和搭配快照不允许绝对文件系统路径、`data:`、`blob:` 或 `file:` 引用。损坏的 `garment_snapshot` 会使导出明确失败，不会静默省略记录。
-- 内部版本校验器仍能识别旧 V1，以及缺少 M3 三个可选数组的旧 V2 envelope；当前没有恢复导入 API。
+- 内部版本校验器仍能识别旧 V1，以及缺少 M3/M4 可选数组的旧 V2 envelope；带 `diary-week-planner` feature 的新 V2 必须同时包含 `wearEvents` 和 `outfitPlanEntries`。当前没有恢复导入 API。
 
 ### GET /api/export?format=zip&preview=1
 
@@ -1249,6 +1428,34 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 ```
 
 经纬度不是数字时返回 HTTP 400。
+
+## GET /api/weather/forecast
+
+按经纬度返回 1–7 天逐日天气快照。该接口不读取浏览器位置，因此 `latitude`、`longitude` 仍是必填参数；`days` 省略时为 7。
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `latitude` | number | 是 | 纬度，-90…90 |
+| `longitude` | number | 是 | 经度，-180…180 |
+| `days` | integer | 否 | 1…7，默认 7 |
+
+响应：`WeatherSnapshot[]`
+
+```json
+[
+  {
+    "date": "2026-07-14",
+    "temperature": 27,
+    "apparentTemperature": 29,
+    "precipitationProbability": 35,
+    "windSpeed": 12,
+    "weatherCode": 2,
+    "summary": "多云"
+  }
+]
+```
+
+逐日温度和体感温度分别取 Open-Meteo 当日 max/min 的四舍五入均值；风速使用逐日最大值。服务使用独立的 `weather-forecast:<lat>:<lon>:<days>` 缓存键，默认有效期 30 分钟；Open-Meteo 失败时先返回同天数的过期缓存，没有可用缓存才生成等长本地估算。`days` 为 0、8、小数或其他非法值时返回 400 `VALIDATION_ERROR`。
 
 ## POST /api/recommendations
 

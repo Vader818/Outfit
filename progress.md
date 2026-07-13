@@ -718,3 +718,66 @@
   - 修复后 `tests/app.test.tsx` 76/76、typecheck 通过，最终全量 Vitest 29 文件 410/410 通过。
   - 最终非破坏性生产构建再次成功，Vite 转换 1595 模块并输出 6 个文件到 `C:\Users\Vader\AppData\Local\Temp\outfit-build-final-5b7bd68889ce4f06bdfa0f549e0efed5`；未清理现有 dist，也未删除临时证据。
   - 浏览器标签与隔离 API/Vite 进程已关闭，5174/8788 均无监听；QA 目录和数据库继续保留，未删除任何文件。
+
+## 会话：2026-07-13（Outfit M4 穿搭日记与周计划）
+
+### 阶段 47：上下文恢复、契约审计与 TDD 蓝图
+- **状态：** in_progress
+- 已执行：
+  - 确认当前 active goal 正是严格执行 `docs/2026-07-10-outfit-m4-diary-week-plan.md`，沿用而不重复创建。
+  - 完整读取 `planning-with-files-zh` 技能、M4 原计划和既有规划记录，保留 M1–M3 历史证据。
+  - 将 M4 十二项实施任务和四项验收标准拆为阶段 47–54；全程不删除文件，真实数据库只读保护。
+  - 首次阶段补丁因旧状态行格式不匹配而失败，已改为精确定位后重新应用。
+  - Git 基线确认只有 `task_plan.md`、`findings.md`、`progress.md` 三份本轮规划差异，产品源码暂无未提交改动。
+  - 初步定位迁移 1–4、baseline 0 的 `wear_logs`、单日天气服务、历史主导航接线及现有测试目录；M4 尚无实现文件。
+  - 修改前基线通过：`npm run typecheck` 成功；Vitest 29 个文件、410 项测试全部通过。迁移演练测试仅在系统临时目录保留副本，不修改真实数据库。
+  - 确认 M3 feedback 实穿路径在同一事务调用旧 `saveWearLog()`；M4 必须为此建立新旧兼容/镜像边界。
+  - 一次只读路由定位使用了不存在的 `server/routes/index.ts`，已记录并改为定位实际 `server/routes.ts`，未发生写入。
+  - 确认 planner router 可在全局 session/同源保护之后注册；洞察 active 范围已有基础，但穿着事实源与 V2 导出仍需迁移到 M4 模型。
+  - 三个只读子 Agent 全部返回并交叉确认迁移 5、旧日志/反馈兼容、天气位置参数、五项主导航和导出/洞察缺口。
+  - 冻结 M4 DTO、日期/时区、重复提醒和 V2 兼容契约；阶段 47 完成，核心 schema/service、天气、planner UI 三个写入域已并行启动。
+
+### 阶段 50/51：推荐安排入口与前端准备
+- **状态：** in_progress
+- 已执行：
+  - 新增 planner 专用 date/dinner 场合标签和显式 IANA 时区格式化 helper，不改变现有推荐场合枚举。
+  - 推荐卡和活动 saved outfit 卡新增可选“安排日期”回调/按钮；归档搭配不提供新建计划入口。
+  - 受影响前端测试 3 个文件、98 项全部通过。
+  - 并行 typecheck 曾命中天气子 Agent 的 TDD 中间红灯，已避免越界修改，等待其完成后统一复验。
+  - 将历史主区域改为受控的周计划、穿着日记、保存搭配、洞察四分区壳层；旧标题/同屏断言按新产品契约更新后，3 文件 98 项测试通过。
+  - 天气子任务完成：逐日 forecast 服务、1–7 天校验、max/min 均值与连续估算已落地，`tests/weather.test.ts` 12/12 通过；旧单日行为保持兼容。
+  - 已为 planner 独立样式加入全局 import；文件由 planner UI Agent 在其独占目录创建。
+  - 新增认证保护下的 `/api/weather/forecast`：严格经纬度/days 校验、独立缓存 key、陈旧缓存与逐日估算回退；待补 API 集成测试。
+  - forecast API 集成测试已补齐并单测通过：逐日映射、二次请求命中独立缓存、days=8 返回结构化 400；联合测试只暴露并已修正旧 schemaVersion=4 断言。
+  - planner UI 子任务已稳定：PlannerView、WeekGrid、WearDiaryPanel、WearEventDialog、OutfitPlanDialog 与响应式 CSS 落地，定向 9/9 通过。
+  - 核心类型与 WearEvent service 导出已可读取；outfitPlanner 仍处于并发实现中，主线暂不猜测其签名。
+  - 核心 migration 5、WearEvent/OutfitPlan service 已完成；核心/迁移专项 27/27，反馈相邻基线 12/12，typecheck 通过。
+  - V2 导出已加入 diary-week-planner、wearEvents 与 outfitPlanEntries，保留旧 wearLogs；导出专项 17/17 通过。
+  - 新旧 planner 路由、旧 wear-log 适配器与客户端方法已接入；服务专项 9/9、API 单点、frontend API 23/23、typecheck 通过。
+  - App 已接周计划、穿着日记、两个对话框、推荐/保存搭配安排入口和统一刷新；前端 3 文件 108/108、typecheck 通过。
+  - 推荐反馈实穿已原子写 WearEvent、不再新增 wear_logs；反馈两专项 15/15 通过。
+
+### 阶段 53：全量回归与真实交互验收
+- **状态：** in_progress
+- 全量 typecheck 与 Vitest 32 文件、452 项通过；Python unittest 25/25、pytest 33/33 通过。
+- npm 生产/全量审计与 pip-audit 均为 0 已知漏洞；pip check、git diff --check 通过。npm ls 仅保留既有 extraneous 辅助包，不执行删除清理。
+- 非破坏性生产构建成功：1600 模块、6 个产物，输出保留在 `C:\Users\Vader\AppData\Local\Temp\outfit-m4-build-bbd89632155a4ad399d272294e2bc25b`；现有 dist 未触碰。
+- 首次隔离 QA 启动中 Vite 成功，API 内联脚本未监听且健康等待超时；将改用支持隔离数据库环境变量的正式 server 入口。
+- 浏览器首次登录暴露 WearEvent limit 查询字符串兼容缺陷；已定位为 Express query 类型边界并补修复/回归。
+- 隔离浏览器已验证四分区历史页、7 天周网格、天气快照、首个正式计划和次日正式计划；第二次安排出现 28 天可忽略提醒，保留后两条计划分别落在 7 月 13/14 日。
+- 日期输入真实交互暴露受控 `type=date` 仅响应 change 的同步缺口；补 `onInput` 后，日期从 7 月 13 日改到 14 日时天气预览同步从雷雨 35°C 切换为小雨 37°C，保存后卡片也落在 14 日。新建弹窗同时改为明确“安排日期”。
+- 最终只读交叉审查识别四项签收前缺口：编辑可选字段无法清空、mark-worn 会忽略用户改动、计划编辑可能覆盖冻结天气、重复提醒仅看过去日期；已分配互斥写入范围补实现与测试。
+- 重复提醒已改为目标日前后对称窗口，排除更新自身并选择最近冲突；新增“先建较晚、再补较早”测试，planner 专项 11/11、typecheck 通过。
+- 一致性修复完成：WearEvent/OutfitPlan 可显式清空可选字段；mark-worn 完整尊重实际 outfit/occasion/items/notes；同日编辑保留冻结天气，改期才切换预报；定向 4 文件 108/108 通过。
+- 隔离浏览器验证计划与实际穿着可不同：正式计划实际记录为晚餐、不关联保存搭配且只穿一件；日记随后可关联整套、再清空关联与备注。撤销事件后记录数 1→0、计划 `worn`→`planned`，统计立即回滚。
+- 保存搭配分区只对 active 搭配显示“安排日期”；洞察明确分为“近期未穿”和“从未穿过”。
+- 390×844 验收：页面 `scrollWidth/clientWidth=375/375`，周计划滚动容器 `2344/375` 且 `overflow-x=auto`，移动导航精确为今日推荐/衣服库/历史洞察/导入/设置五项。
+- 浏览器最终控制台 0 warn/error；验收标签已清理。隔离 API 因服务层修复重启一次，复用原 QA 数据库且未删除日志或数据。
+- 最终自动化：Vitest 32 文件 455/455；typecheck 通过；Python unittest 25/25、pytest 33/33；npm 生产/全量审计与 `python -m pip_audit` 均为 0 漏洞，pip check 无破损依赖，`git diff --check` 通过。
+- 最终非破坏性生产构建转换 1600 模块并生成 6 个文件，保留于 `C:\Users\Vader\AppData\Local\Temp\outfit-m4-build-final-4cd49cb7e9bf49b1a582e0aca6a4664e`；现有 dist 未清理或覆盖。
+
+### 阶段 54：M4 最终复核与交付
+- **状态：** complete
+- 十二项实施任务和四项验收标准全部具备代码、测试、文档与隔离真实交互证据。
+- 最终只读复核发现的四项一致性缺口已修复并回归；当前无已知阻断项。
+- QA 数据库、日志和构建证据均按“不擅自删除”约束保留；真实数据库未原地迁移或写入，本轮未删除任何电脑文件。

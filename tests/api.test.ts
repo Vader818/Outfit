@@ -1249,9 +1249,13 @@ describe("API routes", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
-    const row = db.prepare("SELECT garment_ids, context FROM wear_logs").get() as { garment_ids: string; context: string };
-    expect(JSON.parse(row.garment_ids)).toEqual([1, 2, 3]);
-    expect(JSON.parse(row.context)).toMatchObject({ outfitId: "outfit-1", occasion: "casual" });
+    const row = db.prepare("SELECT legacy_snapshot FROM wear_events").get() as { legacy_snapshot: string };
+    expect(JSON.parse(row.legacy_snapshot)).toMatchObject({
+      originalGarmentIds: [1, 2, 3],
+      originalContext: { outfitId: "outfit-1", occasion: "casual" }
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_event_items").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
   });
 
   it("stores a local personal profile and returns it for recommendations", async () => {
@@ -1583,13 +1587,14 @@ describe("API routes", () => {
     const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
       version: 2,
-      schemaVersion: 4,
+      schemaVersion: 5,
       features: [
         "versioned-migrations",
         "recommendation-candidates",
         "garment-assets",
         "saved-outfits",
-        "feedback-availability"
+        "feedback-availability",
+        "diary-week-planner"
       ],
       profile: expect.any(Object),
       garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
@@ -2209,7 +2214,8 @@ describe("API routes", () => {
       });
       expect(worn.status).toBe(200);
     }
-    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
 
     const cleared = await fetch(`${baseUrl}/api/recommendation-feedback?scope=all`, {
       method: "DELETE",
@@ -3428,6 +3434,203 @@ describe("API routes", () => {
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({ summary: "小雨" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves a validated 1-7 day forecast from an isolated cache", async () => {
+    const realFetch = fetch;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      daily: {
+        time: ["2026-07-13", "2026-07-14", "2026-07-15"],
+        temperature_2m_max: [30, 32, 34],
+        temperature_2m_min: [20, 22, 24],
+        apparent_temperature_max: [32, 34, 36],
+        apparent_temperature_min: [22, 24, 26],
+        precipitation_probability_max: [10, 20, 30],
+        weather_code: [0, 3, 61],
+        wind_speed_10m_max: [8, 10, 12]
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const first = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=3`, {
+      headers: { cookie: authCookie }
+    });
+    const second = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=3`, {
+      headers: { cookie: authCookie }
+    });
+    const invalid = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=8`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual([
+      expect.objectContaining({ date: "2026-07-13", temperature: 25, summary: "晴" }),
+      expect.objectContaining({ date: "2026-07-14", temperature: 27, summary: "多云" }),
+      expect.objectContaining({ date: "2026-07-15", temperature: 29, summary: "小雨" })
+    ]);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toHaveLength(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({
+      error: { code: "VALIDATION_ERROR", message: expect.stringContaining("days") }
+    });
+    expect(db.prepare("SELECT cache_key FROM weather_cache").all()).toEqual([
+      { cache_key: "weather-forecast:31.2000:121.4000:3" }
+    ]);
+  });
+
+  it("exposes authenticated wear-event and outfit-plan CRUD with atomic mark-worn", async () => {
+    const db = createDatabase(":memory:");
+    const garmentId = Number(db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality, confirmed
+      ) VALUES ('API 白衬衫', 'top', 'white', 'light', '["spring"]', '["formal"]', 'formal', 1)
+    `).run().lastInsertRowid);
+    const outfitId = Number(db.prepare(`
+      INSERT INTO saved_outfits (name, source)
+      VALUES ('API 正式搭配', 'manual')
+    `).run().lastInsertRowid);
+    db.prepare(`
+      INSERT INTO saved_outfit_items (
+        outfit_id, garment_id, slot, position, garment_snapshot
+      ) VALUES (?, ?, 'top', 0, ?)
+    `).run(outfitId, garmentId, JSON.stringify({
+      id: garmentId,
+      name: "API 白衬衫",
+      brand: "",
+      category: "top",
+      imageUrl: ""
+    }));
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    expect((await fetch(`${baseUrl}/api/wear-events?timeZone=Asia%2FShanghai`)).status).toBe(401);
+    const authCookie = await registerTestUser(baseUrl);
+
+    const eventCreate = await fetch(`${baseUrl}/api/wear-events`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        wornAt: "2026-07-13T16:15:00.000Z",
+        timeZone: "Asia/Shanghai",
+        outfitId,
+        occasion: "casual",
+        notes: "待清空",
+        itemIds: [garmentId]
+      })
+    });
+    expect(eventCreate.status).toBe(201);
+    const createdEvent = await eventCreate.json() as { id: number; wornAt: string };
+    expect(createdEvent.wornAt).toBe("2026-07-13T16:15:00.000Z");
+
+    const eventUpdate = await fetch(`${baseUrl}/api/wear-events/${createdEvent.id}`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ outfitId: null, notes: null })
+    });
+    expect(eventUpdate.status).toBe(200);
+    const clearedEvent = await eventUpdate.json() as Record<string, unknown>;
+    expect(clearedEvent).not.toHaveProperty("outfitId");
+    expect(clearedEvent).not.toHaveProperty("notes");
+    const eventList = await fetch(
+      `${baseUrl}/api/wear-events?timeZone=Asia%2FShanghai&from=2026-07-14&to=2026-07-14&limit=20`,
+      { headers: { cookie: authCookie } }
+    );
+    expect(eventList.status).toBe(200);
+    expect(await eventList.json()).toMatchObject({
+      events: [expect.objectContaining({ id: createdEvent.id })]
+    });
+
+    const planCreate = await fetch(`${baseUrl}/api/outfit-plans`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        plannedDate: "2026-07-14",
+        timeZone: "Asia/Shanghai",
+        outfitId,
+        occasion: "formal"
+      })
+    });
+    expect(planCreate.status).toBe(201);
+    const createdPlan = await planCreate.json() as { entry: { id: number; plannedDate: string } };
+    expect(createdPlan.entry.plannedDate).toBe("2026-07-14");
+
+    const plans = await fetch(
+      `${baseUrl}/api/outfit-plans?timeZone=Asia%2FShanghai&from=2026-07-14&to=2026-07-20`,
+      { headers: { cookie: authCookie } }
+    );
+    expect(await plans.json()).toEqual([expect.objectContaining({
+      id: createdPlan.entry.id,
+      plannedDate: "2026-07-14",
+      status: "planned"
+    })]);
+
+    const markWorn = await fetch(`${baseUrl}/api/outfit-plans/${createdPlan.entry.id}/mark-worn`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        wornAt: "2026-07-14T01:30:00.000Z",
+        timeZone: "Asia/Shanghai",
+        outfitId: null,
+        occasion: "sport",
+        notes: null,
+        itemIds: [garmentId]
+      })
+    });
+    expect(markWorn.status).toBe(200);
+    const marked = await markWorn.json() as {
+      plan: { status: string };
+      wearEvent: { id: number; outfitId?: number; occasion: string; notes?: string; items: unknown[] };
+    };
+    expect(marked.plan.status).toBe("worn");
+    expect(marked.wearEvent.items).toHaveLength(1);
+    expect(marked.wearEvent.occasion).toBe("sport");
+    expect(marked.wearEvent).not.toHaveProperty("outfitId");
+    expect(marked.wearEvent).not.toHaveProperty("notes");
+
+    const deleteMarkedEvent = await fetch(`${baseUrl}/api/wear-events/${marked.wearEvent.id}`, {
+      method: "DELETE",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(deleteMarkedEvent.status).toBe(200);
+    expect(db.prepare("SELECT status, worn_at, wear_event_id FROM outfit_plan_entries WHERE id = ?")
+      .get(createdPlan.entry.id)).toEqual({ status: "planned", worn_at: null, wear_event_id: null });
+
+    const deleteEvent = await fetch(`${baseUrl}/api/wear-events/${createdEvent.id}`, {
+      method: "DELETE",
+      headers: jsonHeaders(authCookie)
+    });
+    const deletePlan = await fetch(`${baseUrl}/api/outfit-plans/${createdPlan.entry.id}`, {
+      method: "DELETE",
+      headers: jsonHeaders(authCookie)
+    });
+    expect(deleteEvent.status).toBe(200);
+    expect(deletePlan.status).toBe(200);
+
+    const invalid = await fetch(`${baseUrl}/api/outfit-plans`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        plannedDate: "2026-07-14T00:00:00Z",
+        timeZone: "Asia/Not_A_Zone",
+        outfitId,
+        occasion: "formal"
+      })
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
   });
 });
 

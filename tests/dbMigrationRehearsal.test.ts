@@ -373,7 +373,10 @@ function assertProductionMigration(
     "saved_outfit_items",
     "recommendation_feedback",
     "outfit_pair_stats",
-    "garment_availability_events"
+    "garment_availability_events",
+    "wear_events",
+    "wear_event_items",
+    "outfit_plan_entries"
   ]);
   assertLegacySchemaContract(db, true);
 
@@ -383,7 +386,8 @@ function assertProductionMigration(
       { version: 1, name: "recommendation-candidates" },
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
-      { version: 4, name: "feedback-availability" }
+      { version: 4, name: "feedback-availability" },
+      { version: 5, name: "diary-week-planner" }
   ]);
 
   expect(db.prepare(`
@@ -404,6 +408,23 @@ function assertProductionMigration(
   expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
   expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_pair_stats").get()).toEqual({ count: 0 });
   expect(db.prepare("SELECT COUNT(*) AS count FROM garment_availability_events").get()).toEqual({ count: 0 });
+  expect(db.prepare(`
+    SELECT id, worn_at, time_zone, occasion, legacy_snapshot
+    FROM wear_events
+  `).get()).toEqual({
+    id: 1,
+    worn_at: "2025-12-04T08:00:00.000Z",
+    time_zone: "UTC",
+    occasion: "casual",
+    legacy_snapshot: JSON.stringify({
+      originalGarmentIds: [1],
+      originalContext: { outfitId: "outfit-1", occasion: "casual", fixture: true }
+    })
+  });
+  expect(db.prepare(`
+    SELECT wear_event_id, item_id, position FROM wear_event_items
+  `).all()).toEqual([{ wear_event_id: 1, item_id: 1, position: 0 }]);
+  expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_plan_entries").get()).toEqual({ count: 0 });
 
   expect(foreignKeyContracts(db, "recommendation_candidates")).toEqual([
     [0, 0, "recommendation_runs", "run_id", "id", "NO ACTION", "CASCADE", "NONE"]

@@ -1,4 +1,4 @@
-import { Archive, FolderOpen, Heart, Plus, Shirt } from "lucide-react";
+import { Archive, CalendarPlus, FolderOpen, Heart, Plus, Shirt } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge, Button, EmptyState, IconButton, Surface } from "../../components/ui";
 import { displayThumbnailUrl } from "../../lib/garments";
@@ -28,6 +28,7 @@ export interface SavedOutfitsPanelProps {
   onOpen: (outfit: SavedOutfit) => void;
   onFavorite: (outfit: SavedOutfit, favorite: boolean) => void;
   onArchive: (outfit: SavedOutfit) => void;
+  onSchedule?: (outfit: SavedOutfit) => void;
 }
 
 export function SavedOutfitsPanel(props: SavedOutfitsPanelProps) {
@@ -66,6 +67,7 @@ export function SavedOutfitsPanel(props: SavedOutfitsPanelProps) {
               onOpen={props.onOpen}
               onFavorite={props.onFavorite}
               onArchive={props.onArchive}
+              onSchedule={props.onSchedule}
             />
           ))}
         </div>
@@ -126,7 +128,8 @@ function SavedOutfitCard({
   allowRemoteTaobaoImages,
   onOpen,
   onFavorite,
-  onArchive
+  onArchive,
+  onSchedule
 }: {
   outfit: SavedOutfit;
   outfits: SavedOutfit[];
@@ -137,6 +140,7 @@ function SavedOutfitCard({
   onOpen: (outfit: SavedOutfit) => void;
   onFavorite: (outfit: SavedOutfit, favorite: boolean) => void;
   onArchive: (outfit: SavedOutfit) => void;
+  onSchedule?: (outfit: SavedOutfit) => void;
 }) {
   const titleId = `saved-outfit-title-${outfit.id}`;
   const parent = outfit.derivedFromOutfitId
@@ -213,6 +217,17 @@ function SavedOutfitCard({
       {outfit.notes ? <p className="saved-outfit-card__notes">{outfit.notes}</p> : null}
 
       <footer className="saved-outfit-card__actions">
+        {!archived && onSchedule ? (
+          <Button
+            variant="secondary"
+            aria-label={`安排日期 ${outfit.name}`}
+            disabled={busy}
+            onClick={() => onSchedule(outfit)}
+          >
+            <CalendarPlus aria-hidden="true" size={17} />
+            安排日期
+          </Button>
+        ) : null}
         <Button
           variant="secondary"
           aria-label={`${archived ? "查看或编辑资料" : "打开编辑"} ${outfit.name}`}

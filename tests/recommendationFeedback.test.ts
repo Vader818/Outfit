@@ -25,10 +25,15 @@ function insertGarment(db: AppDatabase, name: string, category: string): number 
   `).run(name, category).lastInsertRowid);
 }
 
-function insertCandidate(db: AppDatabase, candidateId: string, itemIds: number[]): void {
+function insertCandidate(
+  db: AppDatabase,
+  candidateId: string,
+  itemIds: number[],
+  runInput: unknown = {}
+): void {
   const runId = Number(db.prepare(`
-    INSERT INTO recommendation_runs (input_json, result_json) VALUES ('{}', '{}')
-  `).run().lastInsertRowid);
+    INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, '{}')
+  `).run(JSON.stringify(runInput)).lastInsertRowid);
   db.prepare(`
     INSERT INTO recommendation_candidates (
       candidate_id, run_id, signature, rank, item_ids_json, score_snapshot
@@ -42,7 +47,19 @@ describe("recommendation feedback service", () => {
     const top = insertGarment(db, "上衣", "top");
     const bottom = insertGarment(db, "下装", "bottom");
     const shoes = insertGarment(db, "鞋", "shoes");
-    insertCandidate(db, FIRST_CANDIDATE, [top, bottom, shoes]);
+    const weather = {
+      date: "2026-07-12",
+      temperature: 29,
+      apparentTemperature: 31,
+      precipitationProbability: 10,
+      windSpeed: 8,
+      weatherCode: 1,
+      summary: "晴"
+    };
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom, shoes], {
+      occasion: "formal",
+      weather
+    });
     const now = new Date("2026-07-12T10:00:00.000Z");
     const input = {
       candidateId: FIRST_CANDIDATE,
@@ -63,8 +80,22 @@ describe("recommendation feedback service", () => {
       reasonCodes: []
     });
     expect(replayed.feedback.id).toBe(created.feedback.id);
+    expect(created.feedback).toMatchObject({ wearEventId: expect.any(Number) });
+    expect(created.feedback).not.toHaveProperty("wearLogId");
     expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_event_items").get()).toEqual({ count: 3 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
+    expect(db.prepare(`
+      SELECT worn_at, time_zone, occasion, weather_snapshot, notes
+      FROM wear_events
+    `).get()).toEqual({
+      worn_at: now.toISOString(),
+      time_zone: "UTC",
+      occasion: "formal",
+      weather_snapshot: JSON.stringify(weather),
+      notes: expect.stringContaining(FIRST_CANDIDATE)
+    });
     expect(listOutfitPairStats(db)).toEqual([
       expect.objectContaining({ garmentAId: top, garmentBId: bottom, likes: 1, dislikes: 0, wornCount: 1, totalFeedback: 1, signal: 3 }),
       expect.objectContaining({ garmentAId: top, garmentBId: shoes, likes: 1, dislikes: 0, wornCount: 1, totalFeedback: 1, signal: 3 }),
@@ -98,13 +129,14 @@ describe("recommendation feedback service", () => {
       comment: "不适合今天"
     });
     expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
     expect(listOutfitPairStats(db)).toEqual([
       expect.objectContaining({ likes: 0, dislikes: 1, wornCount: 1, totalFeedback: 1, signal: 0 })
     ]);
   });
 
-  it("treats a linked wear log as an irreversible fact even when an update explicitly sends false", () => {
+  it("treats a linked wear event as irreversible and does not duplicate it for actuallyWorn → liked", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "上衣", "top");
     const bottom = insertGarment(db, "下装", "bottom");
@@ -126,10 +158,14 @@ describe("recommendation feedback service", () => {
     expect(updated.feedback).toMatchObject({
       verdict: "liked",
       actuallyWorn: true,
-      wearLogId: worn.feedback.wearLogId,
+      wearEventId: expect.any(Number),
       comment: "后来补充评价"
     });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(updated.feedback).toMatchObject({
+      wearEventId: (worn.feedback as unknown as { wearEventId: number }).wearEventId
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
     expect(listOutfitPairStats(db)).toEqual([
       expect.objectContaining({ likes: 1, wornCount: 1, totalFeedback: 1, signal: 3 })
     ]);
@@ -214,19 +250,86 @@ describe("recommendation feedback service", () => {
       reasonCodes: ["fit"],
       comment: "版型不适合"
     });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
   });
 
-  it("rolls back feedback and wear log together when the wear write fails", () => {
+  it("falls back to casual and no weather when the recommendation run context is invalid", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom], {
+      occasion: "wedding",
+      weather: { date: "tomorrow", temperature: "hot" }
+    });
+
+    upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      actuallyWorn: true,
+      reasonCodes: []
+    }, { now: () => new Date("2026-07-12T12:00:00.000Z") });
+
+    expect(db.prepare(`
+      SELECT occasion, weather_snapshot FROM wear_events
+    `).get()).toEqual({ occasion: "casual", weather_snapshot: null });
+  });
+
+  it("keeps migrated wear_log links readable without creating a second event", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    const wornAt = "2026-07-01T08:00:00.000Z";
+    const wearLogId = Number(db.prepare(`
+      INSERT INTO wear_logs (garment_ids, context, worn_at)
+      VALUES (?, '{}', ?)
+    `).run(JSON.stringify([top, bottom]), wornAt).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO wear_events (
+        id, worn_at, time_zone, occasion, weather_snapshot, notes,
+        legacy_snapshot, created_at, updated_at
+      ) VALUES (?, ?, 'UTC', 'casual', NULL, '', NULL, ?, ?)
+    `).run(wearLogId, wornAt, wornAt, wornAt);
+    db.prepare(`
+      INSERT INTO wear_event_items (wear_event_id, item_id, position)
+      VALUES (?, ?, 0), (?, ?, 1)
+    `).run(wearLogId, top, wearLogId, bottom);
+    db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
+        wore_instead_outfit_id, wear_log_id, wear_event_id, created_at, updated_at
+      ) VALUES (?, NULL, NULL, 0, '[]', '', NULL, ?, ?, ?, ?)
+    `).run(FIRST_CANDIDATE, wearLogId, wearLogId, wornAt, wornAt);
+
+    const updated = upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      verdict: "liked",
+      actuallyWorn: false,
+      reasonCodes: []
+    });
+
+    expect(updated.feedback).toMatchObject({
+      actuallyWorn: true,
+      wearLogId,
+      wearEventId: wearLogId
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 1 });
+    expect(listOutfitPairStats(db)).toEqual([
+      expect.objectContaining({ likes: 1, wornCount: 1, signal: 3 })
+    ]);
+  });
+
+  it("rolls back feedback, wear event, items and pair stats together", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "上衣", "top");
     const bottom = insertGarment(db, "下装", "bottom");
     insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
     db.exec(`
-      CREATE TRIGGER fail_feedback_wear
-      BEFORE INSERT ON wear_logs
+      CREATE TRIGGER fail_feedback_pair_stats
+      BEFORE INSERT ON outfit_pair_stats
       BEGIN
-        SELECT RAISE(ABORT, 'planned wear failure');
+        SELECT RAISE(ABORT, 'planned pair stats failure');
       END;
     `);
 
@@ -234,10 +337,33 @@ describe("recommendation feedback service", () => {
       candidateId: FIRST_CANDIDATE,
       actuallyWorn: true,
       reasonCodes: []
-    })).toThrow(/planned wear failure/i);
+    })).toThrow(/planned pair stats failure/i);
     expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_event_items").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_pair_stats").get()).toEqual({ count: 0 });
+  });
+
+  it("clears feedback without deleting the independently useful wear event", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    const worn = upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      actuallyWorn: true,
+      reasonCodes: []
+    });
+    const wearEventId = (worn.feedback as unknown as { wearEventId: number }).wearEventId;
+
+    expect(clearRecommendationFeedback(db, {
+      scope: "candidate",
+      candidateId: FIRST_CANDIDATE
+    })).toMatchObject({ deletedFeedbackCount: 1 });
+    expect(getRecommendationFeedback(db, FIRST_CANDIDATE)).toBeNull();
+    expect(db.prepare("SELECT id FROM wear_events").all()).toEqual([{ id: wearEventId }]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_event_items").get()).toEqual({ count: 2 });
   });
 
   it("previews scoped clears, recomputes pair stats, and makes replay empty", () => {

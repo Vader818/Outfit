@@ -1525,9 +1525,14 @@ describe("App", () => {
       />
     );
 
-    expect(markup).toContain("历史洞察");
+    expect(markup).toContain("穿搭历史");
+    expect(markup).toContain("周计划");
+    expect(markup).toContain("穿着日记");
+    expect(markup).toContain("保存搭配");
+    expect(markup).toContain("洞察");
     expect(markup).toContain("常穿单品");
     expect(markup).toContain("近期未穿");
+    expect(markup).toContain("从未穿过");
     expect(markup).toContain("衣橱健康度");
     expect(markup).toContain("季节分布");
     expect(markup).toContain("风格倾向");

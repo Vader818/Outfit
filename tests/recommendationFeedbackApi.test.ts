@@ -19,7 +19,18 @@ describe("recommendation feedback candidate API", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "白衬衫", "top");
     const bottom = insertGarment(db, "黑长裤", "bottom");
-    insertCandidate(db, CANDIDATE_WITH_FEEDBACK, [top, bottom]);
+    insertCandidate(db, CANDIDATE_WITH_FEEDBACK, [top, bottom], {
+      occasion: "date",
+      weather: {
+        date: "2026-07-13",
+        temperature: 27,
+        apparentTemperature: 29,
+        precipitationProbability: 20,
+        windSpeed: 6,
+        weatherCode: 2,
+        summary: "多云"
+      }
+    });
     insertCandidate(db, CANDIDATE_WITHOUT_FEEDBACK, [top, bottom]);
     upsertRecommendationFeedback(db, {
       candidateId: CANDIDATE_WITH_FEEDBACK,
@@ -48,8 +59,14 @@ describe("recommendation feedback candidate API", () => {
       actuallyWorn: true,
       reasonCodes: ["fit"],
       comment: "版型不适合",
-      wearLogId: expect.any(Number)
+      wearEventId: expect.any(Number)
     });
+    const persistedBody = await (await fetch(
+      `${baseUrl}/api/recommendation-feedback/${CANDIDATE_WITH_FEEDBACK}`,
+      { headers: { cookie: authCookie } }
+    )).json() as { wearEventId: number };
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
 
     const clearedFields = await fetch(`${baseUrl}/api/recommendation-feedback`, {
       method: "POST",
@@ -75,6 +92,7 @@ describe("recommendation feedback candidate API", () => {
       candidateId: CANDIDATE_WITH_FEEDBACK,
       verdict: "liked",
       actuallyWorn: true,
+      wearEventId: persistedBody.wearEventId,
       reasonCodes: [],
       comment: ""
     });
@@ -89,6 +107,7 @@ describe("recommendation feedback candidate API", () => {
     expect(reopenedBody).toMatchObject({
       verdict: "liked",
       actuallyWorn: true,
+      wearEventId: persistedBody.wearEventId,
       reasonCodes: [],
       comment: ""
     });
@@ -111,10 +130,15 @@ function insertGarment(db: AppDatabase, name: string, category: string): number 
   `).run(name, category).lastInsertRowid);
 }
 
-function insertCandidate(db: AppDatabase, candidateId: string, itemIds: number[]): void {
+function insertCandidate(
+  db: AppDatabase,
+  candidateId: string,
+  itemIds: number[],
+  runInput: unknown = {}
+): void {
   const runId = Number(db.prepare(`
-    INSERT INTO recommendation_runs (input_json, result_json) VALUES ('{}', '{}')
-  `).run().lastInsertRowid);
+    INSERT INTO recommendation_runs (input_json, result_json) VALUES (?, '{}')
+  `).run(JSON.stringify(runInput)).lastInsertRowid);
   db.prepare(`
     INSERT INTO recommendation_candidates (
       candidate_id, run_id, signature, rank, item_ids_json, score_snapshot

@@ -24,6 +24,7 @@ describe("saved outfit recommendation actions", () => {
   it("renders an accessible save action and forwards the exact candidate", () => {
     const outfit = makeOutfit();
     const onSaveOutfit = vi.fn();
+    const onScheduleOutfit = vi.fn();
     const element = RecommendationView({
       weather: null,
       recommendations: makeRecommendation(outfit),
@@ -39,16 +40,20 @@ describe("saved outfit recommendation actions", () => {
       onFetchWeather: vi.fn(),
       onGenerate: vi.fn(),
       onRecordWearLog: vi.fn(),
-      onSaveOutfit
+      onSaveOutfit,
+      onScheduleOutfit
     });
     const stage = findElementsByComponentName(element, "OutfitStage")[0];
     expect(stage).toBeDefined();
     const props = stage.props as {
       outfit: OutfitRecommendation;
       onSaveOutfit?: (value: OutfitRecommendation) => void;
+      onScheduleOutfit?: (value: OutfitRecommendation) => void;
     };
     props.onSaveOutfit?.(props.outfit);
+    props.onScheduleOutfit?.(props.outfit);
     expect(onSaveOutfit).toHaveBeenCalledWith(outfit);
+    expect(onScheduleOutfit).toHaveBeenCalledWith(outfit);
 
     const markup = renderToStaticMarkup(
       <OutfitStage
@@ -58,9 +63,11 @@ describe("saved outfit recommendation actions", () => {
         wearLogFeedback={null}
         onRecordWearLog={vi.fn()}
         onSaveOutfit={onSaveOutfit}
+        onScheduleOutfit={onScheduleOutfit}
       />
     );
     expect(markup).toContain("保存搭配");
+    expect(markup).toContain("安排日期");
     expect(markup).toContain("type=\"button\"");
   });
 
@@ -246,6 +253,7 @@ describe("saved outfits history integration", () => {
     };
     const markup = renderToStaticMarkup(
       <HistoryInsightsView
+        activeSection="saved"
         insights={null}
         wearLogs={[]}
         recommendationRuns={[]}
@@ -261,7 +269,7 @@ describe("saved outfits history integration", () => {
     );
     expect(markup).toContain("保存的搭配");
     expect(markup).toContain("可复用通勤搭配");
-    expect(markup).toContain("还没有可展示的历史洞察");
+    expect(markup).not.toContain("还没有可展示的历史洞察");
   });
 });
 
@@ -366,6 +374,7 @@ describe("saved outfit historical snapshot safety", () => {
         onOpen={vi.fn()}
         onFavorite={vi.fn()}
         onArchive={vi.fn()}
+        onSchedule={vi.fn()}
       />
     );
 
@@ -377,6 +386,8 @@ describe("saved outfit historical snapshot safety", () => {
     expect(markup).toContain("换鞋版");
     expect(markup).toContain("源自「归档旧搭配」（已归档）");
     expect(markup).toContain("查看或编辑资料 归档旧搭配");
+    expect(markup).toContain("aria-label=\"安排日期 换鞋版\"");
+    expect(markup).not.toContain("aria-label=\"安排日期 归档旧搭配\"");
     expect(markup).not.toContain("aria-label=\"归档 归档旧搭配\"");
   });
 });

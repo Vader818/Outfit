@@ -1,16 +1,19 @@
 import type {
   FeedbackReason,
   FeedbackVerdict,
+  OutfitOccasion,
   OutfitPairStat,
   RecommendationFeedback,
   RecommendationFeedbackClearPreview,
   RecommendationFeedbackClearResult,
   RecommendationFeedbackClearScope,
   RecommendationFeedbackInput,
-  RecommendationFeedbackInsights
+  RecommendationFeedbackInsights,
+  WeatherSnapshot
 } from "../../src/shared/types";
-import { saveWearLog, type AppDatabase } from "../db";
+import type { AppDatabase } from "../db";
 import { ApiError, ValidationError } from "../validation";
+import { insertWearEvent } from "./wearEvents";
 
 interface RecommendationFeedbackServiceOptions {
   now?: () => Date;
@@ -19,6 +22,7 @@ interface RecommendationFeedbackServiceOptions {
 interface CandidateRow {
   candidate_id: string;
   item_ids_json: string;
+  input_json: string;
 }
 
 interface FeedbackRow {
@@ -31,6 +35,7 @@ interface FeedbackRow {
   comment: string;
   wore_instead_outfit_id: number | null;
   wear_log_id: number | null;
+  wear_event_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,12 +58,14 @@ export function upsertRecommendationFeedback(
     throw new Error("Recommendation feedback cannot start inside an existing transaction");
   }
   const candidate = getCandidate(db, input.candidateId);
-  const now = (options.now?.() ?? new Date()).toISOString();
+  const nowDate = options.now?.() ?? new Date();
+  const now = nowDate.toISOString();
 
   db.exec("BEGIN IMMEDIATE");
   try {
     const existing = getFeedbackRow(db, input.candidateId);
-    const hasRecordedWear = existing !== undefined && existing.wear_log_id !== null;
+    const hasRecordedWear = existing !== undefined &&
+      (existing.wear_event_id !== null || existing.wear_log_id !== null);
     const actuallyWorn = hasRecordedWear || (input.actuallyWorn ?? Boolean(existing?.actually_worn));
     const woreInsteadOutfitId = input.woreInsteadOutfitId ?? existing?.wore_instead_outfit_id ?? null;
     if (actuallyWorn && woreInsteadOutfitId !== null) {
@@ -69,11 +76,17 @@ export function upsertRecommendationFeedback(
     }
 
     let wearLogId = existing?.wear_log_id ?? null;
-    if (actuallyWorn && wearLogId === null) {
-      wearLogId = saveWearLog(db, parseCandidateItemIds(candidate), {
-        source: "recommendation-feedback",
-        candidateId: input.candidateId
-      });
+    let wearEventId = existing?.wear_event_id ?? null;
+    if (actuallyWorn && wearEventId === null && wearLogId === null) {
+      const context = parseCandidateWearContext(candidate);
+      wearEventId = insertWearEvent(db, {
+        wornAt: now,
+        timeZone: "UTC",
+        occasion: context.occasion,
+        ...(context.weatherSnapshot ? { weatherSnapshot: context.weatherSnapshot } : {}),
+        notes: `source=recommendation-feedback; candidateId=${input.candidateId}`,
+        itemIds: parseCandidateItemIds(candidate)
+      }, { now: () => nowDate }).id;
     }
     const createdAt = existing?.created_at ?? now;
     const verdict = input.verdict ?? existing?.verdict ?? null;
@@ -101,8 +114,8 @@ export function upsertRecommendationFeedback(
     db.prepare(`
       INSERT INTO recommendation_feedback (
         candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
-        wore_instead_outfit_id, wear_log_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        wore_instead_outfit_id, wear_log_id, wear_event_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(candidate_id) DO UPDATE SET
         verdict = excluded.verdict,
         rating = excluded.rating,
@@ -111,6 +124,7 @@ export function upsertRecommendationFeedback(
         comment = excluded.comment,
         wore_instead_outfit_id = excluded.wore_instead_outfit_id,
         wear_log_id = excluded.wear_log_id,
+        wear_event_id = excluded.wear_event_id,
         updated_at = excluded.updated_at
     `).run(
       input.candidateId,
@@ -121,6 +135,7 @@ export function upsertRecommendationFeedback(
       comment,
       woreInsteadOutfitId,
       wearLogId,
+      wearEventId,
       createdAt,
       now
     );
@@ -137,7 +152,7 @@ export function upsertRecommendationFeedback(
 export function listRecommendationFeedback(db: AppDatabase): RecommendationFeedback[] {
   return (db.prepare(`
     SELECT id, candidate_id, verdict, rating, actually_worn, reason_codes_json,
-      comment, wore_instead_outfit_id, wear_log_id, created_at, updated_at
+      comment, wore_instead_outfit_id, wear_log_id, wear_event_id, created_at, updated_at
     FROM recommendation_feedback
     ORDER BY created_at ASC, id ASC
   `).all() as unknown as FeedbackRow[]).map(mapFeedbackRow);
@@ -284,7 +299,9 @@ function recomputeOutfitPairStats(db: AppDatabase, updatedAt: string): number {
   const rows = db.prepare(`
     SELECT feedback.verdict,
       CASE
-        WHEN feedback.actually_worn = 1 OR feedback.wear_log_id IS NOT NULL THEN 1
+        WHEN feedback.actually_worn = 1
+          OR feedback.wear_event_id IS NOT NULL
+          OR feedback.wear_log_id IS NOT NULL THEN 1
         ELSE 0
       END AS actually_worn,
       candidates.item_ids_json
@@ -345,9 +362,10 @@ function recomputeOutfitPairStats(db: AppDatabase, updatedAt: string): number {
 
 function getCandidate(db: AppDatabase, candidateId: string): CandidateRow {
   const row = db.prepare(`
-    SELECT candidate_id, item_ids_json
-    FROM recommendation_candidates
-    WHERE candidate_id = ?
+    SELECT candidates.candidate_id, candidates.item_ids_json, runs.input_json
+    FROM recommendation_candidates AS candidates
+    JOIN recommendation_runs AS runs ON runs.id = candidates.run_id
+    WHERE candidates.candidate_id = ?
   `).get(candidateId) as CandidateRow | undefined;
   if (!row) {
     throw new ApiError("RECOMMENDATION_CANDIDATE_NOT_FOUND", "推荐候选不存在", 404);
@@ -367,7 +385,7 @@ function assertClearCandidateExists(db: AppDatabase, scope: RecommendationFeedba
 function getFeedbackRow(db: AppDatabase, candidateId: string): FeedbackRow | undefined {
   return db.prepare(`
     SELECT id, candidate_id, verdict, rating, actually_worn, reason_codes_json,
-      comment, wore_instead_outfit_id, wear_log_id, created_at, updated_at
+      comment, wore_instead_outfit_id, wear_log_id, wear_event_id, created_at, updated_at
     FROM recommendation_feedback
     WHERE candidate_id = ?
   `).get(candidateId) as FeedbackRow | undefined;
@@ -380,19 +398,21 @@ function requireFeedbackRow(db: AppDatabase, candidateId: string): FeedbackRow {
 }
 
 function mapFeedbackRow(row: FeedbackRow): RecommendationFeedback {
-  return {
+  const feedback: RecommendationFeedback & { wearEventId?: number } = {
     id: row.id,
     candidateId: row.candidate_id,
     ...(row.verdict === null ? {} : { verdict: row.verdict }),
     ...(row.rating === null ? {} : { rating: row.rating }),
-    actuallyWorn: Boolean(row.actually_worn) || row.wear_log_id !== null,
+    actuallyWorn: Boolean(row.actually_worn) || row.wear_event_id !== null || row.wear_log_id !== null,
     reasonCodes: parseReasonCodes(row),
     comment: row.comment,
     ...(row.wore_instead_outfit_id === null ? {} : { woreInsteadOutfitId: row.wore_instead_outfit_id }),
     ...(row.wear_log_id === null ? {} : { wearLogId: row.wear_log_id }),
+    ...(row.wear_event_id === null ? {} : { wearEventId: row.wear_event_id }),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+  return feedback;
 }
 
 function parseReasonCodes(row: FeedbackRow): FeedbackReason[] {
@@ -418,6 +438,64 @@ function parseCandidateItemIds(candidate: CandidateRow): number[] {
       500
     );
   }
+}
+
+function parseCandidateWearContext(candidate: CandidateRow): {
+  occasion: OutfitOccasion;
+  weatherSnapshot?: WeatherSnapshot;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate.input_json);
+  } catch {
+    return { occasion: "casual" };
+  }
+  if (!isRecord(parsed)) return { occasion: "casual" };
+  const occasion = isOutfitOccasion(parsed.occasion) ? parsed.occasion : "casual";
+  const weatherSnapshot = parseCandidateWeather(parsed.weather);
+  return {
+    occasion,
+    ...(weatherSnapshot ? { weatherSnapshot } : {})
+  };
+}
+
+function parseCandidateWeather(value: unknown): WeatherSnapshot | undefined {
+  if (!isRecord(value) || !validCalendarDate(value.date) ||
+    !finite(value.temperature) || !finite(value.apparentTemperature) ||
+    !finite(value.precipitationProbability) || !finite(value.windSpeed) ||
+    !finite(value.weatherCode) || typeof value.summary !== "string" ||
+    !value.summary || value.summary.length > 200) {
+    return undefined;
+  }
+  return {
+    date: value.date,
+    temperature: value.temperature,
+    apparentTemperature: value.apparentTemperature,
+    precipitationProbability: value.precipitationProbability,
+    windSpeed: value.windSpeed,
+    weatherCode: value.weatherCode,
+    summary: value.summary
+  };
+}
+
+function isOutfitOccasion(value: unknown): value is OutfitOccasion {
+  return value === "casual" || value === "smart-casual" || value === "formal" ||
+    value === "sport" || value === "date" || value === "dinner";
+}
+
+function validCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseItemIdsJson(value: string): number[] {
