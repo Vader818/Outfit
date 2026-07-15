@@ -1,6 +1,6 @@
 # 数据库与类型 Schema
 
-Outfit 使用本地 SQLite 数据库保存衣橱、淘宝来源记录、天气缓存、穿着日记、周计划和推荐历史。默认路径：
+Outfit 使用本地 SQLite 数据库保存衣橱、淘宝来源记录、天气缓存、穿着日记、周计划、旅行胶囊、推荐历史与决策支持反馈。默认路径：
 
 ```text
 data/outfit.sqlite
@@ -17,8 +17,10 @@ legacyBaseline0 → 登记 schema_migrations baseline 0 → 顺序执行编号�
 ```
 
 - baseline 0 的名称为 `legacy-baseline`，负责把项目支持的未版本化历史数据库归一到 M0 之前的 schema，并在同一事务中登记版本 0。已经存在 `schema_migrations` 的数据库不会再次运行 baseline，而是校验已应用记录后继续编号迁移。
-- 当前编号迁移版本为 5：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`，版本 5 为 `diary-week-planner`。
+- 当前编号迁移版本为 7：版本 1 为 `recommendation-candidates`，版本 2 为 `trusted-ingestion`，版本 3 为 `saved-outfits`，版本 4 为 `feedback-availability`，版本 5 为 `diary-week-planner`，版本 6 为 `decision-support`，版本 7 为 `trip-capsule-planner`。
 - 版本 5 在一个迁移事务中创建 `wear_events`、`wear_event_items`、`outfit_plan_entries`，为 `recommendation_feedback` 增加 `wear_event_id`，并迁移全部旧 `wear_logs`。旧 `garment_ids/context` 原样进入 `legacy_snapshot`；不存在的衣物 ID 仍保留在 `originalGarmentIds`，但不会创建无效外键。只有完全满足新 WeatherSnapshot 契约的旧 `context.weather` 才提升为权威天气快照，畸形天气仍只保留在 legacy snapshot，避免迁移后产生不可读事件。旧 SQLite UTC 时间会规范化为 UTC ISO timestamp，既有反馈关联同步回填到新事件。
+- 版本 6 增加 `source_order_items.quantity_explicit/payment_explicit`、`garments.cost_source`、`garment_similarity_feedback` 与 `garment_embeddings`。历史数量仅在大于 `1` 时视为明确（旧默认值 `1` 具有歧义），非空付款视为明确；只对未退款、数量与付款都明确且数值有效的来源回填单件淘宝成本。既有价格先标记为 `manual` 并保持优先，不被回填覆盖；有效订单日期只补充缺失的 `acquired_at`。
+- 版本 7 创建 `trips`、`trip_days`、`trip_day_activities`、`trip_outfit_selections`、`trip_packing_items` 五张 STRICT 表。外键将 day/activity/selection/packing 绑定到旅行，selection 可唯一关联实际 WearEvent；迁移不读取网络、不回填或修改任何 garment availability。
 - 编号必须是正整数并严格递增；数据库中的已应用记录必须是当前迁移列表的精确前缀。由更新版本应用过未知迁移的数据库会拒绝由旧代码继续写入。
 - 每个迁移使用独立的 `BEGIN IMMEDIATE` 事务。失败时 schema 修改和版本登记一起回滚；重复启动不会重复应用已登记迁移。
 - 生产代码只提供前向迁移，不提供 down migration。
@@ -31,6 +33,7 @@ type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 type Season = "spring" | "summer" | "autumn" | "winter";
 type Formality = "casual" | "smart-casual" | "formal" | "sport";
 type GarmentOrigin = "taobao" | "manual" | "backup";
+type GarmentCostSource = "manual" | "taobao";
 type GarmentAvailabilityStatus = "available" | "laundry" | "repair" | "loaned" | "packed";
 type FeedbackVerdict = "liked" | "disliked" | "skipped";
 type FeedbackReason =
@@ -50,6 +53,11 @@ type SavedOutfitSource = "recommendation" | "manual" | "replacement";
 type OutfitSlot = GarmentCategory;
 type OutfitOccasion = "casual" | "smart-casual" | "formal" | "sport" | "date" | "dinner";
 type OutfitPlanStatus = "planned" | "worn" | "skipped";
+type PurchaseCheckVerdict = "fills-gap" | "likely-duplicate" | "mixed" | "insufficient-data";
+type SimilarityFeedbackVerdict = "duplicate" | "not-duplicate";
+type TripRepeatPolicy = "allow" | "no-consecutive-core" | "no-repeat-core";
+type TripStatus = "planning" | "ready" | "completed" | "archived";
+type TripPackingStatus = "unpacked" | "packed" | "on-body" | "not-taking";
 ```
 
 说明：
@@ -91,6 +99,7 @@ interface Garment {
   acquiredAt?: string;
   purchasePriceCents?: number;
   currency?: "CNY";
+  costSource?: GarmentCostSource;
   itemUrl?: string;
   detailUrl?: string;
   lastWornAt?: string;
@@ -128,7 +137,8 @@ interface Garment {
 | `availabilityStatus` | 当前可用状态；只有 `available` 会进入推荐，其他状态仍保留在衣服库与历史中 |
 | `confidence` | 自动分类置信度 |
 | `acquiredAt` | 可选购入日期，`YYYY-MM-DD` |
-| `purchasePriceCents` / `currency` | 可选非负整数分与 `CNY` |
+| `purchasePriceCents` / `currency` | 可选非负整数分与 `CNY`；缺失价格保持未知，不等同于 `0` |
+| `costSource` | 可选成本来源；`manual` 为手工值，`taobao` 为明确付款与数量推导的单件价格 |
 | `itemUrl` / `detailUrl` | 从来源表联查出的淘宝链接 |
 | `lastWornAt` | 最近穿着时间，预留展示字段 |
 | `wearCount` | 穿着次数，预留展示字段 |
@@ -162,6 +172,8 @@ interface ManualGarmentCreate {
 ```
 
 服务端不接受来源、图片或状态字段，并固定写入 `source_order_item_id=NULL`、`origin=manual`、`raw_name=name`、空图片、`owned=1`、`confirmed=1`、`excluded=0`、`availability_status=available`、`confidence=1`。
+
+`PUT /api/garments/:id` 的 `GarmentUpdateInput` 还允许可选 `purchasePriceCents`。该值必须是非负安全整数分；出现时服务端强制写 `currency=CNY` 与 `cost_source=manual`，省略则保留既有价格及来源。当前更新契约不以 `null` 清除价格。
 
 ### PersonalProfile
 
@@ -240,6 +252,92 @@ interface WardrobeInsights {
   feedbackSummary?: RecommendationFeedbackInsights;
 }
 ```
+
+### 价值、相似度与购买前检查
+
+```ts
+interface ValueGarmentEvidence {
+  garmentId: number;
+  name: string;
+  category: GarmentCategory;
+  acquiredAt?: string;
+  purchasePriceCents?: number;
+  currency?: "CNY";
+  costSource?: GarmentCostSource;
+  wearCount: number;
+  lastWornAt?: string;
+  costPerWearCents: number | null;
+  evidence: string[];
+}
+
+interface WardrobeValueInsights {
+  generatedAt: string;
+  knownPriceCount: number;
+  unknownPriceCount: number;
+  upperQuartilePriceCents?: number;
+  bestValue: ValueGarmentEvidence[];
+  lowUtilizationHighCost: ValueGarmentEvidence[];
+  dormantGarments: ValueGarmentEvidence[];
+  suggestions: WardrobeSuggestion[];
+}
+
+interface SimilarityReason {
+  field: "color" | "styles" | "materials" | "patterns" | "brandName" | "visual";
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+interface GarmentSimilarityMatch {
+  garment: Garment;
+  similarity: number;
+  reasons: string[];
+  evidence?: SimilarityReason[];
+}
+
+interface CoverageDelta {
+  categories: string[];
+  seasons: string[];
+  occasions: string[];
+  compatibleOutfitCount: number;
+}
+
+interface PurchaseCheckResult {
+  subjectKey: string;
+  verdict: PurchaseCheckVerdict;
+  possibleDuplicates: GarmentSimilarityMatch[];
+  worksWith: SavedOutfit[];
+  coverageDelta: CoverageDelta;
+  explanation: string[];
+}
+
+type SimilarityFeedbackSubjectInput =
+  | { kind: "garment"; garmentId: number }
+  | {
+      kind: "taobao-candidate";
+      batch: TaobaoCapturedBatch;
+      sourceItemKey: string;
+    };
+
+interface SimilarityFeedbackInput {
+  subject: SimilarityFeedbackSubjectInput;
+  comparedGarmentId: number;
+  verdict: SimilarityFeedbackVerdict;
+}
+
+interface GarmentSimilarityFeedback {
+  id: number;
+  subjectKey: string;
+  comparedGarmentId: number;
+  verdict: SimilarityFeedbackVerdict;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+价值口径直接聚合完整 WearEvent 明细，只使用仍拥有、未归档、未退款的衣物。成本/次为 `purchasePriceCents / wearCount`；零穿着返回 `null`。最佳价值要求价格已知且至少穿着 3 次；低利用高成本要求购入满 90 天、穿着不超过 1 次并达到已知价格最高四分位阈值。有穿着记录的沉睡单品要求最近穿着距今至少 90 天；从未穿过的衣物在购入满 30 天后才提示。上述值与排行都是派生数据，不单独持久化。
+
+结构相似度要求类别完全一致，再按颜色 25、风格 20、材质 15、图案 15、品牌/规范化名称 15、可选本地视觉向量 10 加权；缺失成分不进入分母，现有权重重新归一化。`similarity` 是 0–100 的展示百分数；是否达到 75 使用未舍入的内部得分判定，避免 74.96 因展示舍入被误收录。现有衣物之间的查询可读取已有 embedding 缓存；淘宝候选未生成视觉向量时只使用其余结构字段。缓存只由用户显式调用 `POST /api/garments/:id/vision-tags` 的本地 CLIP 分析刷新，普通相似查询和购买检查不会触发推理、下载或联网。购买检查仅读现有衣橱、保存搭配与反馈；候选 `subjectKey` 由服务端对规范化商品身份与 SKU 做 SHA-256 生成，结构字段后续补全不会改变候选身份。客户端提交反馈时必须提供衣物 ID，或重新提供原 batch 与 `sourceItemKey`，不能直接伪造指纹。
 
 ### 本地视觉模型类型
 
@@ -679,6 +777,103 @@ interface SavedOutfitReplacementInput {
 
 `garmentSnapshot` 是保存时的不可变展示快照，不会在读取时与当前 garment 合并。手工 create/update 的 item DTO 不接受 snapshot 或 provenance；候选保存从持久化 run 读取历史快照；replacement 总是新建派生记录而不覆盖父记录。
 
+### Trip 旅行胶囊
+
+```ts
+interface TripDestination {
+  name: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+interface TripActivityInput {
+  name: string;
+  occasion: string;
+  formality: Formality;
+  requiresSeparateOutfit: boolean;
+}
+
+interface TripActivity extends TripActivityInput {
+  id: number;
+  tripDayId: number;
+  position: number;
+}
+
+interface TripDay {
+  id: number;
+  tripId: number;
+  date: string;
+  activities: TripActivity[];
+  weather?: WeatherSnapshot;
+}
+
+interface TripOutfitSelection {
+  id: number;
+  tripDayId: number;
+  slotIndex: number;
+  activityIds: number[];
+  garments: Garment[];
+  score: number;
+  reasons: string[];
+  activityEvaluations: Array<{
+    activityId: number;
+    score: number;
+    weatherComfort: number;
+    occasion: number;
+    hardEligible: boolean;
+  }>;
+  lockedGarmentIds: number[];
+  actualWearEventId?: number;
+}
+
+interface TripPackingItem {
+  id: number;
+  tripId: number;
+  kind: "garment" | "essential";
+  garmentId?: number;
+  label: string;
+  status: TripPackingStatus;
+  coverage: { dates: string[]; activityIds: number[] };
+}
+
+interface Trip {
+  id: number;
+  name: string;
+  startDate: string;
+  endDate: string;
+  destination: TripDestination;
+  maxGarments: number;
+  maxShoes: number;
+  repeatPolicy: TripRepeatPolicy;
+  maxCoreWearsBetweenLaundry: 1 | 2 | 3;
+  laundryDay?: string;
+  status: TripStatus;
+  days: TripDay[];
+  selections: TripOutfitSelection[];
+  packingItems: TripPackingItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+type TripOptimizationResult =
+  | {
+      status: "feasible";
+      selections: TripOutfitSelection[];
+      packingItems: TripPackingItem[];
+      objectiveScore: number;
+      evaluatedCandidates: number;
+      maxBeamSize: number;
+    }
+  | {
+      status: "infeasible";
+      conflicts: TripConstraintConflict[];
+      relaxations: TripConstraintRelaxation[];
+      evaluatedCandidates: number;
+    };
+```
+
+Trip 创建 DTO 使用不带 ID 的 `days/activities`。起止日期必须存在且组成连续 1–7 天，目的地经纬度成对出现；共享活动按顺序分组，`requiresSeparateOutfit=true` 切出独立 slot。优化器仅在内存中维护重复和洗衣计数，不写 garment availability；只有逐套确认完成旅行时才创建 WearEvent。
+
 ### OutfitExport
 
 ```ts
@@ -731,14 +926,20 @@ interface OutfitExportV2 extends OutfitExportBase {
   garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
   wearEvents?: WearEvent[];
   outfitPlanEntries?: OutfitPlanEntry[];
+  similarityFeedback?: GarmentSimilarityFeedback[];
+  trips?: TripExportRecord[];
+  tripDays?: TripDayExportRecord[];
+  tripActivities?: TripActivity[];
+  tripOutfitSelections?: TripOutfitSelectionExportRecord[];
+  tripPackingItems?: TripPackingItem[];
 }
 
 type OutfitExport = OutfitExportV1 | OutfitExportV2;
 ```
 
-`GET /api/export` 当前只生成 V2，envelope 继续使用 `version=2`，数据库迁移自动报告 `schemaVersion=5`。当前 builder 始终输出 `saved-outfits`、`feedback-availability`、`diary-week-planner` feature，以及完整 `savedOutfits`、`recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`、`wearEvents`、`outfitPlanEntries`。穿着事件按 `wornAt DESC,id DESC`、事件衣物按 `position,id`、计划按 `plannedDate,id` 确定排序；所有表都在同一个 deferred SQLite 读快照中取得。`plannedDate` 直接读取文本，不经过 `Date` 或 UTC 转换。
+`GET /api/export` 当前只生成 V2，envelope 继续使用 `version=2`，数据库迁移自动报告 `schemaVersion=7`。当前 builder 始终输出 `saved-outfits`、`feedback-availability`、`diary-week-planner`、`decision-support`、`trip-capsule` feature，以及完整 `savedOutfits`、反馈/日记/计划数组和五类 Trip 关系数组。穿着事件按 `wornAt DESC,id DESC`、事件衣物按 `position,id`、计划按 `plannedDate,id`、相似度反馈按 `subjectKey,comparedGarmentId` 确定排序；Trip 同时覆盖 active/archived，并按 trip startDate/id、day date、activity position、selection slot、packing kind/id 稳定排序。所有表都在同一个 deferred SQLite 读快照中取得。`plannedDate` 与旅行日期直接读取文本，不经过 `Date` 或 UTC 转换。
 
-内部校验器仍识别 V1，以及没有 M2/M3/M4 可选数组的旧 V2；但声明 `diary-week-planner` feature 的 V2 必须同时包含 `wearEvents` 与 `outfitPlanEntries`。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 还导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径。损坏的天气、legacy JsonValue、反馈或搭配快照会明确中止导出。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
+内部校验器仍识别 V1，以及没有较新可选数组的旧 V2；但声明 `diary-week-planner` feature 的 V2 必须同时包含 `wearEvents` 与 `outfitPlanEntries`，声明 `decision-support` feature 时必须包含合法 `similarityFeedback`，声明 `trip-capsule` feature 时必须包含五个合法 Trip 数组。`schemaVersion` 是数据库迁移版本，不等同于 envelope 的 `version`。默认 JSON 还导出所有 active/归档衣物及 active/inactive 资产元数据，但不内嵌图片、`storage_key` 或绝对路径；Trip selection 只导出 `garmentIds`。成本/次、四分位和排行是派生值，`garment_embeddings` 是可重建缓存，均不导出。损坏的天气、legacy JsonValue、反馈、搭配快照或 Trip JSON 会明确中止导出。`format=zip` 才把校验通过的 WebP 以 `assets/<id>.webp` 写入流式完整备份；当前没有恢复导入 API。
 
 ### 淘宝采集类型
 
@@ -819,6 +1020,8 @@ interface ThumbnailRefreshResult {
 
 interface TaobaoImportPreviewItem {
   sourceItemKey: string;
+  purchaseCheckEligible: boolean;
+  purchaseCheckIneligibleReason?: "refunded" | "non-apparel" | "needs-review";
   brand: string;
   name: string;
   rawName: string;
@@ -906,7 +1109,7 @@ interface TaobaoImportPreview {
 - `CaptureJob.engine` 表示实际采集 runner。订单页固定为 `selenium`；商品详情默认 `selenium`，请求传 `engine=playwright` 时使用 Playwright；未传请求值时可用 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE=playwright` 设置 API 默认值。
 - `CaptureJob` 当前保存在 Node 进程内存中；重启 API 后历史 job 状态不会恢复，但产物文件仍在 `output/taobao-captures/<jobId>`。
 - `sourceItemKey` v2 优先使用规范化的 `orderId + itemId/URL + SKU`，不同订单的同商品同 SKU 不再误合并。legacy key 仅在 `orderId + itemId + SKU` 全部一致时兼容匹配并原位升级；legacy/v2 双记录冲突会以 409 中止预览或提交。
-- `TaobaoImportPreview` 读取 SQLite 判定 disposition，但不写库。commit 在事务内重新计算身份、disposition 和 decision 覆盖关系，前端不能指定 disposition。
+- `TaobaoImportPreview` 读取 SQLite 判定 disposition，但不写库。`purchaseCheckEligible` 只对未退款、可分类且无需人工处理的候选为真；前端只从这些候选中选择购买检查对象。commit 在事务内重新计算身份、disposition 和 decision 覆盖关系，前端不能指定 disposition。
 - 退款事件不会被 `wardrobeOnly` 提前丢弃；`include=false` 不写来源或衣物，同批重放保持幂等。
 
 ## SQLite 表
@@ -930,6 +1133,8 @@ interface TaobaoImportPreview {
 | 2 | `trusted-ingestion` |
 | 3 | `saved-outfits` |
 | 4 | `feedback-availability` |
+| 5 | `diary-week-planner` |
+| 6 | `decision-support` |
 
 ### users
 
@@ -979,7 +1184,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 | `title` | TEXT | NOT NULL | 订单项标题 |
 | `sku` | TEXT |  | 规格、颜色、尺码 |
 | `quantity` | INTEGER | NOT NULL DEFAULT 1 | 数量 |
+| `quantity_explicit` | INTEGER | NOT NULL DEFAULT 0，0/1 CHECK | 数量是否由采集输入明确提供；区别于历史默认值 `1` |
 | `payment` | REAL |  | 支付金额 |
+| `payment_explicit` | INTEGER | NOT NULL DEFAULT 0，0/1 CHECK | 付款金额是否由采集输入明确提供 |
 | `status` | TEXT |  | 交易状态 |
 | `refund_text` | TEXT |  | 售后/退款文本 |
 | `item_url` | TEXT |  | 商品链接 |
@@ -1001,6 +1208,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_source_order_items_item_id
 ON source_order_items(item_id);
 ```
+
+新导入会分别保存数量与付款的显式性；后续缺少字段的采集不会抹掉已有明确证据。版本 6 迁移只能确认历史 `quantity>1` 与非空 `payment`，不会把可能来自默认值的历史数量 `1` 当作明确数量。只有两个显式标记都为 `1`、订单项未退款且数值有效时，服务层才允许推导单件淘宝成本。
 
 ### garments
 
@@ -1038,6 +1247,7 @@ ON source_order_items(item_id);
 | `acquired_at` | TEXT |  | 可选购入日期 |
 | `purchase_price_cents` | INTEGER | 非负整数 CHECK | 可选购入价格，单位分 |
 | `currency` | TEXT | CHECK | 可选币种，当前仅 `CNY` |
+| `cost_source` | TEXT | 可空，枚举 CHECK | `manual` 或 `taobao`；价格未知时为空 |
 | `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 创建时间 |
 | `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 更新时间 |
 
@@ -1048,7 +1258,45 @@ ON source_order_items(item_id);
 - 默认衣橱与洞察只使用 `owned=1 AND archived_at IS NULL` 的 active 衣物；推荐和替代单品再叠加 `confirmed=1 AND excluded=0 AND availability_status='available'`。非可用状态不等于归档或不再拥有。
 - `PUT /api/garments/:id` 会更新白名单展示字段和 `updated_at`；公共 JSON 路由禁止 `imageUrl`，图片只能经净化上传或受控缩略图选择路径修改。
 - 用户确认过的名称在迁移回填时会尽量保留，避免被自动清洗覆盖。
+- 手工创建在提供价格时写 `cost_source='manual'`；淘宝导入只在付款与数量都明确、未退款时写 `cost_source='taobao'`。可信重导入可更新淘宝成本，但永不覆盖 `manual` 成本。版本 6 会先把既有非空价格标记为 `manual`，再保守回填尚无价格的淘宝衣物。
 - archive 与弃用 DELETE 都只设置 `archived_at`；restore 清除它。两者都不删除衣物、来源记录、图片资产或采集文件。
+
+### garment_similarity_feedback
+
+保存用户显式提交的结构相似度判断。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 反馈 ID |
+| `subject_key` | TEXT | NOT NULL，trim 后 1–512 字符 CHECK | `garment:<id>` 或服务端生成的 `candidate:v1:<64位十六进制 SHA-256>` |
+| `compared_garment_id` | INTEGER | NOT NULL，FK CASCADE | 被比较衣物 ID |
+| `verdict` | TEXT | NOT NULL，枚举 CHECK | `duplicate` 或 `not-duplicate` |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 首次反馈时间 |
+| `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 最近一次 upsert 时间 |
+
+```sql
+UNIQUE (subject_key, compared_garment_id);
+CREATE INDEX idx_garment_similarity_feedback_compared_garment_id
+ON garment_similarity_feedback(compared_garment_id);
+```
+
+公共 API 不接收原始 `subject_key`。现有衣物对按较小 ID 作为 `garment:<id>`、较大 ID 作为 `compared_garment_id` 规范化；淘宝候选则由服务端重新归一化 batch，并以规范化商品身份与 SKU 计算稳定指纹。同一配对重复提交只更新 verdict 与 `updated_at`，保留原 `created_at`。`not-duplicate` 会在后续查询时立即隐藏该 pair；反馈不会修改衣物字段。
+
+### garment_embeddings
+
+保存可选、可重建的本地视觉向量缓存。表为 SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `model_id` | TEXT | PK，trim 后 1–200 字符 CHECK | 模型标识；默认相似度读取 `Xenova/clip-vit-base-patch32` |
+| `garment_id` | INTEGER | PK，FK CASCADE | 衣物 ID |
+| `vector_blob` | BLOB | NOT NULL，非空 CHECK | 单位归一化的本地 Float32 小端向量字节；当前 CLIP 输出 512 维 |
+| `created_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 首次缓存时间 |
+| `updated_at` | TEXT | NOT NULL DEFAULT CURRENT_TIMESTAMP | 最近更新时间 |
+
+主键为 `(model_id, garment_id)`，另有 `idx_garment_embeddings_garment_id(garment_id)`。用户显式调用 `POST /api/garments/:id/vision-tags` 时，正式本地 CLIP 推理同时返回标签和 `image_embeds`；服务端拒绝空、非有限、零范数或过长向量，完成单位归一化与 Float32 小端编码后，和 `garments.vision_tags` 在同一 `BEGIN IMMEDIATE` 事务内 upsert。重复分析只覆盖同一模型/衣物缓存行。模型缺失返回 `VISION_MODEL_MISSING`，无效向量返回 `VISION_EMBEDDING_INVALID`，都不会留下标签或缓存的部分写入。
+
+结构相似度只在比较两端都存在同一模型的有效向量时加入 10% 视觉权重；缺失或损坏向量时退回其余结构字段并重新归一化。读取相似度或购买检查不会生成向量、下载模型或外发图片。API 响应不包含 embedding；该表属于可重建缓存，不进入 `OutfitExportV2`。
 
 ### garment_assets
 
@@ -1323,6 +1571,88 @@ upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `commen
 | `changed_at` | TEXT | NOT NULL | 变更时间 |
 
 `previous_status <> status` 由 CHECK 保证；重复提交当前状态不写事件。`garments.availability_status` 更新与事件插入位于同一事务。索引为 `(garment_id, changed_at, id)`，导出按 `changed_at,id` 确定排序并保留全部历史。
+
+### trips
+
+旅行 header，SQLite `STRICT`。
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 旅行 ID |
+| `name` | TEXT | trim 后 1–120 | 名称 |
+| `start_date` / `end_date` | TEXT | 严格日期形状，end >= start | 起止本地日历日；服务层再验证真实日期和最多 7 天 |
+| `destination_name` | TEXT | trim 后 1–200 | 目的地名称 |
+| `destination_latitude` / `destination_longitude` | REAL | 必须同时为空或同时存在，范围 ±90/±180 | 仅显式刷新天气时发送 |
+| `max_garments` | INTEGER | 0–100 | 全程唯一衣物硬上限，包含鞋 |
+| `max_shoes` | INTEGER | 0–20 | 唯一鞋履硬上限；与总衣物上限独立，实际方案仍必须同时满足两者 |
+| `repeat_policy` | TEXT | `allow/no-consecutive-core/no-repeat-core` | 核心重复硬规则 |
+| `max_core_wears_between_laundry` | INTEGER | 1、2 或 3 | 洗衣前核心件模拟穿着上限 |
+| `laundry_day` | TEXT | 可空，必须位于旅行内 | 只重置优化状态内计数 |
+| `status` | TEXT | 默认 `planning` | `planning/ready/completed/archived` |
+| `created_at` / `updated_at` | TEXT | NOT NULL | UTC ISO timestamp |
+
+索引为 `idx_trips_status_updated_at(status,updated_at,id)`；归档为状态更新，不物理删除。
+
+### trip_days
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 日 ID |
+| `trip_id` | INTEGER | FK trips CASCADE | 所属旅行 |
+| `date` | TEXT | 每旅行唯一 | 严格本地日历日；服务层要求连续完整覆盖旅行 |
+| `weather_snapshot` | TEXT | 可空，合法 JSON object | 与 date 精确一致的冻结 WeatherSnapshot |
+| `created_at` / `updated_at` | TEXT | NOT NULL | 时间戳 |
+
+索引为 `(trip_id,date,id)`。天气字段只有显式 refresh 成功后原子写入；远端失败保留旧值。
+
+### trip_outfit_selections
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 方案选择 ID |
+| `trip_day_id` | INTEGER | FK day CASCADE | 所属日期 |
+| `slot_index` | INTEGER | 非负；与 day 唯一 | 当日活动槽顺序 |
+| `activity_ids_json` | TEXT | JSON array | 被该套覆盖的活动 ID |
+| `garment_ids_json` | TEXT | JSON array | 规范顺序衣物 ID |
+| `score` | REAL | NOT NULL | 统一推荐评分 |
+| `reasons_json` | TEXT | JSON array | 选择理由 |
+| `activity_evaluations_json` | TEXT | JSON array | 各活动最低适配证据 |
+| `locked_garment_ids_json` | TEXT | 默认 `[]` | 用户锁定 ID |
+| `actual_wear_event_id` | INTEGER | 可空 UNIQUE，FK wear_events SET NULL | 完成旅行时的幂等实际穿着链接 |
+| `created_at` / `updated_at` | TEXT | NOT NULL | 时间戳 |
+
+另有 `(trip_day_id,id)` 唯一键供同日 activity 复合外键引用，索引按 `(trip_day_id,slot_index,id)`。生成/重算会在一个事务内替换受影响方案和衣物清单；无可行解时不持久化违规选择。
+
+### trip_day_activities
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 活动 ID |
+| `trip_day_id` | INTEGER | FK day CASCADE | 所属日期 |
+| `name` | TEXT | trim 后 1–200 | 活动名 |
+| `occasion` | TEXT | trim 后 1–120 | 自由文本场合说明 |
+| `formality` | TEXT | Formality 枚举 | 进入统一 scorer |
+| `requires_separate_outfit` | INTEGER | 0/1 | 是否强制独立 slot |
+| `position` | INTEGER | 非负；与 day 唯一 | 当日顺序 |
+| `selection_id` | INTEGER | 可空，同日复合 FK | 当前覆盖该活动的 selection |
+| `created_at` / `updated_at` | TEXT | NOT NULL | 时间戳 |
+
+索引为 `(trip_day_id,position,id)`，非空 selection 另有部分索引。共享活动逐个评估并取最低适配分，不隐式把独立活动合并。
+
+### trip_packing_items
+
+| 列 | 类型 | 约束/默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | INTEGER | PRIMARY KEY | 清单项 ID |
+| `trip_id` | INTEGER | FK trips CASCADE | 所属旅行 |
+| `kind` | TEXT | `garment/essential` | 衣物或自由文本必需品 |
+| `garment_id` | INTEGER | 可空，FK garments RESTRICT | garment kind 必填且每旅行唯一；essential 必须为空 |
+| `label` | TEXT | trim 后 1–200 | 展示文本 |
+| `status` | TEXT | 默认 `unpacked` | `unpacked/packed/on-body/not-taking` |
+| `coverage_json` | TEXT | 默认 `{\"dates\":[],\"activityIds\":[]}` | 衣物覆盖日期、活动 ID/名称、场合与逐件选择理由；旧双字段对象继续可读 |
+| `created_at` / `updated_at` | TEXT | NOT NULL | 时间戳 |
+
+索引按 `(trip_id,kind,id)`；生成方案对衣物项幂等重建，自由文本项独立保留。新生成的 garment coverage 使用 `{dates,activityIds,activities,occasions,reasons}`，其中可读活动名由本地 activity ID 映射并去重，不需要新增迁移。四态只属于旅行清单，不会写 `garments.availability_status` 或 availability event。
 
 ## 数据目录
 

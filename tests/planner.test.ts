@@ -63,7 +63,9 @@ describe("M4 diary-week-planner migration", () => {
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
       { version: 4, name: "feedback-availability" },
-      { version: 5, name: "diary-week-planner" }
+      { version: 5, name: "diary-week-planner" },
+      { version: 6, name: "decision-support" },
+      { version: 7, name: "trip-capsule-planner" }
     ]);
     const events = db.prepare(`
       SELECT id, worn_at, time_zone, occasion, weather_snapshot, legacy_snapshot
@@ -102,7 +104,7 @@ describe("M4 diary-week-planner migration", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
-  it("backfills the M3 feedback link when applying migration 5 to a version-4 database", () => {
+  it("backfills the M3 feedback link when migrating a version-4 database", () => {
     const db = new DatabaseSync(":memory:");
     db.exec(`
       PRAGMA foreign_keys = ON;
@@ -117,7 +119,20 @@ describe("M4 diary-week-planner migration", () => {
         (2, 'trusted-ingestion', '2026-07-01T00:00:00.000Z'),
         (3, 'saved-outfits', '2026-07-01T00:00:00.000Z'),
         (4, 'feedback-availability', '2026-07-01T00:00:00.000Z');
-      CREATE TABLE garments (id INTEGER PRIMARY KEY);
+      CREATE TABLE source_order_items (
+        id INTEGER PRIMARY KEY,
+        order_time TEXT,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        payment REAL,
+        is_refunded INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE garments (
+        id INTEGER PRIMARY KEY,
+        source_order_item_id INTEGER,
+        acquired_at TEXT,
+        purchase_price_cents INTEGER,
+        currency TEXT
+      );
       CREATE TABLE saved_outfits (id INTEGER PRIMARY KEY);
       CREATE TABLE wear_logs (
         id INTEGER PRIMARY KEY,

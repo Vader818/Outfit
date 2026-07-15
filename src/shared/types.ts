@@ -3,6 +3,7 @@ export type GarmentWarmth = "light" | "medium" | "warm" | "heavy";
 export type Season = "spring" | "summer" | "autumn" | "winter";
 export type Formality = "casual" | "smart-casual" | "formal" | "sport";
 export type GarmentOrigin = "taobao" | "manual" | "backup";
+export type GarmentCostSource = "manual" | "taobao";
 export type GarmentAvailabilityStatus = "available" | "laundry" | "repair" | "loaned" | "packed";
 export type BodyType = "slim-tall" | "average" | "athletic" | "stocky";
 export type SkinTone = "dark-yellow" | "medium-yellow" | "fair" | "deep";
@@ -46,6 +47,7 @@ export interface Garment {
   acquiredAt?: string;
   purchasePriceCents?: number;
   currency?: "CNY";
+  costSource?: GarmentCostSource;
   itemUrl?: string;
   detailUrl?: string;
   lastWornAt?: string;
@@ -73,6 +75,7 @@ export type GarmentUpdateInput = Partial<Pick<Garment,
   | "confirmed"
   | "excluded"
   | "notes"
+  | "purchasePriceCents"
 >>;
 
 export type SavedOutfitSource = "recommendation" | "manual" | "replacement";
@@ -140,6 +143,69 @@ export interface SavedOutfitReplacementInput {
   replacementGarmentId: number;
   name?: string;
 }
+
+export interface SimilarityReason {
+  field: "color" | "styles" | "materials" | "patterns" | "brandName" | "visual";
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+export interface GarmentSimilarityMatch {
+  garment: Garment;
+  similarity: number;
+  reasons: string[];
+  evidence?: SimilarityReason[];
+}
+
+export interface CoverageDelta {
+  categories: string[];
+  seasons: string[];
+  occasions: string[];
+  compatibleOutfitCount: number;
+}
+
+export type PurchaseCheckVerdict =
+  | "fills-gap"
+  | "likely-duplicate"
+  | "mixed"
+  | "insufficient-data";
+
+export interface PurchaseCheckResult {
+  subjectKey: string;
+  verdict: PurchaseCheckVerdict;
+  possibleDuplicates: GarmentSimilarityMatch[];
+  worksWith: SavedOutfit[];
+  coverageDelta: CoverageDelta;
+  explanation: string[];
+}
+
+export type SimilarityFeedbackVerdict = "duplicate" | "not-duplicate";
+
+export type SimilarityFeedbackSubjectInput =
+  | { kind: "garment"; garmentId: number }
+  | {
+      kind: "taobao-candidate";
+      batch: TaobaoCapturedBatch;
+      sourceItemKey: string;
+    };
+
+export interface SimilarityFeedbackInput {
+  subject: SimilarityFeedbackSubjectInput;
+  comparedGarmentId: number;
+  verdict: SimilarityFeedbackVerdict;
+}
+
+export interface GarmentSimilarityFeedback {
+  id: number;
+  subjectKey: string;
+  comparedGarmentId: number;
+  verdict: SimilarityFeedbackVerdict;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SimilarityFeedback = GarmentSimilarityFeedback;
 
 export interface ManualGarmentCreate {
   name: string;
@@ -286,6 +352,209 @@ export interface MarkWornInput {
 export interface MarkWornResult {
   plan: OutfitPlanEntry;
   wearEvent: WearEvent;
+}
+
+export type TripRepeatPolicy = "allow" | "no-consecutive-core" | "no-repeat-core";
+export type TripStatus = "planning" | "ready" | "completed" | "archived";
+export type TripPackingStatus = "unpacked" | "packed" | "on-body" | "not-taking";
+
+export interface TripDestination {
+  name: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface TripActivityInput {
+  name: string;
+  occasion: string;
+  formality: Formality;
+  requiresSeparateOutfit: boolean;
+}
+
+export interface TripActivity extends TripActivityInput {
+  id: number;
+  tripDayId: number;
+  position: number;
+}
+
+export interface TripDayInput {
+  date: string;
+  activities: TripActivityInput[];
+}
+
+export interface TripDay {
+  id: number;
+  tripId: number;
+  date: string;
+  activities: TripActivity[];
+  weather?: WeatherSnapshot;
+}
+
+export interface TripActivityEvaluation {
+  activityId: number;
+  score: number;
+  weatherComfort: number;
+  occasion: number;
+  hardEligible: boolean;
+}
+
+export interface TripOutfitSelection {
+  id: number;
+  tripDayId: number;
+  slotIndex: number;
+  activityIds: number[];
+  garments: Garment[];
+  score: number;
+  reasons: string[];
+  activityEvaluations: TripActivityEvaluation[];
+  lockedGarmentIds: number[];
+  actualWearEventId?: number;
+}
+
+export interface TripPackingCoverage {
+  dates: string[];
+  activityIds: number[];
+  activities?: string[];
+  occasions?: string[];
+  reasons?: string[];
+}
+
+export interface TripPackingItem {
+  id: number;
+  tripId: number;
+  kind: "garment" | "essential";
+  garmentId?: number;
+  label: string;
+  status: TripPackingStatus;
+  coverage: TripPackingCoverage;
+}
+
+export interface Trip {
+  id: number;
+  name: string;
+  startDate: string;
+  endDate: string;
+  destination: TripDestination;
+  maxGarments: number;
+  maxShoes: number;
+  repeatPolicy: TripRepeatPolicy;
+  maxCoreWearsBetweenLaundry: 1 | 2 | 3;
+  laundryDay?: string;
+  status: TripStatus;
+  days: TripDay[];
+  selections: TripOutfitSelection[];
+  packingItems: TripPackingItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TripCreateInput {
+  name: string;
+  startDate: string;
+  endDate: string;
+  destination: TripDestination;
+  maxGarments: number;
+  maxShoes: number;
+  repeatPolicy: TripRepeatPolicy;
+  maxCoreWearsBetweenLaundry: 1 | 2 | 3;
+  laundryDay?: string;
+  days: TripDayInput[];
+}
+
+export type TripUpdateInput = Partial<Omit<TripCreateInput, "laundryDay">> & {
+  laundryDay?: string | null;
+  status?: Exclude<TripStatus, "completed">;
+};
+
+export type TripConstraintCode =
+  | "availability"
+  | "required-slots"
+  | "weather"
+  | "occasion"
+  | "maxGarments"
+  | "maxShoes"
+  | "repeatPolicy"
+  | "maxCoreWearsBetweenLaundry"
+  | "lockedGarments"
+  | "searchBudget";
+
+export interface TripConstraintConflict {
+  constraint: TripConstraintCode;
+  message: string;
+  slotId?: string;
+}
+
+export interface TripConstraintRelaxation {
+  constraint: TripConstraintCode;
+  from: string | number;
+  to: string | number;
+  message: string;
+  guaranteed: boolean;
+}
+
+export type TripOptimizationResult =
+  | {
+      status: "feasible";
+      selections: TripOutfitSelection[];
+      packingItems: TripPackingItem[];
+      objectiveScore: number;
+      evaluatedCandidates: number;
+      maxBeamSize: number;
+    }
+  | {
+      status: "infeasible";
+      conflicts: TripConstraintConflict[];
+      relaxations: TripConstraintRelaxation[];
+      evaluatedCandidates: number;
+    };
+
+export interface TripGenerationInput {
+  useStoredWeather?: boolean;
+}
+
+export interface TripGenerationResult {
+  trip: Trip;
+  optimization: TripOptimizationResult;
+}
+
+export interface TripSelectionRecalculateInput {
+  lockedGarmentIds?: number[];
+  replace?: {
+    fromGarmentId: number;
+    toGarmentId: number;
+  };
+}
+
+export interface TripWeatherRefreshResult {
+  trip: Trip;
+  snapshots: WeatherSnapshot[];
+}
+
+export interface TripPackingItemCreateInput {
+  label: string;
+}
+
+export interface TripPackingItemUpdateInput {
+  status: TripPackingStatus;
+}
+
+export interface TripWearConfirmation {
+  selectionId: number;
+  confirmed: true;
+  wornAt: string;
+  timeZone: string;
+  occasion: OutfitOccasion;
+  itemIds: number[];
+  notes?: string;
+}
+
+export interface TripCompleteInput {
+  confirmations: TripWearConfirmation[];
+}
+
+export interface TripCompleteResult {
+  trip: Trip;
+  wearEvents: WearEvent[];
 }
 
 export interface RecommendationRequest {
@@ -538,6 +807,31 @@ export interface WardrobeSuggestion {
   relatedStyles?: string[];
 }
 
+export interface ValueGarmentEvidence {
+  garmentId: number;
+  name: string;
+  category: GarmentCategory;
+  acquiredAt?: string;
+  purchasePriceCents?: number;
+  currency?: "CNY";
+  costSource?: GarmentCostSource;
+  wearCount: number;
+  lastWornAt?: string;
+  costPerWearCents: number | null;
+  evidence: string[];
+}
+
+export interface WardrobeValueInsights {
+  generatedAt: string;
+  knownPriceCount: number;
+  unknownPriceCount: number;
+  upperQuartilePriceCents?: number;
+  bestValue: ValueGarmentEvidence[];
+  lowUtilizationHighCost: ValueGarmentEvidence[];
+  dormantGarments: ValueGarmentEvidence[];
+  suggestions: WardrobeSuggestion[];
+}
+
 export interface WardrobeInsights {
   totalGarments: number;
   ownedGarments: number;
@@ -599,6 +893,12 @@ export interface GarmentAssetMetadata {
   archivePath: string;
 }
 
+export type TripExportRecord = Omit<Trip, "days" | "selections" | "packingItems">;
+export type TripDayExportRecord = Omit<TripDay, "activities">;
+export type TripOutfitSelectionExportRecord = Omit<TripOutfitSelection, "garments"> & {
+  garmentIds: number[];
+};
+
 export interface OutfitExportV2 extends OutfitExportBase {
   version: 2;
   schemaVersion: number;
@@ -611,6 +911,12 @@ export interface OutfitExportV2 extends OutfitExportBase {
   garmentAvailabilityEvents?: GarmentAvailabilityEvent[];
   wearEvents?: WearEvent[];
   outfitPlanEntries?: OutfitPlanEntry[];
+  similarityFeedback?: GarmentSimilarityFeedback[];
+  trips?: TripExportRecord[];
+  tripDays?: TripDayExportRecord[];
+  tripActivities?: TripActivity[];
+  tripOutfitSelections?: TripOutfitSelectionExportRecord[];
+  tripPackingItems?: TripPackingItem[];
 }
 
 export type OutfitExport = OutfitExportV1 | OutfitExportV2;
@@ -758,6 +1064,8 @@ export interface CaptureArtifact {
 
 export interface TaobaoImportPreviewItem {
   sourceItemKey: string;
+  purchaseCheckEligible: boolean;
+  purchaseCheckIneligibleReason?: "refunded" | "non-apparel" | "needs-review";
   brand: string;
   name: string;
   rawName: string;

@@ -1,0 +1,813 @@
+.trip-planner-view,
+.trip-planner-main,
+.trip-workspace {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-5);
+}
+
+.trip-planner-view__header,
+.trip-editor__header,
+.trip-summary__header,
+.packing-checklist__header,
+.trip-complete-panel,
+.trip-itinerary > header,
+.trip-selections > header,
+.trip-selection-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.trip-planner-view__header h2,
+.trip-planner-view__header p,
+.trip-editor__header h3,
+.trip-editor__header p,
+.trip-summary__header h3,
+.trip-summary__header p,
+.trip-itinerary > header h3,
+.trip-itinerary > header p,
+.trip-selections > header h3,
+.trip-selections > header p,
+.packing-checklist__header h3,
+.packing-checklist__header p,
+.trip-complete-panel h3,
+.trip-complete-panel p {
+  margin: 0;
+}
+
+.trip-planner-view__header h2 {
+  color: var(--color-ink);
+  font-size: 1.45rem;
+  letter-spacing: -0.025em;
+}
+
+.trip-planner-view__header p,
+.trip-editor__header p,
+.trip-itinerary > header p,
+.trip-selections > header p,
+.packing-checklist__header p,
+.trip-complete-panel p {
+  margin-top: var(--space-2);
+  max-width: 66ch;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.trip-planner-layout,
+.trip-planner-loading {
+  display: grid;
+  grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.trip-planner-loading__rail,
+.trip-planner-loading__panel {
+  min-height: 19rem;
+}
+
+.trip-planner-loading > div {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.trip-planner-loading__title {
+  width: 38%;
+  min-height: 1.7rem;
+}
+
+.trip-planner-loading__line {
+  width: 68%;
+  min-height: 0.8rem;
+}
+
+.trip-list {
+  position: sticky;
+  top: var(--space-5);
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  max-height: calc(100dvh - 2.5rem);
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-muted);
+}
+
+.trip-list h3 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.9rem;
+}
+
+.trip-list ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-list__item {
+  display: grid;
+  width: 100%;
+  min-height: 2.75rem;
+  gap: 0.18rem;
+  padding: var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--color-ink-soft);
+  background: transparent;
+  text-align: left;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease, border-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-out);
+}
+
+.trip-list__item:hover:not(:disabled) {
+  border-color: var(--color-line-strong);
+  background: var(--color-surface);
+  transform: translateY(-1px);
+}
+
+.trip-list__item:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.trip-list__item[aria-current="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-line));
+  background: var(--color-surface-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.trip-list__item strong,
+.trip-list__item span,
+.trip-list__item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-list__item strong {
+  color: var(--color-ink);
+  font-size: 0.86rem;
+}
+
+.trip-list__item span {
+  font-size: 0.76rem;
+}
+
+.trip-list__item small {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.trip-list__empty {
+  display: grid;
+  gap: var(--space-3);
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.trip-list__empty p {
+  margin: 0;
+}
+
+.trip-editor,
+.trip-summary,
+.packing-checklist,
+.trip-complete-panel {
+  min-width: 0;
+  padding: clamp(1rem, 2.4vw, 1.5rem);
+}
+
+.trip-editor,
+.trip-editor__form,
+.trip-days-editor,
+.trip-days-editor__list,
+.trip-day-editor,
+.trip-day-editor__activities,
+.trip-activity-editor,
+.trip-summary,
+.packing-checklist,
+.packing-checklist__groups,
+.packing-group,
+.trip-infeasible__content,
+.trip-infeasible__content section,
+.trip-selections,
+.trip-selections__list,
+.trip-selection-card,
+.trip-selection-card__garments,
+.trip-selection-garment {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+}
+
+.trip-editor__header h3,
+.trip-summary__header h3,
+.trip-itinerary > header h3,
+.trip-selections > header h3,
+.packing-checklist__header h3,
+.trip-complete-panel h3 {
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  letter-spacing: -0.015em;
+}
+
+.trip-editor__header > svg,
+.packing-checklist__header > svg {
+  flex: 0 0 auto;
+  color: var(--color-accent-strong);
+}
+
+.trip-editor__grid,
+.trip-activity-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.trip-editor__grid--constraints {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+
+.trip-field {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.trip-field > span,
+.packing-essential-form label > span,
+.packing-item__status > span,
+.trip-selection-garment__replacement > span {
+  color: var(--color-ink-soft);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.trip-field > small {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.trip-planner-view .ui-input,
+.trip-planner-view .ui-select {
+  width: 100%;
+  min-height: 2.75rem;
+}
+
+.trip-constraints,
+.trip-day-editor {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+}
+
+.trip-constraints > legend,
+.trip-day-editor > legend {
+  padding-inline: var(--space-2);
+  color: var(--color-ink);
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
+.trip-days-editor > header h4,
+.trip-days-editor > header p {
+  margin: 0;
+}
+
+.trip-days-editor > header h4 {
+  color: var(--color-ink);
+  font-size: 0.96rem;
+}
+
+.trip-days-editor > header p {
+  margin-top: var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.78rem;
+}
+
+.trip-day-editor {
+  background: var(--color-surface-muted);
+}
+
+.trip-activity-editor {
+  padding: var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.trip-activity-editor + .trip-activity-editor {
+  border-top: 1px solid var(--color-line);
+}
+
+.trip-activity-editor__separate,
+.trip-selection-card__confirmation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 2.75rem;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.trip-activity-editor__separate input,
+.trip-selection-card__confirmation input,
+.trip-selection-garment__lock input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.trip-activity-editor__separate strong,
+.trip-activity-editor__separate small,
+.trip-selection-card__confirmation strong,
+.trip-selection-card__confirmation small {
+  display: block;
+}
+
+.trip-activity-editor__separate strong,
+.trip-selection-card__confirmation strong {
+  color: var(--color-ink);
+  font-size: 0.8rem;
+}
+
+.trip-activity-editor__separate small,
+.trip-selection-card__confirmation small {
+  margin-top: 0.18rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.trip-editor__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.trip-summary__header {
+  align-items: center;
+}
+
+.trip-summary__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.trip-summary__status > span {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.trip-summary__header p {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.trip-summary__constraints {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.trip-summary__constraints > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.trip-summary__constraints dt,
+.trip-summary__constraints dd {
+  margin: 0;
+}
+
+.trip-summary__constraints dt {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.trip-summary__constraints dd {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+  font-size: 0.8rem;
+  font-weight: 720;
+}
+
+.trip-summary__actions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-line);
+}
+
+.trip-summary__actions > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.trip-summary__actions small {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.trip-itinerary,
+.trip-selections {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+}
+
+.trip-itinerary__days {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: var(--space-3);
+}
+
+.trip-itinerary-day {
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-muted);
+}
+
+.trip-itinerary-day > header {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trip-itinerary-day time {
+  color: var(--color-ink);
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
+.trip-itinerary-day > header span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.trip-itinerary-day ul {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-itinerary-day li {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-line);
+}
+
+.trip-itinerary-day li strong,
+.trip-itinerary-day li span,
+.trip-itinerary-day li small {
+  overflow-wrap: anywhere;
+}
+
+.trip-itinerary-day li strong {
+  color: var(--color-ink-soft);
+  font-size: 0.8rem;
+}
+
+.trip-itinerary-day li span,
+.trip-itinerary-day li small {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.trip-infeasible__content h4,
+.trip-infeasible__content ul {
+  margin: 0;
+}
+
+.trip-infeasible__content h4 {
+  color: var(--color-ink);
+  font-size: 0.82rem;
+}
+
+.trip-infeasible__content ul {
+  display: grid;
+  gap: var(--space-2);
+  padding-left: 1.2rem;
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.trip-infeasible__relaxations {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trip-infeasible__relaxations > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.trip-infeasible__relaxations span {
+  color: var(--color-ink-soft);
+  font-size: 0.78rem;
+}
+
+.trip-selection-card {
+  padding: var(--space-4);
+}
+
+.trip-selection-card__header time,
+.trip-selection-card__header h4 {
+  display: block;
+  margin: 0;
+}
+
+.trip-selection-card__header time {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+
+.trip-selection-card__header h4 {
+  margin-top: var(--space-1);
+  color: var(--color-ink);
+  font-size: 0.94rem;
+}
+
+.trip-selection-card__reasons {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-3) var(--space-3) 2rem;
+  border-radius: var(--radius-control);
+  color: var(--color-ink-soft);
+  background: var(--color-surface-accent);
+  font-size: 0.76rem;
+}
+
+.trip-selection-card__garments {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+}
+
+.trip-selection-garment {
+  align-content: start;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.trip-selection-garment > div > span,
+.trip-selection-garment > div > strong {
+  display: block;
+}
+
+.trip-selection-garment > div > span {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.trip-selection-garment > div > strong {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+  font-size: 0.82rem;
+}
+
+.trip-selection-garment__lock {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  color: var(--color-ink-soft);
+  font-size: 0.75rem;
+}
+
+.trip-selection-garment__lock > svg {
+  color: var(--color-accent-strong);
+}
+
+.trip-selection-garment__replacement {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.packing-checklist__groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.packing-group h4 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.88rem;
+}
+
+.packing-group__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.packing-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 0.7fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.packing-item__copy,
+.packing-item__status,
+.packing-essential-form label {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.packing-item__copy strong,
+.packing-item__copy small {
+  overflow-wrap: anywhere;
+}
+
+.packing-item__copy strong {
+  color: var(--color-ink);
+  font-size: 0.8rem;
+}
+
+.packing-item__copy small {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+}
+
+.packing-essential-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-line);
+}
+
+.trip-complete-panel {
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  .trip-summary__constraints {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .packing-checklist__groups {
+    grid-template-columns: 1fr;
+  }
+
+  .packing-item {
+    grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 0.7fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .trip-planner-view__header,
+  .trip-summary__header,
+  .trip-complete-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trip-planner-view__header > .ui-button,
+  .trip-summary__header > .ui-button,
+  .trip-complete-panel > .ui-button {
+    width: 100%;
+  }
+
+  .trip-planner-layout,
+  .trip-planner-loading {
+    grid-template-columns: 1fr;
+  }
+
+  .trip-list {
+    position: static;
+    max-height: none;
+  }
+
+  .trip-list ul {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  }
+
+  .trip-editor__grid,
+  .trip-activity-editor__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trip-summary__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trip-summary__actions > div,
+  .trip-summary__actions .ui-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .trip-summary__constraints,
+  .packing-item,
+  .packing-essential-form {
+    grid-template-columns: 1fr;
+  }
+
+  .trip-editor__actions,
+  .trip-infeasible__relaxations > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trip-editor__actions .ui-button,
+  .trip-infeasible__relaxations .ui-button,
+  .packing-essential-form .ui-button,
+  .packing-item > .ui-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 390px) {
+  .trip-planner-view,
+  .trip-planner-main,
+  .trip-workspace {
+    gap: var(--space-4);
+  }
+
+  .trip-planner-view__header,
+  .trip-editor__header,
+  .packing-checklist__header,
+  .trip-itinerary > header,
+  .trip-selections > header,
+  .trip-selection-card__header {
+    flex-direction: column;
+  }
+
+  .trip-list ul,
+  .trip-editor__grid,
+  .trip-activity-editor__grid,
+  .trip-summary__constraints,
+  .trip-itinerary__days,
+  .trip-selection-card__garments,
+  .packing-checklist__groups,
+  .packing-item,
+  .packing-essential-form {
+    grid-template-columns: 1fr;
+  }
+
+  .trip-planner-view .ui-button,
+  .trip-planner-view .ui-input,
+  .trip-planner-view .ui-select,
+  .trip-list__item,
+  .trip-activity-editor__separate,
+  .trip-selection-card__confirmation,
+  .trip-selection-garment__lock {
+    min-height: 2.75rem;
+  }
+}

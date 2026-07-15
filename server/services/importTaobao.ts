@@ -14,7 +14,9 @@ export interface SourceOrderItemDraft {
   title: string;
   sku: string;
   quantity: number;
+  quantityExplicit: boolean;
   payment: number | null;
+  paymentExplicit: boolean;
   status: string;
   refundText: string;
   itemUrl: string;
@@ -57,7 +59,7 @@ export interface GarmentDisplayInfo {
 }
 
 const WARDROBE_IMPORT_CATEGORIES: readonly GarmentCategory[] = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"];
-const REFUND_PATTERN = /退款成功|退货退款|交易关闭|已退款|售后成功|退款退货成功|订单关闭/i;
+const REFUND_PATTERN = /退款成功|退款中|退货退款|交易关闭|已退款|售后成功|售后中|申请退款|退款退货成功|订单关闭|Refund successful|Refunding|After-sale successful/i;
 const GENERIC_DETAIL_TITLE_PATTERN = /^(宝贝描述|商品详情|图文详情|参数|参数信息|尺码|尺码信息|详情|描述)$/i;
 const ORDER_STATUS_TEXT = "(?:Pending receipt|Pending review|Completed|交易成功|交易关闭|买家已付款|卖家已发货|待付款|待发货|待收货|待评价|已完成)";
 const PRODUCT_TITLE_PATTERNS = [
@@ -218,6 +220,7 @@ export function previewTaobaoImport(payload: unknown): TaobaoImportPreview {
     const displayInfo = buildGarmentDisplayInfo(item);
     candidates.push({
       sourceItemKey: item.externalKey,
+      purchaseCheckEligible: true,
       brand: displayInfo.brand,
       name: displayInfo.name,
       rawName: displayInfo.rawName,
@@ -417,8 +420,8 @@ function sourceItemToCapturedItem(item: SourceOrderItemDraft): TaobaoCapturedIte
     orderTime: optionalText(item.orderTime),
     title: optionalText(item.title),
     sku: optionalText(item.sku),
-    quantity: item.quantity,
-    payment: item.payment ?? undefined,
+    ...(item.quantityExplicit ? { quantity: item.quantity } : {}),
+    ...(item.paymentExplicit && item.payment !== null ? { payment: item.payment } : {}),
     status: optionalText(item.status),
     refundText: optionalText(item.refundText),
     itemUrl: optionalText(item.itemUrl),
@@ -522,6 +525,7 @@ function normalizeItem(item: TaobaoCapturedItem, source: string, batchPageType: 
   const orderId = limitedText(item.orderId || "", "orderId", 120);
   const orderTime = limitedText(item.orderTime || "", "orderTime", 120);
   const sku = limitedText(item.sku || "", "sku", 500);
+  const payment = toMoney(item.payment);
 
   return {
     externalKey: computeTaobaoSourceItemKey({ ...item, pageType, itemId, orderId, orderTime, itemUrl, detailUrl, title, sku }, pageType),
@@ -533,7 +537,9 @@ function normalizeItem(item: TaobaoCapturedItem, source: string, batchPageType: 
     title,
     sku,
     quantity: toInteger(item.quantity, 1),
-    payment: toMoney(item.payment),
+    quantityExplicit: item.quantity !== undefined,
+    payment,
+    paymentExplicit: payment !== null,
     status: limitedText(item.status || "", "status", 120),
     refundText: limitedText(item.refundText || "", "refundText", 300),
     itemUrl,
@@ -574,7 +580,9 @@ function computeTaobaoBatchId(source: string, providedCapturedAt: string, pageUr
       title: item.title,
       sku: item.sku,
       quantity: item.quantity,
+      quantityExplicit: item.quantityExplicit,
       payment: item.payment,
+      paymentExplicit: item.paymentExplicit,
       status: item.status,
       refundText: item.refundText,
       itemUrl: item.itemUrl,
@@ -612,8 +620,18 @@ function mergeSourceItems(current: SourceOrderItemDraft, incoming: SourceOrderIt
     orderTime: current.orderTime || incoming.orderTime,
     title: current.title || incoming.title,
     sku: current.sku || incoming.sku,
-    quantity: current.quantity || incoming.quantity,
-    payment: current.payment ?? incoming.payment,
+    quantity: current.quantityExplicit
+      ? current.quantity
+      : incoming.quantityExplicit
+        ? incoming.quantity
+        : current.quantity,
+    quantityExplicit: current.quantityExplicit || incoming.quantityExplicit,
+    payment: current.paymentExplicit
+      ? current.payment
+      : incoming.paymentExplicit
+        ? incoming.payment
+        : current.payment,
+    paymentExplicit: current.paymentExplicit || incoming.paymentExplicit,
     status: current.status || incoming.status,
     refundText: current.refundText || incoming.refundText,
     itemUrl: current.itemUrl || incoming.itemUrl,

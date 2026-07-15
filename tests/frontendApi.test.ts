@@ -6,13 +6,19 @@ import {
   applySavedOutfitReplacement,
   archiveGarment,
   archiveSavedOutfit,
+  archiveTrip,
+  checkTaobaoPurchaseCandidate,
   clearRecommendationFeedback,
   commitTaobaoImport,
   createGarment,
   createGarmentCutout,
   createOutfitPlan,
   createSavedOutfit,
+  createTrip,
+  createTripPackingItem,
   createWearEvent,
+  completeTrip,
+  deleteTripPackingItem,
   deleteOutfitPlan,
   deleteWearEvent,
   downloadCompleteBackup,
@@ -24,6 +30,7 @@ import {
   getGarmentThumbnailCandidates,
   getGarments,
   getInsights,
+  getSimilarGarments,
   getOutfitPlans,
   getPersonalProfile,
   getRecommendationFeedback,
@@ -31,7 +38,10 @@ import {
   getRecommendations,
   getSavedOutfit,
   getSavedOutfits,
+  getTrip,
+  getTrips,
   getVisionModels,
+  getValueInsights,
   getWearLogs,
   getWearEvents,
   getWeatherForecast,
@@ -44,6 +54,7 @@ import {
   readLatestTaobaoCapture,
   register,
   restoreGarment,
+  refreshTripWeather,
   savePersonalProfile,
   saveRecommendationCandidate,
   selectGarmentThumbnail,
@@ -52,10 +63,16 @@ import {
   startTaobaoItemCapture,
   startTaobaoOrderCapture,
   submitRecommendationFeedback,
+  submitSimilarityFeedback,
+  generateTrip,
+  recalculateTripSelection,
   updateGarment,
   updateGarmentAvailability,
   updateOutfitPlan,
   updateSavedOutfit,
+  updateTrip,
+  updateTripDays,
+  updateTripPackingItem,
   updateWearEvent,
   uploadGarmentImage,
   verifyVisionModel
@@ -75,6 +92,68 @@ describe("frontend API client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("uses the decision-support value, similarity, purchase-check, and explicit feedback endpoints", async () => {
+    const batch = {
+      source: "taobao-bookmarklet",
+      items: [{ title: "白色亚麻衬衫", itemId: "10001" }]
+    };
+    const sourceItemKey = "v2:candidate-key";
+    const feedbackInput = {
+      subject: { kind: "taobao-candidate" as const, batch, sourceItemKey },
+      comparedGarmentId: 9,
+      verdict: "not-duplicate" as const
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        generatedAt: "2026-07-13T00:00:00.000Z",
+        knownPriceCount: 1,
+        unknownPriceCount: 0,
+        bestValue: [],
+        lowUtilizationHighCost: [],
+        dormantGarments: [],
+        suggestions: []
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        subjectKey: `candidate:v1:${"a".repeat(64)}`,
+        verdict: "insufficient-data",
+        possibleDuplicates: [],
+        worksWith: [],
+        coverageDelta: { categories: [], seasons: [], occasions: [], compatibleOutfitCount: 0 },
+        explanation: ["信息不足"]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 3,
+        subjectKey: `candidate:v1:${"a".repeat(64)}`,
+        comparedGarmentId: 9,
+        verdict: "not-duplicate",
+        createdAt: "2026-07-13T00:00:00.000Z",
+        updatedAt: "2026-07-13T00:00:00.000Z"
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getValueInsights()).resolves.toMatchObject({ knownPriceCount: 1 });
+    await expect(getSimilarGarments(9)).resolves.toEqual([]);
+    await expect(checkTaobaoPurchaseCandidate({ batch, sourceItemKey })).resolves.toMatchObject({
+      verdict: "insufficient-data"
+    });
+    await expect(submitSimilarityFeedback(feedbackInput)).resolves.toMatchObject({
+      comparedGarmentId: 9,
+      verdict: "not-duplicate"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/insights/value", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/garments/9/similar", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/purchase-checks/taobao-candidate", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ batch, sourceItemKey })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/similarity-feedback", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(feedbackInput)
+    }));
   });
 
   it("uses local auth endpoints with same-origin credentials", async () => {
@@ -911,6 +990,99 @@ describe("frontend API client", () => {
       method: "GET",
       credentials: "same-origin"
     }));
+  });
+
+  it("uses fixed authenticated trip, weather, optimization, packing, and completion endpoints", async () => {
+    const fetchMock = vi.fn();
+    for (let index = 0; index < 13; index += 1) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(index === 0 ? [] : {}), { status: 200 }));
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    const tripInput = {
+      name: "上海三日会务",
+      startDate: "2026-07-20",
+      endDate: "2026-07-22",
+      destination: { name: "上海", latitude: 31.2, longitude: 121.4 },
+      maxGarments: 8,
+      maxShoes: 2,
+      repeatPolicy: "no-consecutive-core" as const,
+      maxCoreWearsBetweenLaundry: 2 as const,
+      laundryDay: "2026-07-22",
+      days: [{
+        date: "2026-07-20",
+        activities: [{
+          name: "会场报到",
+          occasion: "conference",
+          formality: "smart-casual" as const,
+          requiresSeparateOutfit: false
+        }]
+      }]
+    };
+    const nextDays = tripInput.days.map((day) => ({ ...day }));
+    const completeInput = {
+      confirmations: [{
+        selectionId: 8,
+        confirmed: true as const,
+        wornAt: "2026-07-20T01:00:00.000Z",
+        timeZone: "Asia/Shanghai",
+        occasion: "smart-casual" as const,
+        itemIds: [1, 2, 3]
+      }]
+    };
+
+    await getTrips();
+    await getTrip(4);
+    await createTrip(tripInput);
+    await updateTrip(4, { name: "上海三日差旅" });
+    await updateTripDays(4, nextDays);
+    await refreshTripWeather(4);
+    await generateTrip(4, { useStoredWeather: true });
+    await recalculateTripSelection(4, 8, {
+      lockedGarmentIds: [1, 2],
+      replace: { fromGarmentId: 3, toGarmentId: 6 }
+    });
+    await createTripPackingItem(4, { label: "护照" });
+    await updateTripPackingItem(4, 12, { status: "packed" });
+    await deleteTripPackingItem(4, 12);
+    await completeTrip(4, completeInput);
+    await archiveTrip(4);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/trips", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/trips/4", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/trips", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(tripInput)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/trips/4", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ name: "上海三日差旅" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/trips/4/days", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ days: nextDays })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/trips/4/weather/refresh", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(7, "/api/trips/4/generate", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ useStoredWeather: true })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(8, "/api/trips/4/selections/8/recalculate", expect.objectContaining({
+      method: "POST"
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(9, "/api/trips/4/packing", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ label: "护照" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(10, "/api/trips/4/packing/12", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ status: "packed" })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(11, "/api/trips/4/packing/12", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(12, "/api/trips/4/complete", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(completeInput)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(13, "/api/trips/4", expect.objectContaining({ method: "DELETE" }));
   });
 
   it("uses calendar-safe planner, diary, and forecast endpoints", async () => {

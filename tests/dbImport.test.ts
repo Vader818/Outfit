@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { archiveGarment, commitTaobaoImport, createDatabase, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
+import { archiveGarment, commitTaobaoImport, createDatabase, createManualGarment, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
 import { computeLegacyTaobaoSourceItemKey, computeTaobaoSourceItemKey } from "../server/services/importTaobao";
 import { ValidationError } from "../server/validation";
 
@@ -686,7 +686,9 @@ describe("database import", () => {
     const refundPreview = previewTaobaoImportForDb(db, refundedBatch);
     expect(refundPreview.candidates[0]).toMatchObject({
       existingGarmentId: created.id,
-      disposition: "refund-sync"
+      disposition: "refund-sync",
+      purchaseCheckEligible: false,
+      purchaseCheckIneligibleReason: "refunded"
     });
 
     const cancelledRefund = commitTaobaoImport(db, {
@@ -899,6 +901,221 @@ describe("database import", () => {
     });
     expect(db.prepare("SELECT id, external_key, order_id, title FROM source_order_items ORDER BY id").all()).toEqual(before);
     expect(listGarments(db)).toHaveLength(1);
+  });
+
+  it("writes trusted Taobao unit costs only from explicit evidence and never overwrites manual cost", () => {
+    const db = createDatabase(":memory:");
+    const batch = {
+      source: "taobao-bookmarklet",
+      capturedAt: "2026-07-13T08:00:00.000Z",
+      pageType: "order-list" as const,
+      items: [{
+        itemId: "cost-explicit-two",
+        orderId: "cost-order-1",
+        orderTime: "2025-12-01 08:30:00",
+        title: "黑色羊毛大衣女秋冬厚款外套",
+        quantity: 2,
+        payment: "399.00",
+        status: "交易成功"
+      }, {
+        itemId: "cost-missing-quantity",
+        orderId: "cost-order-2",
+        orderTime: "2025-12-02T09:00:00.000Z",
+        title: "白色纯棉衬衫春季通勤上衣",
+        payment: "129.00",
+        status: "交易成功"
+      }, {
+        itemId: "cost-explicit-zero",
+        orderId: "cost-order-3",
+        orderTime: "2025-12-03",
+        title: "蓝色直筒牛仔裤休闲长裤",
+        quantity: 1,
+        payment: 0,
+        status: "交易成功"
+      }]
+    };
+    const preview = previewTaobaoImportForDb(db, batch);
+    commitTaobaoImport(db, {
+      batch,
+      decisions: preview.candidates.map((candidate) => ({
+        sourceItemKey: candidate.sourceItemKey,
+        include: true
+      }))
+    });
+
+    const rows = db.prepare(`
+      SELECT source_order_items.item_id, source_order_items.quantity,
+        source_order_items.payment, source_order_items.quantity_explicit,
+        source_order_items.payment_explicit, garments.id AS garment_id,
+        garments.acquired_at, garments.purchase_price_cents, garments.currency,
+        garments.cost_source
+      FROM source_order_items
+      INNER JOIN garments ON garments.source_order_item_id = source_order_items.id
+      ORDER BY source_order_items.item_id
+    `).all();
+    expect(rows).toEqual([{
+      item_id: "cost-explicit-two",
+      quantity: 2,
+      payment: 399,
+      quantity_explicit: 1,
+      payment_explicit: 1,
+      garment_id: expect.any(Number),
+      acquired_at: "2025-12-01",
+      purchase_price_cents: 19950,
+      currency: "CNY",
+      cost_source: "taobao"
+    }, {
+      item_id: "cost-explicit-zero",
+      quantity: 1,
+      payment: 0,
+      quantity_explicit: 1,
+      payment_explicit: 1,
+      garment_id: expect.any(Number),
+      acquired_at: "2025-12-03",
+      purchase_price_cents: 0,
+      currency: "CNY",
+      cost_source: "taobao"
+    }, {
+      item_id: "cost-missing-quantity",
+      quantity: 1,
+      payment: 129,
+      quantity_explicit: 0,
+      payment_explicit: 1,
+      garment_id: expect.any(Number),
+      acquired_at: "2025-12-02",
+      purchase_price_cents: null,
+      currency: null,
+      cost_source: null
+    }]);
+
+    const manualTarget = rows[0] as { garment_id: number };
+    db.prepare(`
+      UPDATE garments
+      SET purchase_price_cents = 12345, currency = 'CNY', cost_source = 'manual'
+      WHERE id = ?
+    `).run(manualTarget.garment_id);
+    const replayBatch = {
+      ...batch,
+      capturedAt: "2026-07-14T08:00:00.000Z",
+      items: [{ ...batch.items[0], payment: "499.00" }, {
+        ...batch.items[1],
+        payment: undefined
+      }, { ...batch.items[2], payment: "99.00" }]
+    };
+    const replayPreview = previewTaobaoImportForDb(db, replayBatch);
+    commitTaobaoImport(db, {
+      batch: replayBatch,
+      decisions: replayPreview.candidates.map((candidate) => ({
+        sourceItemKey: candidate.sourceItemKey,
+        include: true
+      }))
+    });
+
+    expect(db.prepare(`
+      SELECT source_order_items.item_id, source_order_items.quantity,
+        source_order_items.payment, source_order_items.quantity_explicit,
+        source_order_items.payment_explicit, garments.purchase_price_cents,
+        garments.cost_source
+      FROM source_order_items
+      INNER JOIN garments ON garments.source_order_item_id = source_order_items.id
+      ORDER BY source_order_items.item_id
+    `).all()).toEqual([{
+      item_id: "cost-explicit-two",
+      quantity: 2,
+      payment: 499,
+      quantity_explicit: 1,
+      payment_explicit: 1,
+      purchase_price_cents: 12345,
+      cost_source: "manual"
+    }, {
+      item_id: "cost-explicit-zero",
+      quantity: 1,
+      payment: 99,
+      quantity_explicit: 1,
+      payment_explicit: 1,
+      purchase_price_cents: 9900,
+      cost_source: "taobao"
+    }, {
+      item_id: "cost-missing-quantity",
+      quantity: 1,
+      payment: 129,
+      quantity_explicit: 0,
+      payment_explicit: 1,
+      purchase_price_cents: null,
+      cost_source: null
+    }]);
+  });
+
+  it("marks even a zero manually entered price with manual cost provenance", () => {
+    const db = createDatabase(":memory:");
+    const garment = createManualGarment(db, {
+      name: "手工录入白衬衫",
+      category: "top",
+      color: "white",
+      warmth: "light",
+      seasons: ["spring"],
+      styles: ["minimal"],
+      formality: "smart-casual",
+      purchasePriceCents: 0,
+      currency: "CNY"
+    });
+
+    expect(garment).toMatchObject({
+      purchasePriceCents: 0,
+      currency: "CNY",
+      costSource: "manual"
+    });
+    expect(db.prepare(`
+      SELECT purchase_price_cents, currency, cost_source
+      FROM garments WHERE id = ?
+    `).get(garment.id)).toEqual({
+      purchase_price_cents: 0,
+      currency: "CNY",
+      cost_source: "manual"
+    });
+  });
+
+  it("keeps legacy importer cost evidence stable across incomplete reimports", () => {
+    const db = createDatabase(":memory:");
+    const batch = {
+      source: "taobao-bookmarklet",
+      pageType: "order-list" as const,
+      items: [{
+        itemId: "legacy-cost-explicit",
+        orderId: "legacy-cost-order",
+        orderTime: "2025-11-01 10:00:00",
+        title: "灰色羊毛针织衫秋冬保暖上衣",
+        quantity: 2,
+        payment: "300.00",
+        status: "交易成功"
+      }]
+    };
+
+    importTaobaoBatchIntoDb(db, batch);
+    importTaobaoBatchIntoDb(db, {
+      ...batch,
+      items: [{
+        ...batch.items[0],
+        quantity: undefined,
+        payment: undefined
+      }]
+    });
+
+    expect(db.prepare(`
+      SELECT source_order_items.quantity, source_order_items.payment,
+        source_order_items.quantity_explicit, source_order_items.payment_explicit,
+        garments.acquired_at, garments.purchase_price_cents, garments.cost_source
+      FROM source_order_items
+      INNER JOIN garments ON garments.source_order_item_id = source_order_items.id
+    `).get()).toEqual({
+      quantity: 2,
+      payment: 300,
+      quantity_explicit: 1,
+      payment_explicit: 1,
+      acquired_at: "2025-11-01",
+      purchase_price_cents: 15000,
+      cost_source: "taobao"
+    });
   });
 
   it.each(["preview", "commit"])("rejects malformed batch fields as ValidationError during %s", (operation) => {

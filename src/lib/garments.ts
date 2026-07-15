@@ -92,6 +92,7 @@ export function isRecommendationPendingGarment(item: Garment): boolean {
 }
 
 export function matchesWardrobeFilters(item: Garment, filters: WardrobeFilters): boolean {
+  if (filters.relatedGarmentIds?.length && !filters.relatedGarmentIds.includes(item.id)) return false;
   const query = filters.query.trim().toLowerCase();
   if (query) {
     const searchable = [

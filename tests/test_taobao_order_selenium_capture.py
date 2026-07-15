@@ -21,6 +21,39 @@ def load_capture():
 
 
 class TaobaoOrderSeleniumCaptureTests(unittest.TestCase):
+    def test_extract_payment_prefers_explicit_paid_total_over_unit_price(self):
+        capture = load_capture()
+
+        self.assertEqual(
+            capture.extract_payment("单价￥100 x2 实付款￥200"),
+            "200",
+        )
+        self.assertEqual(capture.extract_payment("实付款：￥1,299.00"), "1299.00")
+
+    def test_does_not_invent_quantity_or_payment_from_model_tokens_and_unit_prices(self):
+        capture = load_capture()
+
+        self.assertIsNone(capture.extract_quantity("型号: X100 ￥200"))
+        self.assertIsNone(capture.extract_quantity("联名款X2 ￥300"))
+        self.assertEqual(capture.extract_payment("商品 x2 ￥100"), "")
+        self.assertEqual(capture.extract_refund_text("Refund closed"), "")
+
+    def test_does_not_invent_quantity_when_order_text_has_no_quantity_evidence(self):
+        capture = load_capture()
+
+        item = capture.normalize_order_item(
+            {
+                "rawText": "Order No: 1234567890123456789 White cotton shirt $129.00 Trade success",
+                "links": [{"href": "https://item.taobao.com/item.htm?id=1001", "text": "White cotton shirt"}],
+                "images": ["https://img.alicdn.com/shirt.jpg"],
+            },
+            BOUGHT_ITEMS_URL,
+        )
+
+        self.assertIsNotNone(item)
+        self.assertNotIn("quantity", item)
+        self.assertEqual(item["payment"], "129.00")
+
     def test_builds_import_payload_from_order_list_snapshots(self):
         capture = load_capture()
 
@@ -95,7 +128,7 @@ class TaobaoOrderSeleniumCaptureTests(unittest.TestCase):
             },
         )
         self.assertEqual(payload["items"][1]["quantity"], 2)
-        self.assertEqual(payload["items"][1]["payment"], "129.50")
+        self.assertEqual(payload["items"][1]["payment"], "")
         self.assertEqual(payload["items"][1]["refundText"], "Refund successful")
         json.dumps(payload, ensure_ascii=False)
 
@@ -124,6 +157,71 @@ class TaobaoOrderSeleniumCaptureTests(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 1)
         self.assertEqual(payload["items"][0]["itemId"], "303")
         self.assertEqual(payload["items"][0]["sku"], "Color: White; Size: L")
+
+    def test_duplicate_snapshots_enrich_missing_explicit_amount_evidence(self):
+        capture = load_capture()
+        base = {
+            "url": BOUGHT_ITEMS_URL,
+            "title": "Bought items",
+            "bodyText": "Bought items",
+        }
+        payload = capture.build_order_payload(
+            [
+                {
+                    **base,
+                    "containers": [{
+                        "rawText": "Order No: 1234567890123456789 White shirt Color: White",
+                        "links": [{"href": "https://item.taobao.com/item.htm?id=303", "text": "White shirt"}],
+                        "images": [],
+                    }],
+                },
+                {
+                    **base,
+                    "containers": [{
+                        "rawText": "Order No: 1234567890123456789 White shirt Color: White Quantity: 2 Paid: ￥398",
+                        "links": [{"href": "https://item.taobao.com/item.htm?id=303", "text": "White shirt"}],
+                        "images": [],
+                    }],
+                },
+            ],
+            captured_at="2026-06-11T05:30:00.000Z",
+        )
+
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["quantity"], 2)
+        self.assertEqual(payload["items"][0]["payment"], "398")
+
+    def test_keeps_each_product_from_a_multi_item_order_without_guessing_shared_amounts(self):
+        capture = load_capture()
+        payload = capture.build_order_payload(
+            [{
+                "url": BOUGHT_ITEMS_URL,
+                "title": "Bought items",
+                "bodyText": "Bought items",
+                "containers": [{
+                    "rawText": (
+                        "Order No: 1234567890123456789 "
+                        "Black shirt Color: Black x1 ￥100 "
+                        "White jeans Color: White x1 ￥200 实付款￥300 Trade success"
+                    ),
+                    "links": [
+                        {"href": "https://item.taobao.com/item.htm?id=101", "text": "Black shirt"},
+                        {"href": "https://item.taobao.com/item.htm?id=202", "text": "White jeans"},
+                    ],
+                    "images": [
+                        "https://img.alicdn.com/shirt.jpg",
+                        "https://img.alicdn.com/jeans.jpg",
+                    ],
+                }],
+            }],
+            captured_at="2026-06-11T05:30:00.000Z",
+        )
+
+        self.assertEqual([item["itemId"] for item in payload["items"]], ["101", "202"])
+        for item in payload["items"]:
+            self.assertNotIn("quantity", item)
+            self.assertEqual(item["payment"], "")
+            self.assertEqual(item["sku"], "")
 
     def test_collector_javascript_avoids_cookies_and_browser_storage(self):
         capture = load_capture()

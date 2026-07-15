@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { existsSync, readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, AuthView, HistoryInsightsView, ImportView, MainApp, OutfitBuilder, RecommendationView, SavedOutfitsPanel, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView, hydratePlannerPlansWeather, loadAllWearEvents, rollPlannerCalendarDay } from "../src/App";
+import { App, AuthView, HistoryInsightsView, ImportView, MainApp, OutfitBuilder, RecommendationView, SavedOutfitsPanel, SessionSummary, SettingsView, ThumbnailPicker, WardrobeView, confirmedSelectionIdsAfterRecalculation, hydratePlannerPlansWeather, loadAllWearEvents, rollPlannerCalendarDay } from "../src/App";
 import { Button, Field, PageIntro, Surface } from "../src/components/ui";
 import { ImportReviewTable } from "../src/features/import/ImportReviewTable";
 import { ManualGarmentDialog, yuanToCents } from "../src/features/wardrobe/ManualGarmentDialog";
@@ -81,6 +81,14 @@ describe("App", () => {
       today: "2026-07-13",
       weekStart: "2026-07-20"
     });
+  });
+
+  it("局部重算只保留目标之前未改变搭配的实际穿着确认", () => {
+    const selections = [{ id: 11 }, { id: 12 }, { id: 13 }];
+
+    expect(confirmedSelectionIdsAfterRecalculation([11, 12, 13], selections, 1, true)).toEqual([11]);
+    expect(confirmedSelectionIdsAfterRecalculation([11, 12, 13], selections, 1, false)).toEqual([11, 12, 13]);
+    expect(confirmedSelectionIdsAfterRecalculation([11, 12, 13], selections, -1, true)).toEqual([]);
   });
 
   it("starts with truly unset location and profile values and parses coordinates strictly", () => {
@@ -431,6 +439,40 @@ describe("App", () => {
     expect(findButtonsByText(tree, "预览中")[0].props.disabled).toBe(true);
     expect(findButtonsByText(tree, "提交选择")[0].props.disabled).toBe(true);
     expect(findButtonsByText(tree, "读取产物")[0].props.disabled).toBe(false);
+  });
+
+  it("connects purchase-check mode to a read-only check action without exposing an import commit", () => {
+    const onPurchaseCheck = vi.fn();
+    const tree = ImportView({
+      mode: "purchase-check",
+      bookmarklet: "https://example.com/bookmarklet",
+      importText: '{"source":"taobao-bookmarklet","items":[]}',
+      importResult: null,
+      importPreview: null,
+      filterSummary: null,
+      captureUrl: "",
+      captureEngine: "selenium" as CaptureEngine,
+      captureResult: null,
+      busy: false,
+      onCopyBookmarklet: vi.fn(),
+      onImportText: vi.fn(),
+      onImport: vi.fn(),
+      onCaptureUrl: vi.fn(),
+      onCaptureEngine: vi.fn(),
+      onStartOrdersCapture: vi.fn(),
+      onStartItemCapture: vi.fn(),
+      onReadLatestCapture: vi.fn(),
+      onPurchaseCheck
+    });
+
+    const runButton = findButtonsByText(tree, "运行购买前检查")[0];
+    expect(runButton.props.disabled).toBe(false);
+    runButton.props.onClick();
+    expect(onPurchaseCheck).toHaveBeenCalledOnce();
+
+    const markup = renderToStaticMarkup(tree);
+    expect(markup).toContain("购买前检查模式只读取本地数据，不会加入衣橱");
+    expect(markup).not.toContain("提交选择");
   });
 
   it("uses fifteen pages for Taobao order capture", async () => {
@@ -1571,6 +1613,7 @@ describe("App", () => {
 
     expect(markup).toContain("穿搭历史");
     expect(markup).toContain("周计划");
+    expect(markup).toContain("旅行计划");
     expect(markup).toContain("穿着日记");
     expect(markup).toContain("保存搭配");
     expect(markup).toContain("洞察");
@@ -2211,6 +2254,7 @@ describe("App", () => {
       candidates: [
         {
           sourceItemKey: "item-1",
+          purchaseCheckEligible: true,
           brand: "COS",
           name: "white shirt",
           rawName: "white shirt",
@@ -2355,6 +2399,7 @@ describe("App", () => {
 
     const candidates = Array.from({ length: 7 }, (_, index) => ({
       sourceItemKey: `v2:${String(index).padStart(64, "0")}`,
+      purchaseCheckEligible: true,
       brand: "",
       name: `候选衣物 ${index + 1}`,
       rawName: `候选衣物 ${index + 1}`,

@@ -1,10 +1,10 @@
-# 任务计划：Outfit M1–M4 连续交付
+# 任务计划：Outfit M1–M6 连续交付与 M6 独立验收
 
 ## 目标
-在已完成并保留 M1–M3 工作区成果的基础上，严格执行 `docs/2026-07-10-outfit-m4-diary-week-plan.md`，完整交付 Outfit M4：穿搭日记、周计划、日期/时区边界、天气冻结、场合化重复提醒、洞察口径、V2 导出、文档、自动化测试与真实交互验收。
+以 `docs/2026-07-10-outfit-m6-trip-capsule-plan.md` 为本轮 M6 验收基线，独立核对当前未提交实现、测试、文档与真实交互证据；修复所有可复现缺口并完成全量验证，同时保留既有 M1–M5 成果与用户工作区改动。
 
 ## 当前阶段
-已完成：阶段 58——M4 独立验收与修复签收
+阶段 77：最终复验与签收（已完成）
 
 ## 各阶段
 
@@ -51,6 +51,38 @@
 - [x] 使用真实浏览器逐页视觉 QA，并按截图问题迭代到通过。
 - [x] 执行设计技能最终预检，检查文案、布局重复、颜色/形状一致性和 AI 模板痕迹。
 - [x] 更新规划、发现与进度记录，汇总变更和验证结果。
+- **状态：** complete
+
+### 阶段 74：M6 独立验收基线与逐项映射
+- [x] 完整读取 M6 开发计划，逐项建立“计划要求—实现文件—自动化测试—运行证据”映射。
+- [x] 保护 M1–M6 现有未提交工作区改动，确认本轮不删除任何文件、不重置或覆盖既有成果。
+- [x] 并行开展数据/API/导出、优化器/推荐、前端/交互三个只读审查，并由主 Agent 交叉复核。
+- **状态：** complete
+
+### 阶段 75：独立动态验证与缺口复现
+- [x] 运行 M6 专项、类型检查、全量 Node/Python 测试、lint、构建、依赖与 diff 门禁。
+- [x] 对六条验收标准执行隔离 API/组件/必要真实浏览器复验，区分已有实现、测试覆盖与实际可用。
+- [x] 将任何失败或证据不足项转化为最小可复现回归测试。
+- **状态：** complete
+
+### 阶段 76：缺陷修复与回归
+- [x] 只对确认缺口实施最小、完整、向后兼容的修复；先红后绿并保护 M1–M5 行为。
+- [x] 同步受影响的共享类型、API、schema、README 与 M6 计划状态。
+- [x] 不删除任何电脑文件；本轮没有删除生成物、临时文件或其他电脑文件。
+- **状态：** complete
+
+#### 遇到的错误
+| 错误 | 尝试次数 | 处理 |
+|------|---------:|------|
+| 派生状态失效修复后，旧 CRUD 测试仍把“改约束+ready”视为合法 | 1 | 保留新完整性规则；将历史测试改为约束更新回 planning、再单独状态转移 |
+| 当前 PowerShell 会话没有全局 `playwright-cli` 别名 | 1 | 使用技能规定的 `npx --package @playwright/cli playwright-cli` 绝对等价入口，复用同一 QA session |
+| 技能参考中的旧 `network` 命令不被当前 CLI 接受 | 1 | 按 CLI 帮助改用当前 `requests` 命令并完成同源网络核验 |
+| QA 服务停止后，空结果查询让 PowerShell 命令返回非零 | 1 | 用显式数组计数复核，最终 `LISTENING=0`、`PROCESSES=0` |
+
+### 阶段 77：最终复验与签收
+- [x] 重跑受影响专项与完整质量门禁，复核工作树差异和残余风险。
+- [x] 逐条给出 11 项实施任务与 6 条验收标准的最终结论及直接证据。
+- [x] 更新三份规划记录，仅在所有必要修复和验证均完成后结束 active goal。
 - **状态：** complete
 
 ### 阶段 8：M1 基线恢复、契约审计与 TDD 蓝图
@@ -362,6 +394,61 @@
 - [x] 仅在所有已确认缺口关闭后完成 active goal。
 - **状态：** complete
 
+### 阶段 59：M5 上下文恢复、基线与 TDD 蓝图
+- [x] 完整读取 M5 计划、三份规划记录、Git 状态、现有迁移/schema、淘宝导入、WearEvent、洞察、Saved Outfit、导出与前端契约。
+- [x] 运行 session catchup 与修改前基线，识别并保留全部既有未提交改动，不原地写入真实数据库。
+- [x] 将十二项实施任务和五项验收标准映射到具体文件、失败测试顺序及互不冲突的子 Agent 范围。
+- **状态：** complete
+
+### 阶段 60：价格迁移、价值与利用洞察（TDD）
+- [x] 先写价格迁移失败测试：仅在 payment/quantity 明确时回填单件价格，记录 `costSource=taobao`，手工值不被重导入覆盖。
+- [x] 实现并测试成本/次、已知价格最高四分位、低利用高成本、沉睡单品与最佳价值纯函数，覆盖缺价、退款、多数量和零穿着。
+- [x] 在历史洞察页接入“价值与利用”区域，提供中性文案、证据展开、相关衣物查看与筛选动作。
+- **状态：** complete
+
+### 阶段 61：结构相似度、购买前检查与反馈（TDD）
+- [x] 先写类别硬约束、缺字段权重归一化、75% 阈值与可解释 reasons 的表驱动失败测试；仅在本地已有 CLIP 时把 embedding 作为可重建且不导出的缓存。
+- [x] 实现只读淘宝候选购买前检查，计算 possibleDuplicates、worksWith、coverageDelta 与中性 verdict；不得写入来源/衣物数据、调用云端 AI 或自动下载模型。
+- [x] 先写 migration/API 失败测试，再实现服务端候选 fingerprint、幂等 similarity feedback upsert，以及 not-duplicate 配对立即隐藏。
+- **状态：** complete
+
+### 阶段 62：M5 前端闭环与契约接线
+- [x] 接入 ValueInsights、PurchaseCheckPanel、重复反馈动作和购买前检查模式，覆盖加载、空、错误、键盘与移动端状态。
+- [x] 接入 GET `/api/insights/value`、POST `/api/purchase-checks/taobao-candidate`、GET `/api/garments/:id/similar`、POST `/api/similarity-feedback`，继续继承 session、同源保护与结构化错误。
+- [x] 扩展 OutfitExportV2，仅导出 similarity feedback；派生成本/次、排行和 embedding 均不持久化到导出。
+- **状态：** complete
+
+### 阶段 63：文档、全量验证与验收
+- [x] 同步 `docs/api.md`、`docs/schema.md`、必要用户说明与 M5 原计划勾选/状态。
+- [x] 运行 M5 专项、`npm run typecheck`、`npm test`、Python 测试、`npm run build`、依赖/差异检查。
+- [x] 使用隔离数据库和真实浏览器逐条验证五项验收标准、桌面/移动端交互及无云端/无隐式写入边界。
+- [x] 更新三份规划记录；不删除任何电脑文件，若标准构建会清理生成目录则先向用户展示目标和影响并取得明确确认。
+- **状态：** complete
+
+### 阶段 64：M5 独立验收基线与证据映射
+- [x] 完整读取 M5 计划、项目约束、三份规划记录与 Git 差异，不直接采信既有完成声明。
+- [x] 将 12 项实施任务与 5 条验收标准逐项映射到生产代码、自动化测试、文档和运行证据。
+- [x] 将迁移/价格与价值、相似度/购买检查、前端/导出/文档拆分为互斥只读审查范围并等待子 Agent 返回。
+- **状态：** complete
+
+### 阶段 65：静态审查与独立动态验证
+- [x] 审查迁移、金额显式性、退款/手工价格优先、价值统计口径、相似度归一化、指纹、反馈幂等和只读边界。
+- [x] 审查前端闭环、固定 API 契约、导出排除项、鉴权/同源保护、文档一致性和桌面/移动端可用性。
+- [x] 运行 M5 专项、类型检查、全量 Node/Python 测试、非破坏性构建、依赖与差异检查。
+- **状态：** complete
+
+### 阶段 66：验收缺陷修复与回归
+- [x] 对确认缺口先补可复现回归测试，再实施最小完整修复；不覆盖既有工作区成果。
+- [x] 对修复范围运行专项、相邻回归与全量复验，并使用隔离数据库/浏览器验证五条验收标准。
+- [x] 不原地迁移或写入真实数据库；未删除任何电脑文件。
+- **状态：** complete
+
+### 阶段 67：最终签收
+- [x] 汇总代码、测试、文档与交互证据，明确回答当前是否按 M5 计划完成。
+- [x] 报告本轮修复、验证结果和残余风险，并更新三份规划记录。
+- [x] 所有确认缺口均已关闭，验收证据完整，可以完成 active goal。
+- **状态：** complete
+
 ## 关键问题
 1. 工作区已有 `src/App.tsx`、`src/styles.css`、`tests/app.test.tsx` 未提交改动，必须先理解并保留。
 2. 当前前端可能以大型单文件为主，是否拆分需依据实际耦合和测试边界决定。
@@ -382,6 +469,11 @@
 | 采用 Redesign - Overhaul 而非 targeted evolution | 2026-07-07 的 quiet workbench 演进已实施但用户仍明确不满意 |
 | 采用“晨间试衣台”视觉方向 | 它让用户衣物图成为主角，并区分日常决策、衣橱管理和低频维护三种密度 |
 | 按业务域拆分前端并保留兼容入口 | `App.tsx`/全局 CSS 单体耦合已妨碍视觉一致性和独立状态管理，兼容重导出可降低测试迁移风险 |
+| M5 统一使用 migration 6 `decision-support` | 价格来源、显式性证据、相似反馈与可选 embedding 同属一个里程碑，避免并发迁移争抢版本或意外拆成 6/7 |
+| 淘宝金额回填要求 payment/quantity 显式性标记 | 现有 normalizer 与采集器会把缺失数量伪装为 1，不能据此生成价格事实 |
+| 购买检查只读且只消费已有本地 embedding | 满足不写业务库、不下载模型、不外发图片；embedding 是可重建缓存且不进入导出 |
+| 价值洞察采用独立失败边界 | `/api/insights/value` 失败只影响价值区，不阻断既有历史、日记、计划与保存搭配刷新 |
+| 购买检查复用服务端导入预览的 `sourceItemKey` | 客户端只提交原始 batch 与已解析候选键；稳定 fingerprint 始终由服务端重新计算 |
 
 ## 遇到的错误
 | 错误 | 尝试次数 | 解决方案 |
@@ -422,6 +514,8 @@
 | 本轮再次请求创建 goal 时提示已有 active goal | 1 | 读取 `get_goal` 并确认其目标正是本次前端重构，直接沿用 |
 | PowerShell `foreach` 结果直接接管道导致 EmptyPipeElement | 4 | 后续所有此类命令统一先赋给 `$rows` 再执行 `Format-Table`，不再使用直接管道形式 |
 | 浏览器基线标签页在截图前已失效 | 2 | 按浏览器技能要求保留 browser 绑定并新建标签页，重新导航后截图成功 |
+| M5 UI 统一 typecheck 同时命中 PurchaseCheck 场合标签类型与 DB Agent 的显式性 TDD 红灯 | 1 | 主线改用包含 date/dinner 的 `PLANNER_OCCASION_LABELS`；不越界修复 Agent 的预期红灯，等待其实现转绿后统一复验 |
+| 主应用安全测试首次注册账号使用连字符，先触发用户名格式 400 | 1 | 改用符合现有认证契约的 `decisionowner`，随后稳定复现决策支持路由未注册的 404 红灯并完成注册 |
 | `Select-String` 对混合通配符路径的截图脚本搜索无结果且退出 1 | 1 | 改为先用 `Get-ChildItem -Recurse -File` 收集明确文件列表，再传给 `Select-String` |
 | 新架构首次运行 `tests/app.test.tsx` 有 29 项失败 | 1 | 其中多数是旧 class/token/网格断言；真实兼容问题是直接调用含 `useMemo` 的 WardrobeView，已先移除无必要 hook，再迁移视觉测试 |
 | 误调用不存在的 `tab.playwright.domcontentloaded()` | 1 | `goto()` 已完成导航，改用 `domSnapshot()` 读取页面就绪结构 |
@@ -483,9 +577,82 @@
 | 浏览器自动化用 `fill("")` 清空尺码/评论时未产生真实输入变更 | 2 | 改用可见控件的键盘 Backspace 操作并逐次读取 value，最终数据库确认两字段均为空；这是验收工具交互差异，不是产品回退 |
 | 浏览器控制台发现 React 对直接 `javascript:` href 的未来兼容警告 | 1 | 改为通过 ref 在真实 DOM 上安装受控书签地址，保留拖拽书签能力；专项 76/76、typecheck、全量 410/410 和热更新浏览器复核均通过 |
 | 书签链接首次改用 `useCallback` 后，旧测试直接调用组件触发 Invalid hook call | 1 | 不改变既有测试调用契约，改用无 hook 的 ref callback；专项与全量回归随后全部通过 |
+| 本轮首次向 `findings.md`/`progress.md` 追加恢复记录时使用了并不存在于 findings 尾部的共同上下文 | 1 | 补丁整体未应用；读取三个文件的精确尾部后，改用各自真实上下文分别追加 |
+| M5 浏览器标签在热更新期间反复失效，且误调用了未公开的 `domcontentloaded()`/`isDisabled()` | 2 | 保留 browser runtime，新建同会话标签并只使用已验证的 `goto()`、语义 locator 与 DOM snapshot；反馈验收最终通过 |
+| M5 QA 候选首次经 PowerShell 默认编码发送后中文变为问号 | 1 | 在任何业务写入前中止，改用显式 UTF-8 byte 数组发送；隔离数据与页面中文均正确 |
+| 最终 npm 审计首次走本机 `npmmirror`，其安全审计端点不受支持 | 1 | 显式切换 npm 官方审计端点重跑，生产依赖为 0 漏洞 |
+| 无参数 `pip-audit` 扫描整套 Anaconda 宿主环境并报告无关全局包 | 1 | 按项目锁定依赖 `requirements.lock.txt` 重跑，结果为 0 已知漏洞；同时保留宿主环境报告，不把它误计为项目依赖 |
+| 本轮首次组合读取跨层差异时误把 PowerShell 数组语法写入 JavaScript 编排脚本 | 1 | 不重复该脚本；改为 JavaScript 文件数组逐个调用 PowerShell/Git，并继续保持 UTF-8 输出 |
+| 购买检查已有结果时，显式反馈失败只更新状态但页面不显示错误 | 1 | 新增保留旧结果同时显示反馈错误的 UI 回归；确认红灯后在结果区域加入 `role=alert` 的错误 Notice |
+| Selenium 产出的英文 `Refund successful` 未被 TypeScript 导入层识别 | 1 | 增加采集器英文退款状态回归，并让导入退款模式与采集器支持的中英文状态对齐 |
+| Selenium 金额提取在“单价 ¥100 ×2、实付款 ¥200”中先取单价 | 1 | 先匹配带明确总额/实付标签的金额；仅在恰有一个无标签货币金额时使用保守回退 |
+| 74.96% 相似度先舍入为 75.0% 后被误判为达到阈值 | 1 | 保持公开展示分数一位小数，但列表筛选改用未舍入内部得分，并补真实 embedding 边界回归 |
+| 同一淘宝 itemId+SKU 在详情字段补全后候选指纹变化，导致 not-duplicate 隐藏失效 | 1 | 候选 v1 指纹改为只哈希规范商品身份与 SKU；结构字段继续只参与相似度，不参与稳定身份 |
+| Selenium 把型号 `X100`/商品名 `X2` 当数量、千分位金额截断、重复快照丢完整证据、同单多商品合并 | 1 | 收紧数量证据、支持千分位、显式总额优先且多件无标签金额不采信；重复快照补全缺字段；多商品逐件保留但不猜共享 SKU/数量/金额 |
+| 价格编辑路径调查误查不存在的 `src/features/wardrobe/GarmentCard.tsx` | 1 | 保留已返回的服务端证据；改用 PowerShell 列出 wardrobe 真实文件，再读取实际卡片组件，不重复错误路径 |
+| 价值旧数据错误态测试首次补丁使用了不准确的测试标题上下文 | 1 | 用 PowerShell 精确定位现有 ValueInsights 测试标题和闭合位置后定点插入，不重复错误 hunk |
+| 价值旧数据回归第二次插入仍误用了不存在的末尾断言 | 1 | 读取 97–144 行真实内容后，以 `<details` 断言和下一测试标题为精确锚点插入；随后确认红灯并转绿 |
+| 更新规划文件时组合补丁包含空 `findings.md` hunk，整批未应用 | 1 | 移除空 hunk 后只提交有实际上下文的规划补丁，避免部分应用假设 |
+| 购买检查聚焦回归并发运行时 Vitest worker 异常退出，未出现断言失败 | 1 | 保留该次为不通过证据，改用 `--maxWorkers=1` 分三组重跑；6 文件 233/233 全部通过 |
+| 隔离 QA 首次登录被严格 Origin 校验返回 403 | 1 | 真实浏览器定位到 Vite 字符串代理隐式启用 `changeOrigin`；改为对象代理并显式 `changeOrigin: false`，新增代理配置回归后正常登录 |
+| Playwright 直接填充 JSON 与一次资源查询表达式被 Windows 参数解析去掉引号 | 2 | JSON 改用页面端 Base64 解码和原生 setter；资源查询改用不含字符串字面量的表达式，最终只观察到本地 `127.0.0.1:5176` |
+| 最终并行验证误调用不存在的旧视觉脚本路径，使同批构建/pytest 编排提前结束 | 1 | 确认未生成构建目录且无残留验证进程；改用仓库真实 `pytest` 入口并单独重跑构建，分别 38/38 与成功 |
+| M6 浏览器 QA 端口预检把 PowerShell `foreach` 直接接入管道，触发空管道元素解析错误 | 1 | 服务启动前即中止；改为先收集数组再格式化，确认 8788/5174 空闲 |
+| M6 QA 注册用 Windows PowerShell `Invoke-WebRequest` 在服务端成功 201 后抛 NullReferenceException | 1 | session 与账号实际已创建，9 个后续鉴权写请求和浏览器登录均成功；按本机 IWR 客户端异常记录，不改产品 |
+| Playwright `check` 在受控锁定复选框异步重渲染后报告“状态未改变”，但快照显示 checked 且重算 API 200 | 1 | 以新快照、网络请求和持久化结果为准；后续逐套确认使用 click 并逐次获得成功响应 |
+| M6 最终全量 Vitest 1/562 失败：M4 迁移测试精确数组仍止于版本 6 | 1 | 生产 migration 7 正确；历史测试追加 `trip-capsule-planner` 后重跑完整门禁 |
 
 ## 备注
 - 优先使用 PowerShell 原生命令，不先使用 `rg`。
 - PowerShell 命令显式设置 UTF-8。
 - 删除电脑上的文件前必须确保用户知晓。
 - 当前协作环境最多同时运行 4 个 Agent（含主 Agent）；本轮曾并行开启 3 个写入范围互斥的修复子 Agent，均已返回并由主 Agent 复核。
+
+## 会话：2026-07-15（Outfit M6 Trip Capsule）
+
+### 阶段 68：上下文恢复、M6 计划映射与基线
+- **状态：** complete
+- [x] 确认并沿用与本次请求完全一致的 active goal。
+- [x] 完整读取文件规划技能，并恢复既有 `task_plan.md`、`findings.md`、`progress.md` 与 session catchup 状态。
+- [x] 完整读取 M6 Trip Capsule 计划、项目约束、Git 工作树与现有实现，建立任务—文件—测试映射。
+- [x] 运行修改前基线并划定可并行且互不冲突的 TDD 范围。
+- **删除约束：** 本轮尚未删除任何文件；如计划执行需要删除电脑文件，将先明确告知用户。
+
+### 阶段 69：Trip 数据模型、CRUD、天气与严格校验（TDD）
+- **状态：** complete
+- [x] 先写 migration、日期/活动/约束、Trip CRUD、Day/Activity 编辑和状态转换失败测试。
+- [x] 新增 `trips`、`trip_days`、`trip_day_activities`、`trip_outfit_selections`、`trip_packing_items`，拒绝反向日期、超过 7 天、负上限及未知字段。
+- [x] 实现最多 7 天天气快照；只有用户明确启用天气时才发送坐标，取消/保存均不改变全局衣物可用状态。
+- **当前记录：** 主线固定 Trip 客户端契约先红于 `getTrips is not a function`，实现 13 个固定路径后 `frontendApi` 25/25 转绿；统一 typecheck 暂被优化器 Agent 的预期红灯测试阻断，未越界修改其文件。
+
+### 阶段 70：推荐复用与胶囊优化器（TDD）
+- **状态：** complete
+- [x] 将既有推荐引擎暴露为受 M0 预算约束的 `generateCandidates(context, constraints, budget)`，不复制搭配规则。
+- [x] 以纯函数测试覆盖天气/场合硬阈值、maxShoes、maxGarments、三种 repeatPolicy、洗衣前核心穿着次数、洗衣日重置、同日共用/独立搭配及不可行结果。
+- [x] 实现 beam width=100 的硬剪枝搜索、目标函数和解释输出；输出覆盖日期/活动、选择原因、冲突约束与最小放宽建议。
+- [x] 确保锁定/替换某日单品后只局部重算后续日，且规划前后 garment availability 完全不变。
+
+### 阶段 71：旅行 API、装箱状态、实际穿着与导出（TDD）
+- **状态：** complete
+- [x] 创建 `server/routes/trips.ts` 并接入 session、Origin/Sec-Fetch-Site、严格输入与结构化错误边界。
+- [x] 持久化“已打包/穿在身上/不带”和自由文本非衣物 checklist，不扩张 GarmentCategory。
+- [x] 旅行完成后提供逐日确认的 wear events 批量写入，重用 M4/M3 服务且绝不自动假设计划已执行。
+- [x] 扩展 OutfitExportV2 纳入 trips、activities、selections、packing states；图片二进制仍只进入显式 ZIP。
+- **当前记录：** M6 feature/五数组验证先红于缺失字段未报错；增加严格 shape/必填数组和旧 V2 兼容后定向 export 测试转绿，待 migration 7 落地后接入单事务稳定查询。
+- **集成记录：** Trip 认证路由、装箱四态、自由文本必需品、完成行程的幂等 wear event 外层事务均已通过；联合回归仅剩 builder 未填五个 Trip 数组导致 2 项导出 API 失败，现由主线补齐。
+- **完成证据：** builder 已在同一读事务中稳定导出 active/archived Trip 关系记录，只用 garment IDs 表示 selection；导出/API 87/87、M6 跨层专项 281/281、typecheck 全绿。
+
+### 阶段 72：旅行规划与装箱前端（TDD）
+- **状态：** complete
+- [x] 创建 `TripPlannerView.tsx`、`PackingChecklist.tsx` 及必要样式/客户端契约。
+- [x] 在“计划与洞察”二级区域新增旅行入口，不增加第六个主导航项。
+- [x] 覆盖创建/编辑、活动共用或独立、生成结果、无解解释、锁定/替换、逐日确认、装箱状态及桌面/移动端/键盘/错误状态。
+- **当前记录：** History 二级入口先红于缺少“旅行计划”，新增 `trips` section 与受控 `tripContent` 后定向 App 测试转绿；五项主导航未修改。
+- **完成证据：** 组件专项 5/5、新旧 Planner 联合 16/16、主线跨层前端组 110/110；390px 单列和不低于 44px 交互目标已有回归覆盖。
+
+### 阶段 73：文档、全量验证与最终验收
+- **状态：** complete
+- [x] 同步 README、`docs/api.md`、`docs/schema.md` 与 M6 原计划状态/勾选。
+- [x] 运行专项测试、`npm run typecheck`、`npm test`、Python 测试、非破坏性 `npm run build`、审计与 `git diff --check`。
+- [x] 使用隔离数据库和真实浏览器逐条核验 6 条验收标准、桌面/移动端、控制台与隐私边界。
+- [x] 更新三份规划记录；全部条目均已有直接证据，可完成 active goal。

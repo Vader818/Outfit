@@ -14,13 +14,19 @@ import {
   applySavedOutfitReplacement,
   archiveGarment,
   archiveSavedOutfit,
+  archiveTrip,
+  checkTaobaoPurchaseCandidate,
   commitTaobaoImport,
   clearRecommendationFeedback,
   createGarment,
   createGarmentCutout,
   createOutfitPlan,
   createSavedOutfit,
+  createTrip,
+  createTripPackingItem,
   createWearEvent,
+  completeTrip,
+  deleteTripPackingItem,
   deleteOutfitPlan,
   deleteWearEvent,
   downloadCompleteBackup,
@@ -37,6 +43,8 @@ import {
   getRecommendationRuns,
   getRecommendations,
   getSavedOutfits,
+  getTrips,
+  getValueInsights,
   getVisionModels,
   getWearLogs,
   getWearEvents,
@@ -49,7 +57,9 @@ import {
   previewCompleteBackup,
   previewRecommendationFeedbackClear,
   readLatestTaobaoCapture,
+  recalculateTripSelection,
   refreshGarmentThumbnails,
+  refreshTripWeather,
   register as registerAccount,
   restoreGarment,
   savePersonalProfile,
@@ -57,10 +67,14 @@ import {
   selectGarmentThumbnail,
   startCaptureJob,
   submitRecommendationFeedback,
+  submitSimilarityFeedback,
+  generateTrip,
   updateGarment,
   updateGarmentAvailability,
   updateOutfitPlan,
   updateSavedOutfit,
+  updateTrip,
+  updateTripPackingItem,
   updateWearEvent,
   uploadGarmentImage,
   verifyVisionModel,
@@ -73,6 +87,7 @@ import { AppMark, IconButton, Notice, Skeleton, cx } from "../components/ui";
 import { AuthView, SessionSummary } from "../features/auth/AuthView";
 import { HistoryInsightsView, type HistorySection } from "../features/insights/HistoryInsightsView";
 import { ImportView } from "../features/import/ImportView";
+import { eligiblePurchaseCheckCandidates } from "../features/import/purchaseCheckCandidates";
 import { OutfitBuilder } from "../features/outfits/OutfitBuilder";
 import { ReplacementDialog } from "../features/outfits/ReplacementDialog";
 import { RecommendationView } from "../features/recommendations/RecommendationView";
@@ -84,8 +99,9 @@ import { WardrobeView } from "../features/wardrobe/WardrobeView";
 import { FeedbackManagementDialog } from "../features/insights/FeedbackManagementDialog";
 import { OutfitPlanDialog } from "../features/planner/OutfitPlanDialog";
 import { PlannerView } from "../features/planner/PlannerView";
+import { TripPlannerView } from "../features/planner/TripPlannerView";
 import { WearDiaryPanel } from "../features/planner/WearDiaryPanel";
-import { WearEventDialog, type WearEventDialogInitial } from "../features/planner/WearEventDialog";
+import { WearEventDialog, zonedDateTimeToIso, type WearEventDialogInitial } from "../features/planner/WearEventDialog";
 import { addCalendarDays } from "../features/planner/WeekGrid";
 import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
 import { prepareGarmentImageForUpload } from "../lib/imageSanitization";
@@ -119,6 +135,7 @@ import type {
   OutfitPlanUpdate,
   OutfitReplacementSuggestion,
   PersonalProfile,
+  PurchaseCheckResult,
   RecommendationResult,
   RecommendationFeedbackClearPreview,
   RecommendationFeedbackClearScope,
@@ -129,13 +146,23 @@ import type {
   SavedOutfitCreateInput,
   SavedOutfitUpdateInput,
   Season,
+  SimilarityFeedbackVerdict,
+  TaobaoCapturedBatch,
   TaobaoImportPreview,
   TaobaoImportCommitResult,
   TaobaoWardrobeFilterSummary,
   ThumbnailCandidate,
+  Trip,
+  TripConstraintRelaxation,
+  TripCreateInput,
+  TripOptimizationResult,
+  TripOutfitSelection,
+  TripPackingItem,
+  TripPackingStatus,
   VisionModelId,
   VisionModelsResponse,
   WardrobeInsights,
+  WardrobeValueInsights,
   WearLogEntry,
   WearEvent,
   WearEventPage,
@@ -219,6 +246,51 @@ function weekStartDateKey(dateKey: string): string {
   const [year, month, day] = dateKey.split("-").map(Number);
   const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
   return addCalendarDays(dateKey, -(weekday === 0 ? 6 : weekday - 1));
+}
+
+function createDefaultTripDraft(date: string): TripCreateInput {
+  return {
+    name: "",
+    startDate: date,
+    endDate: date,
+    destination: { name: "" },
+    maxGarments: 8,
+    maxShoes: 2,
+    repeatPolicy: "allow",
+    maxCoreWearsBetweenLaundry: 2,
+    days: [{
+      date,
+      activities: [{
+        name: "",
+        occasion: "日常活动",
+        formality: "casual",
+        requiresSeparateOutfit: false
+      }]
+    }]
+  };
+}
+
+function tripToDraft(trip: Trip): TripCreateInput {
+  return {
+    name: trip.name,
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    destination: { ...trip.destination },
+    maxGarments: trip.maxGarments,
+    maxShoes: trip.maxShoes,
+    repeatPolicy: trip.repeatPolicy,
+    maxCoreWearsBetweenLaundry: trip.maxCoreWearsBetweenLaundry,
+    ...(trip.laundryDay ? { laundryDay: trip.laundryDay } : {}),
+    days: trip.days.map((day) => ({
+      date: day.date,
+      activities: day.activities.map((activity) => ({
+        name: activity.name,
+        occasion: activity.occasion,
+        formality: activity.formality,
+        requiresSeparateOutfit: activity.requiresSeparateOutfit
+      }))
+    }))
+  };
 }
 
 type WearEventPageFetcher = (query: PlannerRangeQuery) => Promise<WearEventPage>;
@@ -331,6 +403,18 @@ export function buildTaobaoOrderCaptureOptions() {
   return { maxPages: 15, loginWait: 60 };
 }
 
+export function confirmedSelectionIdsAfterRecalculation(
+  confirmedIds: readonly number[],
+  previousSelections: readonly Pick<TripOutfitSelection, "id">[],
+  targetIndex: number,
+  recalculationApplied: boolean
+): number[] {
+  if (!recalculationApplied) return [...confirmedIds];
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= previousSelections.length) return [];
+  const unchangedPrefixIds = new Set(previousSelections.slice(0, targetIndex).map((selection) => selection.id));
+  return confirmedIds.filter((id) => unchangedPrefixIds.has(id));
+}
+
 export function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -422,6 +506,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [importResult, setImportResult] = useState<ImportSummary | TaobaoImportCommitResult | null>(null);
   const [importPreview, setImportPreview] = useState<TaobaoImportPreview | null>(null);
   const [importDecisions, setImportDecisions] = useState<Record<string, ImportDecision>>({});
+  const [importMode, setImportMode] = useState<"import" | "purchase-check">("import");
+  const [purchaseCheckResult, setPurchaseCheckResult] = useState<PurchaseCheckResult | null>(null);
+  const [purchaseCheckSourceItemKey, setPurchaseCheckSourceItemKey] = useState("");
+  const [purchaseCheckBusy, setPurchaseCheckBusy] = useState(false);
+  const [purchaseCheckError, setPurchaseCheckError] = useState("");
+  const [similarityFeedbackBusyGarmentId, setSimilarityFeedbackBusyGarmentId] = useState<number | null>(null);
+  const purchaseCheckRequestVersion = useRef(0);
   const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
   const [captureEngine, setCaptureEngine] = useState<CaptureEngine>("selenium");
@@ -445,6 +536,20 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   ));
   const [plannerBusy, setPlannerBusy] = useState(false);
   const [plannerError, setPlannerError] = useState("");
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
+  const [tripEditorMode, setTripEditorMode] = useState<"create" | "edit" | null>(null);
+  const [editingTripId, setEditingTripId] = useState<number | null>(null);
+  const [tripDraft, setTripDraft] = useState<TripCreateInput>(() => createDefaultTripDraft(
+    dateKeyInTimeZone(new Date(), resolveLocalTimeZone())
+  ));
+  const [tripOptimization, setTripOptimization] = useState<TripOptimizationResult | null>(null);
+  const [confirmedTripSelectionIds, setConfirmedTripSelectionIds] = useState<number[]>([]);
+  const [tripEssentialDraft, setTripEssentialDraft] = useState("");
+  const [tripLoading, setTripLoading] = useState(() => typeof window !== "undefined");
+  const [tripBusy, setTripBusy] = useState(false);
+  const [tripError, setTripError] = useState("");
+  const tripRequestVersion = useRef(0);
   const [busyPlanId, setBusyPlanId] = useState<number | null>(null);
   const [busyWearEventId, setBusyWearEventId] = useState<number | null>(null);
   const [schedulingOutfitId, setSchedulingOutfitId] = useState<string | null>(null);
@@ -453,6 +558,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [planRepeatWarning, setPlanRepeatWarning] = useState("");
   const [recommendationRuns, setRecommendationRuns] = useState<RecommendationRunEntry[]>([]);
   const [insights, setInsights] = useState<WardrobeInsights | null>(null);
+  const [valueInsights, setValueInsights] = useState<WardrobeValueInsights | null>(null);
+  const [valueInsightsBusy, setValueInsightsBusy] = useState(false);
+  const [valueInsightsError, setValueInsightsError] = useState("");
   const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
   const [savedOutfitBusy, setSavedOutfitBusy] = useState(false);
   const [savingOutfitId, setSavingOutfitId] = useState<string | null>(null);
@@ -498,6 +606,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     () => [...garments, ...archivedGarments],
     [archivedGarments, garments]
   );
+  const selectedTrip = trips.find((trip) => trip.id === selectedTripId) ?? null;
   const reviewPendingCount = garments.filter(isWardrobeReviewPendingGarment).length;
   const recommendationPendingCount = garments.filter(isRecommendationPendingGarment).length;
   const recommendationGarments = garments.filter(isRecommendationEligibleGarment);
@@ -529,6 +638,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       refreshProfile(),
       refreshHistoryData(),
       refreshSavedOutfits(),
+      refreshTrips(),
       refreshVisionModels()
     ])
       .finally(() => {
@@ -591,7 +701,40 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  async function refreshValueInsights() {
+    setValueInsightsBusy(true);
+    setValueInsightsError("");
+    try {
+      setValueInsights(await getValueInsights());
+    } catch (valueError) {
+      setValueInsightsError(valueError instanceof Error ? valueError.message : "价值与利用数据读取失败");
+    } finally {
+      setValueInsightsBusy(false);
+    }
+  }
+
+  async function refreshTrips() {
+    const requestVersion = ++tripRequestVersion.current;
+    try {
+      const nextTrips = await getTrips();
+      if (requestVersion !== tripRequestVersion.current) return;
+      setTrips(nextTrips);
+      setSelectedTripId((current) =>
+        current && nextTrips.some((trip) => trip.id === current)
+          ? current
+          : nextTrips[0]?.id ?? null
+      );
+      setTripError("");
+    } catch (tripLoadError) {
+      if (requestVersion !== tripRequestVersion.current) return;
+      setTripError(tripLoadError instanceof Error ? tripLoadError.message : "旅行计划读取失败");
+    } finally {
+      if (requestVersion === tripRequestVersion.current) setTripLoading(false);
+    }
+  }
+
   async function refreshHistoryData() {
+    void refreshValueInsights();
     setError("");
     try {
       const weekEnd = addCalendarDays(plannerWeekStart, 6);
@@ -691,6 +834,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setImportDecisions({});
       setImportText("");
       setCaptureFilterSummary(null);
+      resetPurchaseCheck();
       await refreshGarments();
       await refreshHistoryData();
       setStatusMessage(`新增 ${result.summary.created} 件，更新 ${result.summary.updated} 件，退款同步 ${result.summary.refundSynced} 件`);
@@ -757,6 +901,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setImportResult(null);
       setImportPreview(null);
       setImportDecisions({});
+      resetPurchaseCheck();
       setCaptureFilterSummary(latest.filterSummary ?? null);
       setImportText(latest.jsonText || JSON.stringify(latest.payload, null, 2));
       setStatusMessage("采集产物已读取，可以先预览再导入");
@@ -772,14 +917,22 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setCaptureFilterSummary(null);
     setImportPreview(null);
     setImportDecisions({});
+    resetPurchaseCheck();
   }
 
   async function previewImport() {
+    resetPurchaseCheck();
     setBusyAction("preview-import");
     setError("");
     try {
       const preview = await previewTaobaoImport(JSON.parse(importText));
+      const purchaseCandidates = eligiblePurchaseCheckCandidates(preview);
       setImportPreview(preview);
+      setPurchaseCheckSourceItemKey((current) => purchaseCandidates.some((candidate) => candidate.sourceItemKey === current)
+        ? current
+        : purchaseCandidates[0]?.sourceItemKey ?? "");
+      setPurchaseCheckResult(null);
+      setPurchaseCheckError("");
       setImportDecisions(Object.fromEntries(preview.candidates.map((candidate) => [
         candidate.sourceItemKey,
         {
@@ -797,6 +950,151 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   function updateImportDecision(sourceItemKey: string, decision: ImportDecision) {
     setImportDecisions((current) => ({ ...current, [sourceItemKey]: decision }));
+  }
+
+  function resetPurchaseCheck() {
+    purchaseCheckRequestVersion.current += 1;
+    setPurchaseCheckResult(null);
+    setPurchaseCheckSourceItemKey("");
+    setPurchaseCheckError("");
+    setPurchaseCheckBusy(false);
+    setSimilarityFeedbackBusyGarmentId(null);
+  }
+
+  function changeImportMode(mode: "import" | "purchase-check") {
+    purchaseCheckRequestVersion.current += 1;
+    setPurchaseCheckBusy(false);
+    setSimilarityFeedbackBusyGarmentId(null);
+    setImportMode(mode);
+    setPurchaseCheckError("");
+    if (mode === "purchase-check" && !purchaseCheckSourceItemKey) {
+      setPurchaseCheckSourceItemKey(eligiblePurchaseCheckCandidates(importPreview)[0]?.sourceItemKey ?? "");
+    }
+  }
+
+  function changePurchaseCheckSourceItemKey(sourceItemKey: string) {
+    purchaseCheckRequestVersion.current += 1;
+    setPurchaseCheckBusy(false);
+    setSimilarityFeedbackBusyGarmentId(null);
+    setPurchaseCheckSourceItemKey(sourceItemKey);
+    setPurchaseCheckResult(null);
+    setPurchaseCheckError("");
+  }
+
+  async function runPurchaseCheck() {
+    const requestVersion = ++purchaseCheckRequestVersion.current;
+    const requestedSourceItemKey = purchaseCheckSourceItemKey;
+    const requestedImportText = importText;
+    setPurchaseCheckBusy(true);
+    setSimilarityFeedbackBusyGarmentId(null);
+    setPurchaseCheckError("");
+    setPurchaseCheckResult(null);
+    try {
+      const batch = JSON.parse(requestedImportText) as TaobaoCapturedBatch;
+      let preview = importPreview;
+      if (!preview) {
+        preview = await previewTaobaoImport(batch);
+        if (purchaseCheckRequestVersion.current !== requestVersion) return;
+        setImportPreview(preview);
+        setImportDecisions(Object.fromEntries(preview.candidates.map((candidate) => [
+          candidate.sourceItemKey,
+          {
+            sourceItemKey: candidate.sourceItemKey,
+            include: candidate.disposition === "create" || candidate.disposition === "update" || candidate.disposition === "refund-sync"
+          }
+        ])));
+      }
+      const purchaseCandidates = eligiblePurchaseCheckCandidates(preview);
+      const sourceItemKey = purchaseCandidates.some((candidate) => candidate.sourceItemKey === requestedSourceItemKey)
+        ? requestedSourceItemKey
+        : purchaseCandidates[0]?.sourceItemKey ?? "";
+      if (!sourceItemKey) {
+        throw new Error("没有可用于购买前检查的未退款服饰候选");
+      }
+      setPurchaseCheckSourceItemKey(sourceItemKey);
+      const result = await checkTaobaoPurchaseCandidate({ batch, sourceItemKey });
+      if (purchaseCheckRequestVersion.current !== requestVersion) return;
+      setPurchaseCheckResult(result);
+    } catch (checkError) {
+      if (purchaseCheckRequestVersion.current !== requestVersion) return;
+      setPurchaseCheckResult(null);
+      setPurchaseCheckError(checkError instanceof Error ? checkError.message : "购买前检查失败");
+    } finally {
+      if (purchaseCheckRequestVersion.current === requestVersion) {
+        setPurchaseCheckBusy(false);
+      }
+    }
+  }
+
+  async function saveSimilarityFeedback(
+    comparedGarmentId: number,
+    verdict: SimilarityFeedbackVerdict
+  ) {
+    if (!purchaseCheckSourceItemKey || purchaseCheckBusy || similarityFeedbackBusyGarmentId !== null) return;
+    const requestVersion = ++purchaseCheckRequestVersion.current;
+    const sourceItemKey = purchaseCheckSourceItemKey;
+    const requestedImportText = importText;
+    setSimilarityFeedbackBusyGarmentId(comparedGarmentId);
+    setPurchaseCheckError("");
+    try {
+      let batch: TaobaoCapturedBatch;
+      try {
+        batch = JSON.parse(requestedImportText) as TaobaoCapturedBatch;
+        await submitSimilarityFeedback({
+          subject: {
+            kind: "taobao-candidate",
+            batch,
+            sourceItemKey
+          },
+          comparedGarmentId,
+          verdict
+        });
+      } catch (feedbackError) {
+        if (purchaseCheckRequestVersion.current === requestVersion) {
+          setPurchaseCheckError(feedbackError instanceof Error ? feedbackError.message : "相似度反馈保存失败");
+        }
+        return;
+      }
+      if (purchaseCheckRequestVersion.current !== requestVersion) return;
+
+      if (verdict === "not-duplicate") {
+        setPurchaseCheckResult((current) => current ? {
+          ...current,
+          possibleDuplicates: current.possibleDuplicates.filter((match) => match.garment.id !== comparedGarmentId)
+        } : current);
+      }
+      setStatusMessage(verdict === "not-duplicate" ? "已记录为不是重复，相似项已更新" : "已记录为确实重复");
+
+      try {
+        const refreshed = await checkTaobaoPurchaseCandidate({ batch, sourceItemKey });
+        if (purchaseCheckRequestVersion.current === requestVersion) {
+          setPurchaseCheckResult(refreshed);
+        }
+      } catch (refreshError) {
+        if (purchaseCheckRequestVersion.current === requestVersion) {
+          const detail = refreshError instanceof Error ? refreshError.message : "请稍后重试";
+          setPurchaseCheckError(`反馈已保存，但重新检查失败：${detail}`);
+        }
+      }
+    } finally {
+      if (purchaseCheckRequestVersion.current === requestVersion) {
+        setSimilarityFeedbackBusyGarmentId(null);
+      }
+    }
+  }
+
+  function openRelatedGarments(garmentIds: number[], message = "已显示洞察中的相关衣物") {
+    const relatedGarmentIds = Array.from(new Set(
+      garmentIds.filter((id) => Number.isSafeInteger(id) && id > 0)
+    ));
+    if (!relatedGarmentIds.length) {
+      setError("这条洞察没有可查看的相关衣物");
+      return;
+    }
+    setSelectedIds([]);
+    setWardrobeFilters({ ...DEFAULT_WARDROBE_FILTERS, relatedGarmentIds });
+    setStatusMessage(message);
+    navigateTo("wardrobe");
   }
 
   async function updateOne(id: number, update: Partial<Garment>) {
@@ -1745,6 +2043,252 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setSavedOutfits((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
   }
 
+  function upsertTrip(nextTrip: Trip) {
+    setTrips((items) => [nextTrip, ...items.filter((item) => item.id !== nextTrip.id)]);
+    setSelectedTripId(nextTrip.id);
+  }
+
+  function beginTripMutation() {
+    tripRequestVersion.current += 1;
+    setTripBusy(true);
+    setTripError("");
+  }
+
+  function startTripCreate() {
+    setTripDraft(createDefaultTripDraft(plannerToday));
+    setEditingTripId(null);
+    setTripEditorMode("create");
+    setTripError("");
+  }
+
+  function startTripEdit(trip: Trip) {
+    setSelectedTripId(trip.id);
+    setTripDraft(tripToDraft(trip));
+    setEditingTripId(trip.id);
+    setTripEditorMode("edit");
+    setTripError("");
+  }
+
+  async function saveTripDraft(draft: TripCreateInput, mode: "create" | "edit") {
+    beginTripMutation();
+    try {
+      const { days, ...tripFields } = draft;
+      let saved: Trip;
+      if (mode === "edit") {
+        if (editingTripId === null) throw new Error("旅行编辑目标已失效，请重新打开编辑器");
+        saved = await updateTrip(editingTripId, {
+          ...tripFields,
+          days,
+          laundryDay: draft.laundryDay ?? null
+        });
+      } else {
+        saved = await createTrip(draft);
+      }
+      upsertTrip(saved);
+      setTripDraft(tripToDraft(saved));
+      setEditingTripId(null);
+      setTripEditorMode(null);
+      setTripOptimization(null);
+      setConfirmedTripSelectionIds([]);
+      setStatusMessage(mode === "edit" ? "旅行计划已更新" : "旅行计划已创建");
+    } catch (tripSaveError) {
+      setTripError(tripSaveError instanceof Error ? tripSaveError.message : "旅行计划保存失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function archiveOneTrip(trip: Trip) {
+    if (!globalThis.confirm(`确定归档「${trip.name}」吗？已确认的实际穿着记录仍会保留。`)) return;
+    beginTripMutation();
+    try {
+      await archiveTrip(trip.id);
+      const remaining = trips.filter((item) => item.id !== trip.id);
+      setTrips(remaining);
+      setSelectedTripId(remaining[0]?.id ?? null);
+      setEditingTripId(null);
+      setTripEditorMode(null);
+      setTripOptimization(null);
+      setStatusMessage("旅行计划已归档");
+    } catch (tripArchiveError) {
+      setTripError(tripArchiveError instanceof Error ? tripArchiveError.message : "旅行计划归档失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function refreshOneTripWeather(trip: Trip) {
+    beginTripMutation();
+    try {
+      const result = await refreshTripWeather(trip.id);
+      upsertTrip(result.trip);
+      setStatusMessage(`已刷新 ${result.snapshots.length} 天天气快照`);
+    } catch (weatherError) {
+      setTripError(weatherError instanceof Error ? weatherError.message : "旅行天气刷新失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function generateOneTrip(trip: Trip) {
+    beginTripMutation();
+    try {
+      const result = await generateTrip(trip.id, {
+        useStoredWeather: trip.days.some((day) => Boolean(day.weather))
+      });
+      upsertTrip(result.trip);
+      setTripOptimization(result.optimization);
+      setConfirmedTripSelectionIds([]);
+      setStatusMessage(result.optimization.status === "feasible" ? "旅行胶囊已生成" : "当前硬约束下没有可行方案");
+    } catch (tripGenerationError) {
+      setTripError(tripGenerationError instanceof Error ? tripGenerationError.message : "旅行胶囊生成失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function applyTripRelaxation(trip: Trip, relaxation: TripConstraintRelaxation) {
+    if (!relaxation.guaranteed) {
+      startTripEdit(trip);
+      setTripError("这条建议需要手动调整并重新生成验证");
+      return;
+    }
+    const next = tripToDraft(trip);
+    if (relaxation.constraint === "maxGarments" && typeof relaxation.to === "number") next.maxGarments = relaxation.to;
+    else if (relaxation.constraint === "maxShoes" && typeof relaxation.to === "number") next.maxShoes = relaxation.to;
+    else if (relaxation.constraint === "maxCoreWearsBetweenLaundry" && [1, 2, 3].includes(Number(relaxation.to))) {
+      next.maxCoreWearsBetweenLaundry = Number(relaxation.to) as 1 | 2 | 3;
+    } else if (relaxation.constraint === "repeatPolicy" && ["allow", "no-consecutive-core", "no-repeat-core"].includes(String(relaxation.to))) {
+      next.repeatPolicy = String(relaxation.to) as TripCreateInput["repeatPolicy"];
+    } else {
+      startTripEdit(trip);
+      setTripError("这条放宽建议需要手动编辑旅行约束");
+      return;
+    }
+    beginTripMutation();
+    try {
+      const { days: _days, ...update } = next;
+      const updated = await updateTrip(trip.id, update);
+      upsertTrip(updated);
+      setTripDraft(tripToDraft(updated));
+      setTripOptimization(null);
+      setConfirmedTripSelectionIds([]);
+      const result = await generateTrip(updated.id, { useStoredWeather: updated.days.some((day) => Boolean(day.weather)) });
+      upsertTrip(result.trip);
+      setTripDraft(tripToDraft(result.trip));
+      setTripOptimization(result.optimization);
+    } catch (relaxError) {
+      setTripError(relaxError instanceof Error ? relaxError.message : "约束放宽后重新生成失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function updateTripSelection(
+    selection: TripOutfitSelection,
+    input: { lockedGarmentIds?: number[]; replace?: { fromGarmentId: number; toGarmentId: number } }
+  ) {
+    if (!selectedTrip) return;
+    const targetIndex = selectedTrip.selections.findIndex((candidate) => candidate.id === selection.id);
+    beginTripMutation();
+    try {
+      const result = await recalculateTripSelection(selectedTrip.id, selection.id, input);
+      upsertTrip(result.trip);
+      setTripOptimization(result.optimization);
+      setConfirmedTripSelectionIds((ids) => confirmedSelectionIdsAfterRecalculation(
+        ids,
+        selectedTrip.selections,
+        targetIndex,
+        result.optimization.status === "feasible"
+      ));
+    } catch (selectionError) {
+      setTripError(selectionError instanceof Error ? selectionError.message : "旅行搭配局部重算失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function setTripPackingStatus(item: TripPackingItem, status: TripPackingStatus) {
+    if (!selectedTrip) return;
+    beginTripMutation();
+    try {
+      const updated = await updateTripPackingItem(selectedTrip.id, item.id, { status });
+      upsertTrip({
+        ...selectedTrip,
+        packingItems: selectedTrip.packingItems.map((candidate) => candidate.id === updated.id ? updated : candidate)
+      });
+    } catch (packingError) {
+      setTripError(packingError instanceof Error ? packingError.message : "装箱状态更新失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function addTripEssential(label: string) {
+    if (!selectedTrip) return;
+    beginTripMutation();
+    try {
+      const item = await createTripPackingItem(selectedTrip.id, { label });
+      upsertTrip({ ...selectedTrip, packingItems: [...selectedTrip.packingItems, item] });
+      setTripEssentialDraft("");
+    } catch (essentialError) {
+      setTripError(essentialError instanceof Error ? essentialError.message : "必需品添加失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function removeTripEssential(item: TripPackingItem) {
+    if (!selectedTrip) return;
+    beginTripMutation();
+    try {
+      await deleteTripPackingItem(selectedTrip.id, item.id);
+      upsertTrip({
+        ...selectedTrip,
+        packingItems: selectedTrip.packingItems.filter((candidate) => candidate.id !== item.id)
+      });
+    } catch (essentialError) {
+      setTripError(essentialError instanceof Error ? essentialError.message : "必需品移除失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
+  async function completeOneTrip(trip: Trip) {
+    const expectedIds = trip.selections.map((selection) => selection.id);
+    if (expectedIds.some((id) => !confirmedTripSelectionIds.includes(id))) {
+      setTripError("请逐套确认每天实际穿着后再完成旅行");
+      return;
+    }
+    beginTripMutation();
+    try {
+      const result = await completeTrip(trip.id, {
+        confirmations: trip.selections.map((selection) => {
+          const day = trip.days.find((candidate) => candidate.id === selection.tripDayId);
+          const activity = day?.activities.find((candidate) => selection.activityIds.includes(candidate.id));
+          if (!day) throw new Error("旅行搭配缺少对应日期");
+          return {
+            selectionId: selection.id,
+            confirmed: true as const,
+            wornAt: zonedDateTimeToIso(`${day.date}T12:00`, plannerTimeZone),
+            timeZone: plannerTimeZone,
+            occasion: activity?.formality ?? "casual",
+            itemIds: selection.garments.map((garment) => garment.id)
+          };
+        })
+      });
+      upsertTrip(result.trip);
+      setTripOptimization(null);
+      setConfirmedTripSelectionIds([]);
+      setStatusMessage(`已按逐日确认写入 ${result.wearEvents.length} 条穿着日记`);
+      await refreshHistoryData();
+    } catch (completeError) {
+      setTripError(completeError instanceof Error ? completeError.message : "旅行实际穿着写入失败");
+    } finally {
+      setTripBusy(false);
+    }
+  }
+
   async function saveSettings() {
     if (!profileLoaded) {
       setError("个人画像尚未成功读取，请刷新后再保存");
@@ -1774,7 +2318,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function refreshHistory() {
     setBusyAction("history");
     try {
-      await Promise.all([refreshHistoryData(), refreshSavedOutfits()]);
+      await Promise.all([refreshHistoryData(), refreshSavedOutfits(), refreshTrips()]);
     } finally {
       setBusyAction(null);
     }
@@ -1924,6 +2468,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 activeSection={historySection}
                 onSectionChange={setHistorySection}
                 insights={insights}
+                valueInsights={valueInsights}
+                valueInsightsBusy={valueInsightsBusy}
+                valueInsightsError={valueInsightsError}
                 wearLogs={wearLogs}
                 wearEventCount={wearEvents.length}
                 recommendationRuns={recommendationRuns}
@@ -1940,6 +2487,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onFavoriteSavedOutfit={favoriteSavedOutfit}
                 onArchiveSavedOutfit={archiveOneSavedOutfit}
                 onScheduleSavedOutfit={scheduleSavedOutfit}
+                onViewRelatedGarments={(ids) => openRelatedGarments(ids)}
+                onApplyRelatedFilter={(ids) => openRelatedGarments(ids, "已应用相关衣物筛选")}
                 onManageFeedback={openFeedbackManagement}
                 plannerContent={(
                   <PlannerView
@@ -1961,6 +2510,60 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                     onToggleSkipped={(plan) => { void toggleOutfitPlanSkipped(plan); }}
                   />
                 )}
+                tripContent={(
+                  <TripPlannerView
+                    trips={trips}
+                    selectedTripId={selectedTripId}
+                    editorMode={tripEditorMode}
+                    draft={tripDraft}
+                    availableGarments={recommendationGarments}
+                    optimization={tripOptimization}
+                    confirmedSelectionIds={confirmedTripSelectionIds}
+                    essentialDraft={tripEssentialDraft}
+                    loading={tripLoading}
+                    busy={tripBusy || busyAction === "history"}
+                    error={tripError}
+                    onSelectTrip={(id) => {
+                      setSelectedTripId(id);
+                      setEditingTripId(null);
+                      setTripEditorMode(null);
+                      setTripOptimization(null);
+                      setConfirmedTripSelectionIds([]);
+                      setTripError("");
+                    }}
+                    onStartCreate={startTripCreate}
+                    onStartEdit={startTripEdit}
+                    onArchiveTrip={(trip) => { void archiveOneTrip(trip); }}
+                    onCancelEdit={() => {
+                      setEditingTripId(null);
+                      setTripEditorMode(null);
+                    }}
+                    onDraftChange={setTripDraft}
+                    onSave={(draft, mode) => { void saveTripDraft(draft, mode); }}
+                    onRefreshWeather={(trip) => { void refreshOneTripWeather(trip); }}
+                    onGenerate={(trip) => { void generateOneTrip(trip); }}
+                    onApplyRelaxation={(trip, relaxation) => { void applyTripRelaxation(trip, relaxation); }}
+                    onToggleGarmentLock={(selection, garmentId, locked) => {
+                      const next = new Set(selection.lockedGarmentIds);
+                      if (locked) next.add(garmentId);
+                      else next.delete(garmentId);
+                      void updateTripSelection(selection, { lockedGarmentIds: [...next] });
+                    }}
+                    onReplaceGarment={(selection, fromGarmentId, toGarmentId) => {
+                      void updateTripSelection(selection, { replace: { fromGarmentId, toGarmentId } });
+                    }}
+                    onPackingStatus={(item, status) => { void setTripPackingStatus(item, status); }}
+                    onEssentialDraftChange={setTripEssentialDraft}
+                    onAddEssential={(label) => { void addTripEssential(label); }}
+                    onRemoveEssential={(item) => { void removeTripEssential(item); }}
+                    onToggleWearConfirmation={(selection, confirmed) => {
+                      setConfirmedTripSelectionIds((ids) => confirmed
+                        ? [...new Set([...ids, selection.id])]
+                        : ids.filter((id) => id !== selection.id));
+                    }}
+                    onCompleteTrip={(trip) => { void completeOneTrip(trip); }}
+                  />
+                )}
                 diaryContent={(
                   <WearDiaryPanel
                     events={wearEvents}
@@ -1978,6 +2581,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
             ) : null}
             {tab === "import" ? (
               <ImportView
+                mode={importMode}
                 bookmarklet={bookmarklet}
                 importText={importText}
                 importResult={importResult}
@@ -1999,6 +2603,15 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onStartItemCapture={startItemCapture}
                 onReadLatestCapture={readLatestCapture}
                 onPreviewImport={previewImport}
+                purchaseCheckResult={purchaseCheckResult}
+                purchaseCheckBusy={purchaseCheckBusy}
+                purchaseCheckError={purchaseCheckError}
+                purchaseCheckSourceItemKey={purchaseCheckSourceItemKey}
+                feedbackBusyGarmentId={similarityFeedbackBusyGarmentId}
+                onModeChange={changeImportMode}
+                onPurchaseCheckSourceItemKey={changePurchaseCheckSourceItemKey}
+                onPurchaseCheck={() => { void runPurchaseCheck(); }}
+                onSimilarityFeedback={(garmentId, verdict) => { void saveSimilarityFeedback(garmentId, verdict); }}
               />
             ) : null}
             {tab === "settings" ? (

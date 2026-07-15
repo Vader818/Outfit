@@ -73,7 +73,7 @@ describe("recommendation feedback candidate API", () => {
       headers: {
         "content-type": "application/json",
         cookie: authCookie,
-        origin: "http://127.0.0.1"
+        origin: baseUrl
       },
       body: JSON.stringify({
         candidateId: CANDIDATE_WITH_FEEDBACK,
@@ -156,7 +156,7 @@ async function startAuthenticatedApp(db: AppDatabase): Promise<{ baseUrl: string
     method: "POST",
     headers: {
       "content-type": "application/json",
-      origin: "http://127.0.0.1"
+      origin: baseUrl
     },
     body: JSON.stringify({ username: "feedback_reader", password: "correct-password" })
   });

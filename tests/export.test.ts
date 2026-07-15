@@ -24,6 +24,12 @@ import {
   attachCandidateIdentities,
   persistRecommendationSnapshot
 } from "../server/services/recommendationCandidates";
+import {
+  archiveTrip,
+  createTrip,
+  createTripPackingItem,
+  updateTripPackingItem
+} from "../server/services/tripPlanner";
 import type { Garment, OutfitExportV2, RecommendationScoreBreakdown, WeatherSnapshot } from "../src/shared/types";
 
 const FIXED_NOW = new Date("2026-07-11T06:00:00.000Z");
@@ -286,6 +292,197 @@ describe("OutfitExportV2", () => {
     })).toThrow(/outfitPlanEntries/i);
   });
 
+  it("validates M5 similarity feedback while keeping older V2 envelopes compatible", () => {
+    const legacyV2: OutfitExportV2 = {
+      version: 2,
+      schemaVersion: 5,
+      exportedAt: FIXED_NOW.toISOString(),
+      features: ["versioned-migrations", "diary-week-planner"],
+      profile: {},
+      garments: [],
+      sourceOrderItems: [],
+      wearLogs: [],
+      recommendationRuns: [],
+      recommendationCandidates: [],
+      wearEvents: [],
+      outfitPlanEntries: []
+    };
+    expect(validateOutfitExport(legacyV2)).toBe(legacyV2);
+
+    const fixture: OutfitExportV2 = {
+      ...legacyV2,
+      schemaVersion: 6,
+      features: [...legacyV2.features, "decision-support"],
+      similarityFeedback: [{
+        id: 1,
+        subjectKey: `candidate:v1:${"a".repeat(64)}`,
+        comparedGarmentId: 7,
+        verdict: "not-duplicate",
+        createdAt: "2026-07-14T01:02:03.000Z",
+        updatedAt: "2026-07-14T02:03:04.000Z"
+      }]
+    };
+    expect(validateOutfitExport(fixture)).toBe(fixture);
+    expect(() => validateOutfitExport({ ...fixture, similarityFeedback: undefined }))
+      .toThrow(/similarityFeedback/i);
+
+    for (const invalidFeedback of [
+      { ...fixture.similarityFeedback![0], id: 0 },
+      { ...fixture.similarityFeedback![0], subjectKey: "../../private" },
+      { ...fixture.similarityFeedback![0], subjectKey: "garment:8", comparedGarmentId: 7 },
+      { ...fixture.similarityFeedback![0], comparedGarmentId: 0 },
+      { ...fixture.similarityFeedback![0], verdict: "maybe" },
+      { ...fixture.similarityFeedback![0], createdAt: "2026-07-14 01:02:03" }
+    ]) {
+      expect(() => validateOutfitExport({ ...fixture, similarityFeedback: [invalidFeedback] }))
+        .toThrow(/similarityFeedback/i);
+    }
+
+    const valuedGarment = {
+      ...garment(1, "top"),
+      acquiredAt: "2026-07-10",
+      purchasePriceCents: 0,
+      currency: "CNY" as const,
+      costSource: "manual" as const
+    };
+    expect(validateOutfitExport({ ...legacyV2, garments: [valuedGarment] })).toMatchObject({
+      garments: [valuedGarment]
+    });
+    for (const invalidGarment of [
+      { ...valuedGarment, acquiredAt: "2026-02-30" },
+      { ...valuedGarment, purchasePriceCents: -1 },
+      { ...valuedGarment, purchasePriceCents: 1.5 },
+      { ...valuedGarment, currency: "USD" },
+      { ...valuedGarment, costSource: "estimated" }
+    ]) {
+      expect(() => validateOutfitExport({ ...legacyV2, garments: [invalidGarment] }))
+        .toThrow(/garments/i);
+    }
+  });
+
+  it("validates M6 trip capsule arrays while keeping older V2 envelopes compatible", () => {
+    const legacyV2: OutfitExportV2 = {
+      version: 2,
+      schemaVersion: 6,
+      exportedAt: FIXED_NOW.toISOString(),
+      features: ["versioned-migrations"],
+      profile: {},
+      garments: [],
+      sourceOrderItems: [],
+      wearLogs: [],
+      recommendationRuns: [],
+      recommendationCandidates: []
+    };
+    expect(validateOutfitExport(legacyV2)).toBe(legacyV2);
+
+    const fixture: OutfitExportV2 = {
+      ...legacyV2,
+      schemaVersion: 7,
+      features: [...legacyV2.features, "trip-capsule"],
+      trips: [{
+        id: 1,
+        name: "上海三日会务",
+        startDate: "2026-07-20",
+        endDate: "2026-07-22",
+        destination: { name: "上海", latitude: 31.2, longitude: 121.4 },
+        maxGarments: 8,
+        maxShoes: 2,
+        repeatPolicy: "no-consecutive-core",
+        maxCoreWearsBetweenLaundry: 2,
+        laundryDay: "2026-07-22",
+        status: "ready",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T01:00:00.000Z"
+      }],
+      tripDays: [{ id: 2, tripId: 1, date: "2026-07-20", weather: { ...weather, date: "2026-07-20" } }],
+      tripActivities: [{
+        id: 3,
+        tripDayId: 2,
+        position: 0,
+        name: "会场报到",
+        occasion: "conference",
+        formality: "smart-casual",
+        requiresSeparateOutfit: false
+      }],
+      tripOutfitSelections: [{
+        id: 4,
+        tripDayId: 2,
+        slotIndex: 0,
+        activityIds: [3],
+        garmentIds: [11, 12, 13],
+        score: 88.5,
+        reasons: ["一套覆盖会场活动"],
+        activityEvaluations: [{
+          activityId: 3,
+          score: 88.5,
+          weatherComfort: 7,
+          occasion: 9,
+          hardEligible: true
+        }],
+        lockedGarmentIds: [11]
+      }],
+      tripPackingItems: [{
+        id: 5,
+        tripId: 1,
+        kind: "essential",
+        label: "护照",
+        status: "packed",
+        coverage: { dates: [], activityIds: [] }
+      }]
+    };
+
+    expect(validateOutfitExport(fixture)).toBe(fixture);
+    for (const key of [
+      "trips",
+      "tripDays",
+      "tripActivities",
+      "tripOutfitSelections",
+      "tripPackingItems"
+    ] as const) {
+      expect(() => validateOutfitExport({ ...fixture, [key]: undefined })).toThrow(new RegExp(key, "i"));
+    }
+    expect(() => validateOutfitExport({
+      ...fixture,
+      trips: [{ ...fixture.trips![0], endDate: "2026-07-19" }]
+    })).toThrow(/trips/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      tripActivities: [{ ...fixture.tripActivities![0], formality: "ceremonial" }]
+    })).toThrow(/tripActivities/i);
+    expect(() => validateOutfitExport({
+      ...fixture,
+      tripPackingItems: [{ ...fixture.tripPackingItems![0], status: "missing" }]
+    })).toThrow(/tripPackingItems/i);
+  });
+
+  it("exports trips whose independently valid shoe limit exceeds the garment limit", () => {
+    const db = createDatabase(":memory:");
+    createTrip(db, {
+      name: "轻装鞋履测试",
+      startDate: "2026-07-20",
+      endDate: "2026-07-20",
+      destination: { name: "上海" },
+      maxGarments: 1,
+      maxShoes: 2,
+      repeatPolicy: "allow",
+      maxCoreWearsBetweenLaundry: 1,
+      days: [{
+        date: "2026-07-20",
+        activities: [{
+          name: "到店试鞋",
+          occasion: "casual",
+          formality: "casual",
+          requiresSeparateOutfit: false
+        }]
+      }]
+    });
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+    expect(exported.trips).toEqual([
+      expect.objectContaining({ maxGarments: 1, maxShoes: 2 })
+    ]);
+  });
+
   it("builds a deterministic V2 envelope with every V1 business field and M0 data", () => {
     const db = createDatabase(":memory:");
     const profile = savePersonalProfile(db, {
@@ -315,7 +512,7 @@ describe("OutfitExportV2", () => {
 
     expect(exported).toEqual({
       version: 2,
-      schemaVersion: 5,
+      schemaVersion: 7,
       exportedAt: FIXED_NOW.toISOString(),
       features: OUTFIT_EXPORT_V2_FEATURES,
       profile,
@@ -348,9 +545,196 @@ describe("OutfitExportV2", () => {
       outfitPairStats: [],
       garmentAvailabilityEvents: [],
       wearEvents: [],
-      outfitPlanEntries: []
+      outfitPlanEntries: [],
+      similarityFeedback: [],
+      trips: [],
+      tripDays: [],
+      tripActivities: [],
+      tripOutfitSelections: [],
+      tripPackingItems: []
     });
     expect(JSON.stringify(again, null, 2)).toBe(JSON.stringify(exported, null, 2));
+  });
+
+  it("exports active and archived trip capsule records with stable relational ordering", () => {
+    const db = createDatabase(":memory:");
+    const garmentId = insertAssetGarment(db, "旅行白衬衫");
+    const activeTrip = createTrip(db, {
+      name: "上海出差",
+      startDate: "2026-07-20",
+      endDate: "2026-07-20",
+      destination: { name: "上海", latitude: 31.2304, longitude: 121.4737 },
+      maxGarments: 3,
+      maxShoes: 1,
+      repeatPolicy: "allow",
+      maxCoreWearsBetweenLaundry: 2,
+      days: [{
+        date: "2026-07-20",
+        activities: [{
+          name: "客户会议",
+          occasion: "business",
+          formality: "formal",
+          requiresSeparateOutfit: false
+        }]
+      }]
+    }, { now: () => FIXED_NOW });
+    const archivedTrip = createTrip(db, {
+      name: "杭州周末",
+      startDate: "2026-07-19",
+      endDate: "2026-07-19",
+      destination: { name: "杭州" },
+      maxGarments: 2,
+      maxShoes: 1,
+      repeatPolicy: "no-consecutive-core",
+      maxCoreWearsBetweenLaundry: 2,
+      days: [{
+        date: "2026-07-19",
+        activities: [{
+          name: "城市漫步",
+          occasion: "casual",
+          formality: "casual",
+          requiresSeparateOutfit: false
+        }]
+      }]
+    }, { now: () => FIXED_NOW });
+    archiveTrip(db, archivedTrip.id, { now: () => FIXED_NOW });
+
+    const activityId = activeTrip.days[0].activities[0].id;
+    const selectionId = Number(db.prepare(`
+      INSERT INTO trip_outfit_selections (
+        trip_day_id, slot_index, activity_ids_json, garment_ids_json, score,
+        reasons_json, activity_evaluations_json, locked_garment_ids_json,
+        created_at, updated_at
+      ) VALUES (?, 0, ?, ?, 88, ?, ?, ?, ?, ?)
+    `).run(
+      activeTrip.days[0].id,
+      JSON.stringify([activityId]),
+      JSON.stringify([garmentId]),
+      JSON.stringify(["覆盖客户会议"]),
+      JSON.stringify([{
+        activityId,
+        score: 88,
+        weatherComfort: 2,
+        occasion: 4,
+        hardEligible: true
+      }]),
+      JSON.stringify([garmentId]),
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString()
+    ).lastInsertRowid);
+    db.prepare("UPDATE trip_day_activities SET selection_id = ? WHERE id = ?")
+      .run(selectionId, activityId);
+    const essential = createTripPackingItem(
+      db,
+      activeTrip.id,
+      { label: "充电器" },
+      { now: () => FIXED_NOW }
+    );
+    updateTripPackingItem(
+      db,
+      activeTrip.id,
+      essential.id,
+      { status: "packed" },
+      { now: () => FIXED_NOW }
+    );
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+    const again = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+
+    expect(exported.trips?.map((trip) => [trip.id, trip.status])).toEqual([
+      [archivedTrip.id, "archived"],
+      [activeTrip.id, "planning"]
+    ]);
+    expect(exported.tripDays?.map((day) => day.tripId)).toEqual([
+      archivedTrip.id,
+      activeTrip.id
+    ]);
+    expect(exported.tripActivities?.map((activity) => activity.name)).toEqual([
+      "城市漫步",
+      "客户会议"
+    ]);
+    expect(exported.tripOutfitSelections).toEqual([
+      expect.objectContaining({
+        id: selectionId,
+        garmentIds: [garmentId],
+        activityIds: [activityId],
+        lockedGarmentIds: [garmentId]
+      })
+    ]);
+    expect(exported.tripOutfitSelections?.[0]).not.toHaveProperty("garments");
+    expect(exported.tripPackingItems).toEqual([
+      expect.objectContaining({
+        tripId: activeTrip.id,
+        kind: "essential",
+        label: "充电器",
+        status: "packed"
+      })
+    ]);
+    expect(validateOutfitExport(exported)).toBe(exported);
+    expect(JSON.stringify(again)).toBe(JSON.stringify(exported));
+  });
+
+  it("exports only stable similarity feedback and excludes embedding caches and derived values", () => {
+    const db = createDatabase(":memory:");
+    const firstGarmentId = insertAssetGarment(db, "相似反馈衣物一");
+    const secondGarmentId = insertAssetGarment(db, "相似反馈衣物二");
+    const garmentFeedbackId = Number(db.prepare(`
+      INSERT INTO garment_similarity_feedback (
+        subject_key, compared_garment_id, verdict, created_at, updated_at
+      ) VALUES (?, ?, 'duplicate', ?, ?)
+    `).run(
+      `garment:${firstGarmentId}`,
+      secondGarmentId,
+      "2026-07-14T03:00:00.000Z",
+      "2026-07-14T03:00:00.000Z"
+    ).lastInsertRowid);
+    const candidateSubjectKey = `candidate:v1:${"b".repeat(64)}`;
+    const candidateFeedbackId = Number(db.prepare(`
+      INSERT INTO garment_similarity_feedback (
+        subject_key, compared_garment_id, verdict, created_at, updated_at
+      ) VALUES (?, ?, 'not-duplicate', ?, ?)
+    `).run(
+      candidateSubjectKey,
+      firstGarmentId,
+      "2026-07-14T04:00:00.000Z",
+      "2026-07-14T05:00:00.000Z"
+    ).lastInsertRowid);
+    const secretEmbedding = Buffer.from("M5_SECRET_EMBEDDING_VECTOR", "utf8");
+    db.prepare(`
+      INSERT INTO garment_embeddings (model_id, garment_id, vector_blob)
+      VALUES ('local-test-model', ?, ?)
+    `).run(firstGarmentId, secretEmbedding);
+
+    const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+    const again = buildOutfitExportV2(db, { now: () => FIXED_NOW });
+
+    expect(exported.features).toContain("decision-support");
+    expect(exported.similarityFeedback).toEqual([
+      {
+        id: candidateFeedbackId,
+        subjectKey: candidateSubjectKey,
+        comparedGarmentId: firstGarmentId,
+        verdict: "not-duplicate",
+        createdAt: "2026-07-14T04:00:00.000Z",
+        updatedAt: "2026-07-14T05:00:00.000Z"
+      },
+      {
+        id: garmentFeedbackId,
+        subjectKey: `garment:${firstGarmentId}`,
+        comparedGarmentId: secondGarmentId,
+        verdict: "duplicate",
+        createdAt: "2026-07-14T03:00:00.000Z",
+        updatedAt: "2026-07-14T03:00:00.000Z"
+      }
+    ]);
+    expect(JSON.stringify(again)).toBe(JSON.stringify(exported));
+    expect(validateOutfitExport(exported)).toBe(exported);
+    expect(exported).not.toHaveProperty("garmentEmbeddings");
+    const json = JSON.stringify(exported);
+    expect(json).not.toContain("M5_SECRET_EMBEDDING_VECTOR");
+    expect(json).not.toContain("vectorBlob");
+    expect(json).not.toContain("costPerWear");
+    expect(json).not.toContain("valueRank");
   });
 
   it("exports complete M4 diary and plan history without changing local calendar keys", () => {
@@ -457,7 +841,7 @@ describe("OutfitExportV2", () => {
     const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
     const again = buildOutfitExportV2(db, { now: () => FIXED_NOW });
 
-    expect(exported.schemaVersion).toBe(5);
+    expect(exported.schemaVersion).toBe(7);
     expect(exported.features).toContain("diary-week-planner");
     expect(exported.wearEvents?.map((event) => event.id)).toEqual([205, 204, 201, 203, 202]);
     expect(exported.wearEvents?.find((event) => event.id === 201)).toEqual({
@@ -605,7 +989,7 @@ describe("OutfitExportV2", () => {
 
     const exported = buildOutfitExportV2(db, { now: () => FIXED_NOW });
 
-    expect(exported.schemaVersion).toBe(5);
+    expect(exported.schemaVersion).toBe(7);
     expect(exported.features).toContain("feedback-availability");
     expect(exported.recommendationFeedback).toEqual([
       {

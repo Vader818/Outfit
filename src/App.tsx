@@ -2,6 +2,7 @@ export {
   App,
   MainApp,
   buildTaobaoOrderCaptureOptions,
+  confirmedSelectionIdsAfterRecalculation,
   hydratePlannerPlansWeather,
   loadAllWearEvents,
   rollPlannerCalendarDay

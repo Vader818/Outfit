@@ -372,8 +372,317 @@ const NUMBERED_MIGRATIONS: readonly Migration[] = [
           );
       `);
     }
+  },
+  {
+    version: 6,
+    name: "decision-support",
+    up(db) {
+      db.exec(`
+        ALTER TABLE source_order_items
+        ADD COLUMN quantity_explicit INTEGER NOT NULL DEFAULT 0
+          CHECK (quantity_explicit IN (0, 1));
+
+        ALTER TABLE source_order_items
+        ADD COLUMN payment_explicit INTEGER NOT NULL DEFAULT 0
+          CHECK (payment_explicit IN (0, 1));
+
+        ALTER TABLE garments
+        ADD COLUMN cost_source TEXT
+          CHECK (cost_source IS NULL OR cost_source IN ('manual', 'taobao'));
+
+        CREATE TABLE garment_similarity_feedback (
+          id INTEGER PRIMARY KEY,
+          subject_key TEXT NOT NULL CHECK (length(trim(subject_key)) BETWEEN 1 AND 512),
+          compared_garment_id INTEGER NOT NULL,
+          verdict TEXT NOT NULL CHECK (verdict IN ('duplicate', 'not-duplicate')),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (compared_garment_id) REFERENCES garments(id) ON DELETE CASCADE,
+          UNIQUE (subject_key, compared_garment_id)
+        ) STRICT;
+
+        CREATE INDEX idx_garment_similarity_feedback_compared_garment_id
+        ON garment_similarity_feedback(compared_garment_id);
+
+        CREATE TABLE garment_embeddings (
+          model_id TEXT NOT NULL CHECK (length(trim(model_id)) BETWEEN 1 AND 200),
+          garment_id INTEGER NOT NULL,
+          vector_blob BLOB NOT NULL CHECK (length(vector_blob) > 0),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (model_id, garment_id),
+          FOREIGN KEY (garment_id) REFERENCES garments(id) ON DELETE CASCADE
+        ) STRICT;
+
+        CREATE INDEX idx_garment_embeddings_garment_id
+        ON garment_embeddings(garment_id);
+
+        UPDATE source_order_items
+        SET quantity_explicit = 1
+        WHERE typeof(quantity) = 'integer' AND quantity > 1;
+
+        UPDATE source_order_items
+        SET payment_explicit = 1
+        WHERE payment IS NOT NULL;
+
+        UPDATE garments
+        SET cost_source = 'manual'
+        WHERE purchase_price_cents IS NOT NULL;
+      `);
+
+      backfillDecisionSupportGarmentFacts(db);
+    }
+  },
+  {
+    version: 7,
+    name: "trip-capsule-planner",
+    up(db) {
+      db.exec(`
+        CREATE TABLE trips (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 120),
+          start_date TEXT NOT NULL CHECK (
+            length(start_date) = 10 AND
+            start_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          ),
+          end_date TEXT NOT NULL CHECK (
+            length(end_date) = 10 AND
+            end_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND
+            end_date >= start_date
+          ),
+          destination_name TEXT NOT NULL CHECK (
+            length(trim(destination_name)) BETWEEN 1 AND 200
+          ),
+          destination_latitude REAL CHECK (
+            destination_latitude IS NULL OR
+            destination_latitude BETWEEN -90 AND 90
+          ),
+          destination_longitude REAL CHECK (
+            destination_longitude IS NULL OR
+            destination_longitude BETWEEN -180 AND 180
+          ),
+          max_garments INTEGER NOT NULL CHECK (
+            typeof(max_garments) = 'integer' AND max_garments BETWEEN 0 AND 100
+          ),
+          max_shoes INTEGER NOT NULL CHECK (
+            typeof(max_shoes) = 'integer' AND max_shoes BETWEEN 0 AND 20
+          ),
+          repeat_policy TEXT NOT NULL CHECK (
+            repeat_policy IN ('allow', 'no-consecutive-core', 'no-repeat-core')
+          ),
+          max_core_wears_between_laundry INTEGER NOT NULL CHECK (
+            max_core_wears_between_laundry IN (1, 2, 3)
+          ),
+          laundry_day TEXT CHECK (
+            laundry_day IS NULL OR (
+              length(laundry_day) = 10 AND
+              laundry_day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND
+              laundry_day >= start_date AND laundry_day <= end_date
+            )
+          ),
+          status TEXT NOT NULL DEFAULT 'planning' CHECK (
+            status IN ('planning', 'ready', 'completed', 'archived')
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK (
+            (destination_latitude IS NULL AND destination_longitude IS NULL) OR
+            (destination_latitude IS NOT NULL AND destination_longitude IS NOT NULL)
+          )
+        ) STRICT;
+
+        CREATE INDEX idx_trips_status_updated_at
+        ON trips(status, updated_at, id);
+
+        CREATE TABLE trip_days (
+          id INTEGER PRIMARY KEY,
+          trip_id INTEGER NOT NULL,
+          date TEXT NOT NULL CHECK (
+            length(date) = 10 AND
+            date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          ),
+          weather_snapshot TEXT CHECK (
+            weather_snapshot IS NULL OR
+            (json_valid(weather_snapshot) AND json_type(weather_snapshot) = 'object')
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+          UNIQUE (trip_id, date)
+        ) STRICT;
+
+        CREATE INDEX idx_trip_days_trip_id_date
+        ON trip_days(trip_id, date, id);
+
+        CREATE TABLE trip_outfit_selections (
+          id INTEGER PRIMARY KEY,
+          trip_day_id INTEGER NOT NULL,
+          slot_index INTEGER NOT NULL CHECK (
+            typeof(slot_index) = 'integer' AND slot_index >= 0
+          ),
+          activity_ids_json TEXT NOT NULL CHECK (
+            json_valid(activity_ids_json) AND json_type(activity_ids_json) = 'array'
+          ),
+          garment_ids_json TEXT NOT NULL CHECK (
+            json_valid(garment_ids_json) AND json_type(garment_ids_json) = 'array'
+          ),
+          score REAL NOT NULL,
+          reasons_json TEXT NOT NULL CHECK (
+            json_valid(reasons_json) AND json_type(reasons_json) = 'array'
+          ),
+          activity_evaluations_json TEXT NOT NULL CHECK (
+            json_valid(activity_evaluations_json) AND
+            json_type(activity_evaluations_json) = 'array'
+          ),
+          locked_garment_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (
+            json_valid(locked_garment_ids_json) AND
+            json_type(locked_garment_ids_json) = 'array'
+          ),
+          actual_wear_event_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (trip_day_id) REFERENCES trip_days(id) ON DELETE CASCADE,
+          FOREIGN KEY (actual_wear_event_id) REFERENCES wear_events(id) ON DELETE SET NULL,
+          UNIQUE (trip_day_id, slot_index),
+          UNIQUE (trip_day_id, id),
+          UNIQUE (actual_wear_event_id)
+        ) STRICT;
+
+        CREATE INDEX idx_trip_outfit_selections_trip_day_id
+        ON trip_outfit_selections(trip_day_id, slot_index, id);
+
+        CREATE TABLE trip_day_activities (
+          id INTEGER PRIMARY KEY,
+          trip_day_id INTEGER NOT NULL,
+          name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
+          occasion TEXT NOT NULL CHECK (length(trim(occasion)) BETWEEN 1 AND 120),
+          formality TEXT NOT NULL CHECK (
+            formality IN ('casual', 'smart-casual', 'formal', 'sport')
+          ),
+          requires_separate_outfit INTEGER NOT NULL CHECK (
+            requires_separate_outfit IN (0, 1)
+          ),
+          position INTEGER NOT NULL CHECK (
+            typeof(position) = 'integer' AND position >= 0
+          ),
+          selection_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (trip_day_id) REFERENCES trip_days(id) ON DELETE CASCADE,
+          FOREIGN KEY (trip_day_id, selection_id)
+            REFERENCES trip_outfit_selections(trip_day_id, id),
+          UNIQUE (trip_day_id, position)
+        ) STRICT;
+
+        CREATE INDEX idx_trip_day_activities_trip_day_id
+        ON trip_day_activities(trip_day_id, position, id);
+
+        CREATE INDEX idx_trip_day_activities_selection_id
+        ON trip_day_activities(selection_id)
+        WHERE selection_id IS NOT NULL;
+
+        CREATE TABLE trip_packing_items (
+          id INTEGER PRIMARY KEY,
+          trip_id INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('garment', 'essential')),
+          garment_id INTEGER,
+          label TEXT NOT NULL CHECK (length(trim(label)) BETWEEN 1 AND 200),
+          status TEXT NOT NULL DEFAULT 'unpacked' CHECK (
+            status IN ('unpacked', 'packed', 'on-body', 'not-taking')
+          ),
+          coverage_json TEXT NOT NULL DEFAULT '{"dates":[],"activityIds":[]}' CHECK (
+            json_valid(coverage_json) AND json_type(coverage_json) = 'object'
+          ),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+          FOREIGN KEY (garment_id) REFERENCES garments(id) ON DELETE RESTRICT,
+          CHECK (
+            (kind = 'garment' AND garment_id IS NOT NULL) OR
+            (kind = 'essential' AND garment_id IS NULL)
+          )
+        ) STRICT;
+
+        CREATE UNIQUE INDEX idx_trip_packing_items_garment
+        ON trip_packing_items(trip_id, garment_id)
+        WHERE garment_id IS NOT NULL;
+
+        CREATE INDEX idx_trip_packing_items_trip_id
+        ON trip_packing_items(trip_id, kind, id);
+      `);
+    }
   }
 ];
+
+interface DecisionSupportBackfillRow {
+  garment_id: number;
+  order_time: string | null;
+  quantity: number;
+  quantity_explicit: number;
+  payment: number | null;
+  payment_explicit: number;
+  is_refunded: number;
+}
+
+function backfillDecisionSupportGarmentFacts(db: AppDatabase): void {
+  const rows = db.prepare(`
+    SELECT garments.id AS garment_id, source_order_items.order_time,
+      source_order_items.quantity, source_order_items.quantity_explicit,
+      source_order_items.payment, source_order_items.payment_explicit,
+      source_order_items.is_refunded
+    FROM garments
+    INNER JOIN source_order_items ON source_order_items.id = garments.source_order_item_id
+    ORDER BY garments.id ASC
+  `).all() as unknown as DecisionSupportBackfillRow[];
+  const updateAcquiredAt = db.prepare(`
+    UPDATE garments
+    SET acquired_at = ?
+    WHERE id = ? AND (acquired_at IS NULL OR trim(acquired_at) = '')
+  `);
+  const updateTaobaoCost = db.prepare(`
+    UPDATE garments
+    SET purchase_price_cents = ?, currency = 'CNY', cost_source = 'taobao'
+    WHERE id = ? AND purchase_price_cents IS NULL AND cost_source IS NULL
+  `);
+
+  for (const row of rows) {
+    const acquiredAt = taobaoOrderCalendarDate(row.order_time);
+    if (acquiredAt) updateAcquiredAt.run(acquiredAt, row.garment_id);
+
+    const unitCost = trustedTaobaoUnitCostCents(row);
+    if (unitCost !== null) updateTaobaoCost.run(unitCost, row.garment_id);
+  }
+}
+
+function taobaoOrderCalendarDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^\s*(\d{4}-\d{2}-\d{2})(?=$|[T\s])/.exec(value);
+  return match && isCalendarDate(match[1]) ? match[1] : null;
+}
+
+function trustedTaobaoUnitCostCents(evidence: {
+  quantity: unknown;
+  quantity_explicit: unknown;
+  payment: unknown;
+  payment_explicit: unknown;
+  is_refunded: unknown;
+}): number | null {
+  if (
+    evidence.quantity_explicit !== 1 ||
+    evidence.payment_explicit !== 1 ||
+    evidence.is_refunded === 1 ||
+    typeof evidence.quantity !== "number" ||
+    !Number.isSafeInteger(evidence.quantity) ||
+    evidence.quantity <= 0 ||
+    typeof evidence.payment !== "number" ||
+    !Number.isFinite(evidence.payment) ||
+    evidence.payment < 0
+  ) {
+    return null;
+  }
+  const cents = Math.round((evidence.payment * 100) / evidence.quantity);
+  return Number.isSafeInteger(cents) && cents >= 0 ? cents : null;
+}
 
 function migrateLegacyWearLogs(db: AppDatabase): void {
   const rows = db.prepare(`
@@ -553,6 +862,7 @@ export interface GarmentUpdate {
   confirmed?: boolean;
   excluded?: boolean;
   notes?: string;
+  purchasePriceCents?: number;
 }
 
 export interface ThumbnailRefreshOptions {
@@ -810,10 +1120,11 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
   const normalized = normalizeTaobaoBatch(payload);
   const upsertSource = db.prepare(`
     INSERT INTO source_order_items (
-      external_key, source, page_type, item_id, order_id, order_time, title, sku, quantity, payment, status,
+      external_key, source, page_type, item_id, order_id, order_time, title, sku,
+      quantity, quantity_explicit, payment, payment_explicit, status,
       refund_text, item_url, image_url, raw_text, detail_url, detail_title, detail_props,
       detail_description, detail_images, detail_raw_text, is_refunded, is_apparel
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(external_key) DO UPDATE SET
       source = excluded.source,
       page_type = excluded.page_type,
@@ -822,8 +1133,16 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
       order_time = excluded.order_time,
       title = excluded.title,
       sku = excluded.sku,
-      quantity = excluded.quantity,
-      payment = excluded.payment,
+      quantity = CASE
+        WHEN excluded.quantity_explicit = 1 THEN excluded.quantity
+        ELSE source_order_items.quantity
+      END,
+      quantity_explicit = MAX(source_order_items.quantity_explicit, excluded.quantity_explicit),
+      payment = CASE
+        WHEN excluded.payment_explicit = 1 THEN excluded.payment
+        ELSE source_order_items.payment
+      END,
+      payment_explicit = MAX(source_order_items.payment_explicit, excluded.payment_explicit),
       status = excluded.status,
       refund_text = excluded.refund_text,
       item_url = excluded.item_url,
@@ -941,6 +1260,7 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
         garmentNotes,
         sourceItemId
       );
+      syncTaobaoGarmentFacts(db, existingGarment.id, sourceItemId);
       return 0;
     }
 
@@ -962,6 +1282,8 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
       classification.confidence,
       garmentNotes
     );
+    const insertedGarment = selectGarmentBySource.get(sourceItemId) as Pick<GarmentRow, "id"> | undefined;
+    if (insertedGarment) syncTaobaoGarmentFacts(db, insertedGarment.id, sourceItemId);
     return Number(garmentResult.changes);
   }
 
@@ -1016,7 +1338,9 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
         sourceItem.title,
         sourceItem.sku,
         sourceItem.quantity,
+        sourceItem.quantityExplicit ? 1 : 0,
         sourceItem.payment,
+        sourceItem.paymentExplicit ? 1 : 0,
         sourceItem.status,
         sourceItem.refundText,
         sourceItem.itemUrl,
@@ -1054,6 +1378,43 @@ export function importTaobaoBatchIntoDb(db: AppDatabase, payload: unknown): DbIm
   };
 }
 
+interface StoredTaobaoCostEvidence {
+  quantity: number;
+  quantity_explicit: number;
+  payment: number | null;
+  payment_explicit: number;
+  order_time: string | null;
+  is_refunded: number;
+}
+
+function syncTaobaoGarmentFacts(db: AppDatabase, garmentId: number, sourceItemId: number): void {
+  const evidence = db.prepare(`
+    SELECT quantity, quantity_explicit, payment, payment_explicit, order_time, is_refunded
+    FROM source_order_items
+    WHERE id = ?
+  `).get(sourceItemId) as unknown as StoredTaobaoCostEvidence | undefined;
+  if (!evidence) return;
+
+  const acquiredAt = taobaoOrderCalendarDate(evidence.order_time);
+  if (acquiredAt) {
+    db.prepare(`
+      UPDATE garments
+      SET acquired_at = ?
+      WHERE id = ? AND (acquired_at IS NULL OR trim(acquired_at) = '')
+    `).run(acquiredAt, garmentId);
+  }
+
+  const unitCost = trustedTaobaoUnitCostCents(evidence);
+  if (unitCost === null) return;
+  db.prepare(`
+    UPDATE garments
+    SET purchase_price_cents = ?, currency = 'CNY', cost_source = 'taobao'
+    WHERE id = ?
+      AND (cost_source IS NULL OR cost_source = 'taobao')
+      AND (purchase_price_cents IS NULL OR cost_source = 'taobao')
+  `).run(unitCost, garmentId);
+}
+
 interface TrustedImportSourceRow {
   id: number;
   external_key: string;
@@ -1065,7 +1426,9 @@ interface TrustedImportSourceRow {
   title: string;
   sku: string | null;
   quantity: number;
+  quantity_explicit: number;
   payment: number | null;
+  payment_explicit: number;
   status: string | null;
   refund_text: string | null;
   item_url: string | null;
@@ -1186,6 +1549,7 @@ export function commitTaobaoImport(
       }
 
       const garmentId = persistTrustedImportGarment(db, context, candidate, sourceId);
+      syncTaobaoGarmentFacts(db, garmentId, sourceId);
       if (disposition === "create") summary.created += 1;
       else summary.updated += 1;
       items.push({ sourceItemKey: context.item.externalKey, disposition, garmentId });
@@ -1238,6 +1602,7 @@ function buildTrustedImportReviewContexts(
     const proposedName = displayInfo.name || existing?.name || displayInfo.rawName || "待识别衣物";
     const candidate: TaobaoImportPreviewItem = {
       sourceItemKey: item.externalKey,
+      purchaseCheckEligible: false,
       brand: displayInfo.brand || existing?.brand || "",
       name: existing && shouldPreserveConfirmedName(existing.name, displayInfo, existing.confirmed)
         ? existing.name
@@ -1273,6 +1638,14 @@ function buildTrustedImportReviewContexts(
       classifiable
     };
     candidate.disposition = trustedImportDisposition(context, candidate);
+    candidate.purchaseCheckEligible = !item.isRefunded && classifiable && candidate.disposition !== "skip";
+    candidate.purchaseCheckIneligibleReason = candidate.purchaseCheckEligible
+      ? undefined
+      : item.isRefunded
+        ? "refunded"
+        : !classifiable
+          ? "non-apparel"
+          : "needs-review";
     if (candidate.disposition === "update" && candidate.restoreRequired) {
       candidate.message = "将恢复已归档衣物并更新来源信息";
     } else if (candidate.disposition === "refund-sync") {
@@ -1449,8 +1822,12 @@ function sourceImportChanged(
     (current.order_time ?? "") !== item.orderTime ||
     current.title !== item.title ||
     (current.sku ?? "") !== item.sku ||
-    current.quantity !== item.quantity ||
-    current.payment !== item.payment ||
+    (item.quantityExplicit && (
+      current.quantity !== item.quantity || !Boolean(current.quantity_explicit)
+    )) ||
+    (item.paymentExplicit && (
+      current.payment !== item.payment || !Boolean(current.payment_explicit)
+    )) ||
     (current.status ?? "") !== item.status ||
     (current.refund_text ?? "") !== item.refundText ||
     (current.item_url ?? "") !== item.itemUrl ||
@@ -1476,7 +1853,12 @@ function persistTrustedImportSource(db: AppDatabase, context: TrustedImportRevie
           UPDATE source_order_items
           SET external_key = ?, source = ?, page_type = ?,
             item_id = COALESCE(NULLIF(?, ''), item_id), order_id = ?, order_time = ?,
-            title = ?, sku = ?, quantity = ?, payment = ?, status = ?, refund_text = ?,
+            title = ?, sku = ?,
+            quantity = CASE WHEN ? = 1 THEN ? ELSE quantity END,
+            quantity_explicit = MAX(quantity_explicit, ?),
+            payment = CASE WHEN ? = 1 THEN ? ELSE payment END,
+            payment_explicit = MAX(payment_explicit, ?),
+            status = ?, refund_text = ?,
             item_url = ?, image_url = ?, raw_text = ?,
             detail_url = COALESCE(NULLIF(?, ''), detail_url),
             detail_title = COALESCE(NULLIF(?, ''), detail_title),
@@ -1488,7 +1870,10 @@ function persistTrustedImportSource(db: AppDatabase, context: TrustedImportRevie
           WHERE id = ?
         `).run(
           item.externalKey, item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
-          item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
+          item.title, item.sku,
+          item.quantityExplicit ? 1 : 0, item.quantity, item.quantityExplicit ? 1 : 0,
+          item.paymentExplicit ? 1 : 0, item.payment, item.paymentExplicit ? 1 : 0,
+          item.status, item.refundText,
           item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
           JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
           item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0, context.target.id
@@ -1503,13 +1888,15 @@ function persistTrustedImportSource(db: AppDatabase, context: TrustedImportRevie
   const inserted = db.prepare(`
     INSERT INTO source_order_items (
       external_key, source, page_type, item_id, order_id, order_time, title, sku,
-      quantity, payment, status, refund_text, item_url, image_url, raw_text,
+      quantity, quantity_explicit, payment, payment_explicit,
+      status, refund_text, item_url, image_url, raw_text,
       detail_url, detail_title, detail_props, detail_description, detail_images,
       detail_raw_text, is_refunded, is_apparel
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     item.externalKey, item.source, item.pageType, item.itemId, item.orderId, item.orderTime,
-    item.title, item.sku, item.quantity, item.payment, item.status, item.refundText,
+    item.title, item.sku, item.quantity, item.quantityExplicit ? 1 : 0,
+    item.payment, item.paymentExplicit ? 1 : 0, item.status, item.refundText,
     item.itemUrl, item.imageUrl, item.rawText, item.detailUrl, item.detailTitle,
     JSON.stringify(item.detailProps), item.detailDescription, JSON.stringify(item.detailImages),
     item.detailRawText, item.isRefunded ? 1 : 0, item.isApparel ? 1 : 0
@@ -1666,8 +2053,8 @@ export function createManualGarment(db: AppDatabase, input: ManualGarmentCreate)
       source_order_item_id, brand, name, raw_name, category, color, warmth,
       seasons, styles, formality, size, materials, patterns, tags, image_url,
       owned, confirmed, excluded, confidence, notes, origin, acquired_at,
-      purchase_price_cents, currency
-    ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?, 'manual', ?, ?, ?)
+      purchase_price_cents, currency, cost_source
+    ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?, 'manual', ?, ?, ?, ?)
   `).run(
     input.brand ?? "",
     input.name,
@@ -1685,7 +2072,8 @@ export function createManualGarment(db: AppDatabase, input: ManualGarmentCreate)
     input.notes ?? "",
     input.acquiredAt ?? null,
     input.purchasePriceCents ?? null,
-    input.currency ?? null
+    input.currency ?? null,
+    input.purchasePriceCents === undefined ? null : "manual"
   );
   const id = Number(insert.lastInsertRowid);
   if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1730,13 +2118,17 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     owned: boolToInt(update.owned ?? Boolean(current.owned)),
     confirmed: boolToInt(update.confirmed ?? Boolean(current.confirmed)),
     excluded: boolToInt(update.excluded ?? Boolean(current.excluded)),
-    notes: update.notes ?? current.notes ?? ""
+    notes: update.notes ?? current.notes ?? "",
+    purchasePriceCents: update.purchasePriceCents ?? current.purchase_price_cents,
+    currency: update.purchasePriceCents === undefined ? current.currency : "CNY",
+    costSource: update.purchasePriceCents === undefined ? current.cost_source ?? null : "manual"
   };
 
   db.prepare(`
     UPDATE garments
     SET brand = ?, name = ?, raw_name = ?, category = ?, color = ?, warmth = ?, seasons = ?, styles = ?,
       formality = ?, size = ?, materials = ?, patterns = ?, tags = ?, image_url = ?, owned = ?, confirmed = ?, excluded = ?, notes = ?,
+      purchase_price_cents = ?, currency = ?, cost_source = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
@@ -1758,6 +2150,9 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     next.confirmed,
     next.excluded,
     next.notes,
+    next.purchasePriceCents,
+    next.currency,
+    next.costSource,
     id
   );
 
@@ -2506,6 +2901,7 @@ interface GarmentRow {
   acquired_at: string | null;
   purchase_price_cents: number | null;
   currency: "CNY" | null;
+  cost_source: Garment["costSource"] | null;
   size: string | null;
   materials: string | null;
   patterns: string | null;
@@ -2546,6 +2942,7 @@ function rowToGarment(row: GarmentRow): Garment {
     acquiredAt: row.acquired_at ?? undefined,
     purchasePriceCents: row.purchase_price_cents ?? undefined,
     currency: row.currency ?? undefined,
+    costSource: row.cost_source ?? undefined,
     itemUrl: row.item_url ?? undefined,
     detailUrl: row.detail_url ?? undefined,
     cutoutImageUrl: row.cutout_image_url ?? undefined,
@@ -2668,7 +3065,9 @@ function backfillRowToSourceItem(row: GarmentDisplayBackfillRow): SourceOrderIte
     title: row.title,
     sku: row.sku || "",
     quantity: row.quantity || 1,
+    quantityExplicit: typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity > 1,
     payment: row.payment,
+    paymentExplicit: row.payment !== null,
     status: row.status || "",
     refundText: row.refund_text || "",
     itemUrl: row.item_url || "",

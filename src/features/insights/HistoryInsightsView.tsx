@@ -25,6 +25,7 @@ import type {
 import { SavedOutfitsPanel } from "../outfits/SavedOutfitsPanel";
 import { DistributionBars } from "./DistributionBars";
 import { InsightSuggestionList } from "./InsightSuggestionList";
+import { ValueInsights, type WardrobeValueInsightsView } from "./ValueInsights";
 
 export type HistoryInsightsViewProps = {
   insights: WardrobeInsights | null;
@@ -43,18 +44,25 @@ export type HistoryInsightsViewProps = {
   onFavoriteSavedOutfit?: (outfit: SavedOutfit, favorite: boolean) => void;
   onArchiveSavedOutfit?: (outfit: SavedOutfit) => void;
   onScheduleSavedOutfit?: (outfit: SavedOutfit) => void;
+  onViewRelatedGarments?: (garmentIds: number[]) => void;
+  onApplyRelatedFilter?: (garmentIds: number[]) => void;
+  valueInsights?: WardrobeValueInsightsView | null;
+  valueInsightsBusy?: boolean;
+  valueInsightsError?: string;
   onManageFeedback?: () => void;
   activeSection?: HistorySection;
   onSectionChange?: (section: HistorySection) => void;
   plannerContent?: ReactNode;
+  tripContent?: ReactNode;
   diaryContent?: ReactNode;
   wearEventCount?: number;
 };
 
-export type HistorySection = "planner" | "diary" | "saved" | "insights";
+export type HistorySection = "planner" | "trips" | "diary" | "saved" | "insights";
 
 const HISTORY_SECTIONS: Array<{ id: HistorySection; label: string }> = [
   { id: "planner", label: "周计划" },
+  { id: "trips", label: "旅行计划" },
   { id: "diary", label: "穿着日记" },
   { id: "saved", label: "保存搭配" },
   { id: "insights", label: "洞察" }
@@ -157,6 +165,7 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
       </nav>
 
       {activeSection === "planner" ? props.plannerContent : null}
+      {activeSection === "trips" ? props.tripContent : null}
       {activeSection === "diary" ? props.diaryContent : null}
 
       {activeSection === "saved" && canManageSavedOutfits ? (
@@ -172,7 +181,17 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
         />
       ) : null}
 
-      {activeSection === "insights" && (insights ? <InsightsContent insights={insights} recommendationRuns={props.recommendationRuns} /> : (
+      {activeSection === "insights" && (insights ? (
+        <InsightsContent
+          insights={insights}
+          recommendationRuns={props.recommendationRuns}
+          valueInsights={props.valueInsights}
+          valueInsightsBusy={props.valueInsightsBusy}
+          valueInsightsError={props.valueInsightsError}
+          onViewRelatedGarments={props.onViewRelatedGarments}
+          onApplyRelatedFilter={props.onApplyRelatedFilter}
+        />
+      ) : (
         <Surface className="history-insights-empty">
           <EmptyState
             icon={<Activity aria-hidden="true" />}
@@ -185,9 +204,22 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
   );
 }
 
-function InsightsContent({ insights, recommendationRuns }: {
+function InsightsContent({
+  insights,
+  recommendationRuns,
+  valueInsights,
+  valueInsightsBusy,
+  valueInsightsError,
+  onViewRelatedGarments,
+  onApplyRelatedFilter
+}: {
   insights: WardrobeInsights;
   recommendationRuns: RecommendationRunEntry[];
+  valueInsights?: WardrobeValueInsightsView | null;
+  valueInsightsBusy?: boolean;
+  valueInsightsError?: string;
+  onViewRelatedGarments?: (garmentIds: number[]) => void;
+  onApplyRelatedFilter?: (garmentIds: number[]) => void;
 }) {
   const utilization = clampPercent(insights.health.components.utilizationRate);
   const bestShopping = [...insights.shoppingSuggestions]
@@ -210,6 +242,14 @@ function InsightsContent({ insights, recommendationRuns }: {
       </dl>
 
       <FeedbackSummary insights={insights} />
+
+      <ValueInsights
+        insights={valueInsights ?? null}
+        busy={valueInsightsBusy}
+        error={valueInsightsError}
+        onViewRelated={onViewRelatedGarments}
+        onApplyRelatedFilter={onApplyRelatedFilter}
+      />
 
       <div className="insight-lead-grid grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(17rem,0.8fr)]">
         <Surface className="health-focus" aria-labelledby="wardrobe-health-title">
@@ -311,15 +351,30 @@ function InsightsContent({ insights, recommendationRuns }: {
       <div className="suggestion-sections grid grid-cols-1 gap-5 lg:grid-cols-2">
         <section className="insight-section" aria-labelledby="insight-suggestions-title">
           <header><h2 id="insight-suggestions-title">洞察建议</h2></header>
-          <InsightSuggestionList items={insights.insightSuggestions} empty="暂无需要关注的衣橱洞察。" />
+          <InsightSuggestionList
+            items={insights.insightSuggestions}
+            empty="暂无需要关注的衣橱洞察。"
+            onViewRelated={onViewRelatedGarments}
+            onApplyRelatedFilter={onApplyRelatedFilter}
+          />
         </section>
         <section className="insight-section" aria-labelledby="shopping-suggestions-title">
           <header><h2 id="shopping-suggestions-title">购物建议</h2></header>
-          <InsightSuggestionList items={insights.shoppingSuggestions} empty="暂无需要优先补充的单品。" />
+          <InsightSuggestionList
+            items={insights.shoppingSuggestions}
+            empty="暂无需要优先补充的单品。"
+            onViewRelated={onViewRelatedGarments}
+            onApplyRelatedFilter={onApplyRelatedFilter}
+          />
         </section>
         <section className="insight-section lg:col-span-2" aria-labelledby="body-suggestions-title">
           <header><h2 id="body-suggestions-title">身材建议</h2></header>
-          <InsightSuggestionList items={insights.bodySuggestions} empty="当前个人画像没有额外身材建议。" />
+          <InsightSuggestionList
+            items={insights.bodySuggestions}
+            empty="当前个人画像没有额外身材建议。"
+            onViewRelated={onViewRelatedGarments}
+            onApplyRelatedFilter={onApplyRelatedFilter}
+          />
         </section>
       </div>
 

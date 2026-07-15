@@ -7,6 +7,7 @@ import type {
   GarmentAssetMetadata,
   GarmentAvailabilityEvent,
   GarmentAvailabilityStatus,
+  GarmentSimilarityFeedback,
   JsonValue,
   OutfitExport,
   OutfitExportV2,
@@ -16,6 +17,11 @@ import type {
   RecommendationFeedback,
   RecommendationRunEntry,
   SavedOutfit,
+  TripActivity,
+  TripDayExportRecord,
+  TripExportRecord,
+  TripOutfitSelectionExportRecord,
+  TripPackingItem,
   WearEvent,
   WearLogEntry
 } from "../../src/shared/types";
@@ -30,6 +36,7 @@ import {
   readGarmentAssetForBackup
 } from "./garmentAssets";
 import { listSavedOutfits } from "./savedOutfits";
+import { listTrips } from "./tripPlanner";
 
 export const OUTFIT_EXPORT_V2_FEATURES = [
   "versioned-migrations",
@@ -37,7 +44,9 @@ export const OUTFIT_EXPORT_V2_FEATURES = [
   "garment-assets",
   "saved-outfits",
   "feedback-availability",
-  "diary-week-planner"
+  "diary-week-planner",
+  "decision-support",
+  "trip-capsule"
 ] as const;
 
 export const OUTFIT_EXPORT_JSON_ENTRY = "outfit-export-v2.json";
@@ -72,7 +81,14 @@ const GARMENT_AVAILABILITY_STATUSES = [
 ] as const;
 const OUTFIT_OCCASIONS = ["casual", "smart-casual", "formal", "sport", "date", "dinner"] as const;
 const OUTFIT_PLAN_STATUSES = ["planned", "worn", "skipped"] as const;
+const GARMENT_COST_SOURCES = ["manual", "taobao"] as const;
+const SIMILARITY_FEEDBACK_VERDICTS = ["duplicate", "not-duplicate"] as const;
+const TRIP_REPEAT_POLICIES = ["allow", "no-consecutive-core", "no-repeat-core"] as const;
+const TRIP_STATUSES = ["planning", "ready", "completed", "archived"] as const;
+const TRIP_PACKING_STATUSES = ["unpacked", "packed", "on-body", "not-taking"] as const;
 const DIARY_WEEK_PLANNER_FEATURE = "diary-week-planner";
+const DECISION_SUPPORT_FEATURE = "decision-support";
+const TRIP_CAPSULE_FEATURE = "trip-capsule";
 
 export interface BuildOutfitExportOptions {
   now?: () => Date;
@@ -132,6 +148,7 @@ export function buildOutfitExportV2(
   try {
     assertStoredProfileJson(db);
     assertStoredGarmentJson(db);
+    const tripCapsule = listTripCapsuleForExport(db);
     const exported: OutfitExportV2 = {
       version: 2,
       schemaVersion: currentSchemaVersion(db),
@@ -149,7 +166,9 @@ export function buildOutfitExportV2(
       outfitPairStats: listOutfitPairStatsForExport(db),
       garmentAvailabilityEvents: listGarmentAvailabilityEventsForExport(db),
       wearEvents: listWearEventsForExport(db),
-      outfitPlanEntries: listOutfitPlanEntriesForExport(db)
+      outfitPlanEntries: listOutfitPlanEntriesForExport(db),
+      similarityFeedback: listSimilarityFeedbackForExport(db),
+      ...tripCapsule
     };
     validateOutfitExport(exported);
     db.exec("COMMIT");
@@ -164,6 +183,41 @@ export function buildOutfitExportV2(
     }
     throw error;
   }
+}
+
+function listTripCapsuleForExport(db: AppDatabase): Pick<
+  OutfitExportV2,
+  "trips" | "tripDays" | "tripActivities" | "tripOutfitSelections" | "tripPackingItems"
+> {
+  const allTrips = [
+    ...listTrips(db),
+    ...listTrips(db, { archived: true })
+  ].sort((left, right) => left.startDate.localeCompare(right.startDate) || left.id - right.id);
+  const trips: TripExportRecord[] = [];
+  const tripDays: TripDayExportRecord[] = [];
+  const tripActivities: TripActivity[] = [];
+  const tripOutfitSelections: TripOutfitSelectionExportRecord[] = [];
+  const tripPackingItems: TripPackingItem[] = [];
+
+  for (const trip of allTrips) {
+    const { days, selections, packingItems, ...tripRecord } = trip;
+    trips.push(tripRecord);
+    for (const day of days) {
+      const { activities, ...dayRecord } = day;
+      tripDays.push(dayRecord);
+      tripActivities.push(...activities);
+    }
+    for (const selection of selections) {
+      const { garments, ...selectionRecord } = selection;
+      tripOutfitSelections.push({
+        ...selectionRecord,
+        garmentIds: garments.map((garment) => garment.id)
+      });
+    }
+    tripPackingItems.push(...packingItems);
+  }
+
+  return { trips, tripDays, tripActivities, tripOutfitSelections, tripPackingItems };
 }
 
 export function validateOutfitExport(value: unknown): OutfitExport {
@@ -274,6 +328,23 @@ export function validateOutfitExport(value: unknown): OutfitExport {
         "Invalid export envelope: outfitPlanEntries contains an invalid entry or is missing"
       );
     }
+    const hasDecisionSupport = value.features.includes(DECISION_SUPPORT_FEATURE);
+    if (
+      (hasDecisionSupport && !Array.isArray(value.similarityFeedback)) ||
+      (value.similarityFeedback !== undefined &&
+        (!Array.isArray(value.similarityFeedback) ||
+          !value.similarityFeedback.every(isGarmentSimilarityFeedbackShape)))
+    ) {
+      throw new OutfitExportError(
+        "Invalid export envelope: similarityFeedback contains an invalid entry or is missing"
+      );
+    }
+    const hasTripCapsule = value.features.includes(TRIP_CAPSULE_FEATURE);
+    validateFeatureArray(value, "trips", hasTripCapsule, isTripExportRecordShape);
+    validateFeatureArray(value, "tripDays", hasTripCapsule, isTripDayExportRecordShape);
+    validateFeatureArray(value, "tripActivities", hasTripCapsule, isTripActivityShape);
+    validateFeatureArray(value, "tripOutfitSelections", hasTripCapsule, isTripOutfitSelectionExportShape);
+    validateFeatureArray(value, "tripPackingItems", hasTripCapsule, isTripPackingItemShape);
   }
   return value as unknown as OutfitExport;
 }
@@ -636,6 +707,38 @@ function listOutfitPlanEntriesForExport(db: AppDatabase): OutfitPlanEntry[] {
       throw new OutfitExportError(`Cannot export outfit_plan_entries row ${row.id}: invalid plan entry data`);
     }
     return entry;
+  });
+}
+
+function listSimilarityFeedbackForExport(db: AppDatabase): GarmentSimilarityFeedback[] {
+  const rows = db.prepare(`
+    SELECT id, subject_key, compared_garment_id, verdict, created_at, updated_at
+    FROM garment_similarity_feedback
+    ORDER BY subject_key ASC, compared_garment_id ASC
+  `).all() as unknown as Array<{
+    id: number;
+    subject_key: string;
+    compared_garment_id: number;
+    verdict: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  return rows.map((row) => {
+    const feedback: GarmentSimilarityFeedback = {
+      id: row.id,
+      subjectKey: row.subject_key,
+      comparedGarmentId: row.compared_garment_id,
+      verdict: row.verdict as GarmentSimilarityFeedback["verdict"],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+    if (!isGarmentSimilarityFeedbackShape(feedback)) {
+      throw new OutfitExportError(
+        `Cannot export garment_similarity_feedback row ${row.id}: invalid feedback data`
+      );
+    }
+    return feedback;
   });
 }
 
@@ -1295,6 +1398,11 @@ function isGarmentShape(value: unknown): boolean {
   if (
     !hasOptionalSafeInteger(value, "sourceOrderItemId") ||
     !hasOptionalSafeInteger(value, "wearCount") ||
+    (value.acquiredAt !== undefined && !isCalendarDate(value.acquiredAt)) ||
+    (value.purchasePriceCents !== undefined &&
+      (!isSafeInteger(value.purchasePriceCents) || value.purchasePriceCents < 0)) ||
+    !hasOptionalEnum(value, "currency", ["CNY"] as const) ||
+    !hasOptionalEnum(value, "costSource", GARMENT_COST_SOURCES) ||
     !hasOptionalStringArray(value, "materials") ||
     !hasOptionalStringArray(value, "patterns") ||
     !hasOptionalStringArray(value, "tags")
@@ -1602,6 +1710,30 @@ function isRecommendationFeedbackShape(value: unknown): value is RecommendationF
   );
 }
 
+function isGarmentSimilarityFeedbackShape(
+  value: unknown
+): value is GarmentSimilarityFeedback {
+  if (!isRecord(value)) return false;
+  if (
+    !isSafeInteger(value.id) ||
+    value.id <= 0 ||
+    !isSafeInteger(value.comparedGarmentId) ||
+    value.comparedGarmentId <= 0 ||
+    typeof value.subjectKey !== "string" ||
+    typeof value.verdict !== "string" ||
+    !includes(SIMILARITY_FEEDBACK_VERDICTS, value.verdict) ||
+    !isUtcIsoTimestamp(value.createdAt) ||
+    !isUtcIsoTimestamp(value.updatedAt)
+  ) {
+    return false;
+  }
+  if (/^candidate:v1:[0-9a-f]{64}$/.test(value.subjectKey)) return true;
+  const garmentSubject = /^garment:([1-9]\d*)$/.exec(value.subjectKey);
+  if (!garmentSubject) return false;
+  const subjectGarmentId = Number(garmentSubject[1]);
+  return Number.isSafeInteger(subjectGarmentId) && subjectGarmentId < value.comparedGarmentId;
+}
+
 function isOutfitPairStatShape(value: unknown): value is OutfitPairStat {
   if (!isRecord(value)) return false;
   return Boolean(
@@ -1667,6 +1799,153 @@ function isGarmentAssetMetadataShape(value: unknown): value is GarmentAssetMetad
     typeof value.archivePath === "string" &&
     value.archivePath === `assets/${value.id}.webp`
   );
+}
+
+function validateFeatureArray(
+  record: Record<string, unknown>,
+  key: string,
+  required: boolean,
+  predicate: (value: unknown) => boolean
+): void {
+  const value = record[key];
+  if ((required && !Array.isArray(value)) || (value !== undefined && (!Array.isArray(value) || !value.every(predicate)))) {
+    throw new OutfitExportError(`Invalid export envelope: ${key} contains an invalid entry or is missing`);
+  }
+}
+
+function isTripExportRecordShape(value: unknown): value is TripExportRecord {
+  if (!isRecord(value) || !isSafeInteger(value.id) || value.id <= 0) return false;
+  if (
+    typeof value.name !== "string" || !value.name.trim() ||
+    !isCalendarDate(value.startDate) || !isCalendarDate(value.endDate) ||
+    value.startDate > value.endDate || calendarDaySpan(value.startDate, value.endDate) > 7 ||
+    !isTripDestinationShape(value.destination) ||
+    !isSafeInteger(value.maxGarments) || value.maxGarments < 0 || value.maxGarments > 100 ||
+    !isSafeInteger(value.maxShoes) || value.maxShoes < 0 || value.maxShoes > 20 ||
+    typeof value.repeatPolicy !== "string" || !includes(TRIP_REPEAT_POLICIES, value.repeatPolicy) ||
+    !isSafeInteger(value.maxCoreWearsBetweenLaundry) ||
+    value.maxCoreWearsBetweenLaundry < 1 || value.maxCoreWearsBetweenLaundry > 3 ||
+    typeof value.status !== "string" || !includes(TRIP_STATUSES, value.status) ||
+    !isUtcIsoTimestamp(value.createdAt) || !isUtcIsoTimestamp(value.updatedAt)
+  ) {
+    return false;
+  }
+  return value.laundryDay === undefined || (
+    isCalendarDate(value.laundryDay) &&
+    value.laundryDay >= value.startDate &&
+    value.laundryDay <= value.endDate
+  );
+}
+
+function isTripDestinationShape(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.name !== "string" || !value.name.trim()) return false;
+  const hasLatitude = value.latitude !== undefined;
+  const hasLongitude = value.longitude !== undefined;
+  return hasLatitude === hasLongitude && (!hasLatitude || (
+    isFiniteNumber(value.latitude) && value.latitude >= -90 && value.latitude <= 90 &&
+    isFiniteNumber(value.longitude) && value.longitude >= -180 && value.longitude <= 180
+  ));
+}
+
+function isTripDayExportRecordShape(value: unknown): value is TripDayExportRecord {
+  return Boolean(
+    isRecord(value) &&
+    isSafeInteger(value.id) && value.id > 0 &&
+    isSafeInteger(value.tripId) && value.tripId > 0 &&
+    isCalendarDate(value.date) &&
+    (value.weather === undefined || (
+      isWeatherSnapshotShape(value.weather) && value.weather.date === value.date
+    ))
+  );
+}
+
+function isTripActivityShape(value: unknown): value is TripActivity {
+  return Boolean(
+    isRecord(value) &&
+    isSafeInteger(value.id) && value.id > 0 &&
+    isSafeInteger(value.tripDayId) && value.tripDayId > 0 &&
+    isSafeInteger(value.position) && value.position >= 0 &&
+    typeof value.name === "string" && value.name.trim().length > 0 && value.name.length <= 200 &&
+    typeof value.occasion === "string" && value.occasion.trim().length > 0 && value.occasion.length <= 200 &&
+    typeof value.formality === "string" && includes(FORMALITIES, value.formality) &&
+    typeof value.requiresSeparateOutfit === "boolean"
+  );
+}
+
+function isTripOutfitSelectionExportShape(value: unknown): value is TripOutfitSelectionExportRecord {
+  return Boolean(
+    isRecord(value) &&
+    isSafeInteger(value.id) && value.id > 0 &&
+    isSafeInteger(value.tripDayId) && value.tripDayId > 0 &&
+    isSafeInteger(value.slotIndex) && value.slotIndex >= 0 &&
+    isPositiveUniqueIntegerArray(value.activityIds) && value.activityIds.length > 0 &&
+    isPositiveUniqueIntegerArray(value.garmentIds) && value.garmentIds.length > 0 &&
+    isFiniteNumber(value.score) &&
+    isStringArray(value.reasons) &&
+    Array.isArray(value.activityEvaluations) && value.activityEvaluations.every(isTripActivityEvaluationShape) &&
+    isPositiveUniqueIntegerArray(value.lockedGarmentIds) &&
+    (value.actualWearEventId === undefined || (isSafeInteger(value.actualWearEventId) && value.actualWearEventId > 0))
+  );
+}
+
+function isTripActivityEvaluationShape(value: unknown): boolean {
+  return Boolean(
+    isRecord(value) &&
+    isSafeInteger(value.activityId) && value.activityId > 0 &&
+    isFiniteNumber(value.score) &&
+    isFiniteNumber(value.weatherComfort) &&
+    isFiniteNumber(value.occasion) &&
+    typeof value.hardEligible === "boolean"
+  );
+}
+
+function isTripPackingItemShape(value: unknown): value is TripPackingItem {
+  if (
+    !isRecord(value) ||
+    !isSafeInteger(value.id) || value.id <= 0 ||
+    !isSafeInteger(value.tripId) || value.tripId <= 0 ||
+    (value.kind !== "garment" && value.kind !== "essential") ||
+    typeof value.label !== "string" || !value.label.trim() || value.label.length > 200 ||
+    typeof value.status !== "string" || !includes(TRIP_PACKING_STATUSES, value.status) ||
+    !isTripPackingCoverageShape(value.coverage)
+  ) {
+    return false;
+  }
+  return value.kind === "garment"
+    ? isSafeInteger(value.garmentId) && value.garmentId > 0
+    : value.garmentId === undefined;
+}
+
+function isTripPackingCoverageShape(value: unknown): boolean {
+  return Boolean(
+    isRecord(value) &&
+    Array.isArray(value.dates) && value.dates.every(isCalendarDate) &&
+    new Set(value.dates).size === value.dates.length &&
+    isPositiveUniqueIntegerArray(value.activityIds) &&
+    isOptionalUniqueNonEmptyStringArray(value.activities) &&
+    isOptionalUniqueNonEmptyStringArray(value.occasions) &&
+    isOptionalUniqueNonEmptyStringArray(value.reasons)
+  );
+}
+
+function isOptionalUniqueNonEmptyStringArray(value: unknown): boolean {
+  return value === undefined || (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim().length > 0) &&
+    new Set(value).size === value.length
+  );
+}
+
+function isPositiveUniqueIntegerArray(value: unknown): value is number[] {
+  return Array.isArray(value) &&
+    value.every((item) => isSafeInteger(item) && item > 0) &&
+    new Set(value).size === value.length;
+}
+
+function calendarDaySpan(start: string, end: string): number {
+  const startMs = Date.parse(`${start}T00:00:00.000Z`);
+  const endMs = Date.parse(`${end}T00:00:00.000Z`);
+  return Math.floor((endMs - startMs) / 86_400_000) + 1;
 }
 
 function hasOptionalFiniteNumber(record: Record<string, unknown>, key: string): boolean {

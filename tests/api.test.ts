@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -302,6 +303,73 @@ describe("API routes", () => {
     expect(await response.json()).toMatchObject({
       error: { code: "ORIGIN_NOT_ALLOWED" }
     });
+  });
+
+  it("rejects same-site mutating requests from a different local port", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const attackerPort = address.port === 65_535 ? 65_534 : address.port + 1;
+
+    const response = await fetch(`${baseUrl}/api/wear-logs`, {
+      method: "POST",
+      headers: {
+        ...jsonHeaders(authCookie),
+        origin: `http://127.0.0.1:${attackerPort}`,
+        "sec-fetch-site": "same-site"
+      },
+      body: JSON.stringify({ garmentIds: [1], context: {} })
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { code: "ORIGIN_NOT_ALLOWED" }
+    });
+  });
+
+  it("accepts same-origin mutating requests through a Vite-style proxy host", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+    const frontendHost = "127.0.0.1:5174";
+
+    const response = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+      const proxyRequest = httpRequest(`${baseUrl}/api/auth/logout`, {
+        method: "POST",
+        headers: {
+          cookie: authCookie,
+          host: frontendHost,
+          origin: `http://${frontendHost}`,
+          "sec-fetch-site": "same-origin"
+        }
+      }, (proxyResponse) => {
+        let body = "";
+        proxyResponse.setEncoding("utf8");
+        proxyResponse.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        proxyResponse.on("end", () => {
+          resolve({
+            status: proxyResponse.statusCode ?? 0,
+            body: JSON.parse(body) as unknown
+          });
+        });
+      });
+      proxyRequest.on("error", reject);
+      proxyRequest.end();
+    });
+
+    expect(response).toEqual({ status: 200, body: { ok: true } });
   });
 
   it("validates weather coordinate ranges and garment id params", async () => {
@@ -909,9 +977,9 @@ describe("API routes", () => {
       },
       duplicateCount: 0,
       candidates: [
-        expect.objectContaining({ name: expect.stringContaining("T恤"), category: "top", confidence: expect.any(Number), disposition: "create" }),
-        expect.objectContaining({ name: expect.stringContaining("围巾"), category: "accessory", confidence: expect.any(Number), disposition: "create" }),
-        expect.objectContaining({ name: expect.stringContaining("牛仔裤"), disposition: "skip", message: expect.stringContaining("未找到") })
+        expect.objectContaining({ name: expect.stringContaining("T恤"), category: "top", confidence: expect.any(Number), disposition: "create", purchaseCheckEligible: true }),
+        expect.objectContaining({ name: expect.stringContaining("围巾"), category: "accessory", confidence: expect.any(Number), disposition: "create", purchaseCheckEligible: true }),
+        expect.objectContaining({ name: expect.stringContaining("牛仔裤"), disposition: "skip", purchaseCheckEligible: false, purchaseCheckIneligibleReason: "refunded", message: expect.stringContaining("未找到") })
       ],
       skipped: [
         expect.objectContaining({ reason: "non-apparel" })
@@ -1587,14 +1655,16 @@ describe("API routes", () => {
     const exported = await (await fetch(`${baseUrl}/api/export`, { headers: { cookie: authCookie } })).json();
     expect(exported).toMatchObject({
       version: 2,
-      schemaVersion: 5,
+      schemaVersion: 7,
       features: [
         "versioned-migrations",
         "recommendation-candidates",
         "garment-assets",
         "saved-outfits",
         "feedback-availability",
-        "diary-week-planner"
+        "diary-week-planner",
+        "decision-support",
+        "trip-capsule"
       ],
       profile: expect.any(Object),
       garments: expect.arrayContaining([expect.objectContaining({ id: top.id, tags: ["挺括", "层次"] })]),
@@ -3646,6 +3716,191 @@ describe("API routes", () => {
     });
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+  });
+
+  it("keeps trip CRUD authenticated and only invokes injected weather on explicit refresh", async () => {
+    const db = createDatabase(":memory:");
+    const forecast = [{
+      date: "2026-07-20",
+      temperature: 31,
+      apparentTemperature: 33,
+      precipitationProbability: 20,
+      windSpeed: 8,
+      weatherCode: 1,
+      summary: "多云"
+    }];
+    const fetchTripWeatherForecast = vi.fn(async () => forecast);
+    const app = createApiApp(db, { fetchTripWeatherForecast });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    expect((await fetch(`${baseUrl}/api/trips`)).status).toBe(401);
+    expect(fetchTripWeatherForecast).not.toHaveBeenCalled();
+    const authCookie = await registerTestUser(baseUrl);
+    const create = await fetch(`${baseUrl}/api/trips`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        name: "上海一日出差",
+        startDate: "2026-07-20",
+        endDate: "2026-07-20",
+        destination: { name: "上海", latitude: 31.2304, longitude: 121.4737 },
+        maxGarments: 6,
+        maxShoes: 1,
+        repeatPolicy: "allow",
+        maxCoreWearsBetweenLaundry: 2,
+        days: [{
+          date: "2026-07-20",
+          activities: [{
+            name: "会议",
+            occasion: "business",
+            formality: "formal",
+            requiresSeparateOutfit: false
+          }]
+        }]
+      })
+    });
+    expect(create.status).toBe(201);
+    const trip = await create.json() as { id: number; status: string };
+    expect(trip.status).toBe("planning");
+    expect(fetchTripWeatherForecast).not.toHaveBeenCalled();
+
+    const badRefresh = await fetch(`${baseUrl}/api/trips/${trip.id}/weather/refresh`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ unexpected: true })
+    });
+    expect(badRefresh.status).toBe(400);
+    expect(fetchTripWeatherForecast).not.toHaveBeenCalled();
+
+    const refresh = await fetch(`${baseUrl}/api/trips/${trip.id}/weather/refresh`, {
+      method: "POST",
+      headers: { cookie: authCookie }
+    });
+    expect(refresh.status).toBe(200);
+    expect(fetchTripWeatherForecast).toHaveBeenCalledTimes(1);
+    expect(fetchTripWeatherForecast).toHaveBeenCalledWith(
+      31.2304,
+      121.4737,
+      "2026-07-20",
+      "2026-07-20"
+    );
+    expect(await refresh.json()).toMatchObject({ snapshots: forecast });
+
+    const packing = await fetch(`${baseUrl}/api/trips/${trip.id}/packing`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ label: "充电器" })
+    });
+    expect(packing.status).toBe(201);
+    const packingItem = await packing.json() as { id: number; status: string };
+    const packed = await fetch(`${baseUrl}/api/trips/${trip.id}/packing/${packingItem.id}`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ status: "packed" })
+    });
+    expect(packed.status).toBe(200);
+    expect(await packed.json()).toMatchObject({ status: "packed" });
+    const removed = await fetch(`${baseUrl}/api/trips/${trip.id}/packing/${packingItem.id}`, {
+      method: "DELETE",
+      headers: { cookie: authCookie }
+    });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ ok: true });
+
+    const updateDays = await fetch(`${baseUrl}/api/trips/${trip.id}/days`, {
+      method: "PUT",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        days: [{
+          date: "2026-07-20",
+          activities: [{
+            name: "正式会议",
+            occasion: "business",
+            formality: "formal",
+            requiresSeparateOutfit: false
+          }]
+        }]
+      })
+    });
+    expect(updateDays.status).toBe(200);
+    const refreshedAfterDayUpdate = await fetch(`${baseUrl}/api/trips/${trip.id}/weather/refresh`, {
+      method: "POST",
+      headers: { cookie: authCookie }
+    });
+    expect(refreshedAfterDayUpdate.status).toBe(200);
+    expect(fetchTripWeatherForecast).toHaveBeenCalledTimes(2);
+
+    const insertGarment = db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        materials, patterns, tags, owned, confirmed, excluded, confidence
+      ) VALUES (?, ?, 'black', 'light', '["summer"]', '["formal"]', 'formal',
+        '[]', '[]', '[]', 1, 1, 0, 1)
+    `);
+    [
+      ["API 旅行上装", "top"],
+      ["API 旅行下装", "bottom"],
+      ["API 旅行鞋履", "shoes"]
+    ].forEach(([name, category]) => insertGarment.run(name, category));
+    const generatedResponse = await fetch(`${baseUrl}/api/trips/${trip.id}/generate`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ useStoredWeather: true })
+    });
+    expect(generatedResponse.status).toBe(200);
+    const generated = await generatedResponse.json() as {
+      trip: {
+        selections: Array<{ id: number; garments: Array<{ id: number }> }>;
+      };
+      optimization: { status: string };
+    };
+    expect(generated.optimization.status).toBe("feasible");
+    expect(generated.trip.selections).toHaveLength(1);
+    const selection = generated.trip.selections[0];
+    const garmentIds = selection.garments.map((garment) => garment.id);
+
+    const recalculated = await fetch(
+      `${baseUrl}/api/trips/${trip.id}/selections/${selection.id}/recalculate`,
+      {
+        method: "POST",
+        headers: jsonHeaders(authCookie),
+        body: JSON.stringify({ lockedGarmentIds: garmentIds })
+      }
+    );
+    expect(recalculated.status).toBe(200);
+    expect(await recalculated.json()).toMatchObject({ optimization: { status: "feasible" } });
+    const currentTrip = await (await fetch(`${baseUrl}/api/trips/${trip.id}`, {
+      headers: { cookie: authCookie }
+    })).json() as { selections: Array<{ id: number; garments: Array<{ id: number }> }> };
+    const currentSelection = currentTrip.selections[0];
+
+    const complete = await fetch(`${baseUrl}/api/trips/${trip.id}/complete`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({
+        confirmations: [{
+          selectionId: currentSelection.id,
+          confirmed: true,
+          wornAt: "2026-07-20T09:00:00+08:00",
+          timeZone: "Asia/Shanghai",
+          occasion: "formal",
+          itemIds: currentSelection.garments.map((garment) => garment.id)
+        }]
+      })
+    });
+    expect(complete.status).toBe(200);
+    expect(await complete.json()).toMatchObject({ trip: { status: "completed" } });
+
+    const archived = await fetch(`${baseUrl}/api/trips/${trip.id}`, {
+      method: "DELETE",
+      headers: { cookie: authCookie }
+    });
+    expect(archived.status).toBe(200);
+    expect(await archived.json()).toMatchObject({ status: "archived" });
   });
 });
 

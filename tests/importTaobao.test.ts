@@ -9,6 +9,104 @@ import {
 import { ValidationError } from "../server/validation";
 
 describe("normalizeTaobaoBatch", () => {
+  it("recognizes the English refund markers emitted by the Selenium order collector", () => {
+    const normalized = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: [{
+        orderId: "english-refund",
+        itemId: "refund-1001",
+        title: "Blue straight jeans",
+        status: "Completed",
+        refundText: "Refund successful",
+        rawText: "Blue straight jeans Refund successful"
+      }]
+    });
+
+    expect(normalized.summary.skippedRefunded).toBe(1);
+    expect(normalized.summary.createdGarments).toBe(0);
+    expect(normalized.sourceItems[0]?.isRefunded).toBe(true);
+  });
+
+  it("preserves whether quantity and payment were explicitly captured", () => {
+    const normalized = normalizeTaobaoBatch({
+      source: "taobao-bookmarklet",
+      pageType: "order-list",
+      items: [{
+        orderId: "missing-quantity",
+        title: "白色纯棉衬衫",
+        payment: "129.00"
+      }, {
+        orderId: "explicit-one",
+        title: "黑色羊毛外套",
+        quantity: 1,
+        payment: 0
+      }]
+    });
+
+    expect(normalized.sourceItems.map((item) => ({
+      orderId: item.orderId,
+      quantity: item.quantity,
+      payment: item.payment,
+      quantityExplicit: item.quantityExplicit,
+      paymentExplicit: item.paymentExplicit
+    }))).toEqual([{
+      orderId: "missing-quantity",
+      quantity: 1,
+      payment: 129,
+      quantityExplicit: false,
+      paymentExplicit: true
+    }, {
+      orderId: "explicit-one",
+      quantity: 1,
+      payment: 0,
+      quantityExplicit: true,
+      paymentExplicit: true
+    }]);
+  });
+
+  it("prefers explicit quantity evidence when duplicate captures are merged", () => {
+    const normalized = normalizeTaobaoBatch({
+      source: "taobao-bookmarklet",
+      pageType: "order-list",
+      items: [{
+        orderId: "merge-quantity",
+        itemId: "merge-1001",
+        title: "蓝色直筒牛仔裤"
+      }, {
+        orderId: "merge-quantity",
+        itemId: "merge-1001",
+        title: "蓝色直筒牛仔裤",
+        quantity: 2,
+        payment: "199.00"
+      }]
+    });
+
+    expect(normalized.sourceItems).toHaveLength(1);
+    expect(normalized.sourceItems[0]).toMatchObject({
+      quantity: 2,
+      payment: 199,
+      quantityExplicit: true,
+      paymentExplicit: true
+    });
+  });
+
+  it("does not turn a missing quantity into explicit quantity in wardrobe-filtered artifacts", () => {
+    const filtered = filterTaobaoBatchForWardrobe({
+      source: "taobao-bookmarklet",
+      pageType: "order-list",
+      items: [{
+        orderId: "filtered-missing-quantity",
+        title: "白色纯棉衬衫",
+        payment: "129.00"
+      }]
+    });
+
+    expect(filtered.payload.items).toHaveLength(1);
+    expect(filtered.payload.items?.[0]).not.toHaveProperty("quantity");
+    expect(filtered.payload.items?.[0]).toMatchObject({ payment: 129 });
+  });
+
   it("uses a versioned order identity while exposing the legacy key for database compatibility", () => {
     const sharedItem = {
       pageType: "order-list" as const,
