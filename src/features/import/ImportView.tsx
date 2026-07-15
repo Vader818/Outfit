@@ -16,8 +16,17 @@ import type {
   TaobaoWardrobeFilterSummary
 } from "../../shared/types";
 import { ImportReviewTable } from "./ImportReviewTable";
+import {
+  PurchaseCheckPanel,
+  type PurchaseCheckResultView,
+  type SimilarityVerdict
+} from "./PurchaseCheckPanel";
+import { eligiblePurchaseCheckCandidates } from "./purchaseCheckCandidates";
+
+export type ImportViewMode = "import" | "purchase-check";
 
 export interface ImportViewProps {
+  mode?: ImportViewMode;
   bookmarklet: string;
   importText: string;
   importResult: ImportSummary | TaobaoImportCommitResult | null;
@@ -39,9 +48,19 @@ export interface ImportViewProps {
   onStartOrdersCapture: () => void;
   onStartItemCapture: () => void;
   onReadLatestCapture: () => void;
+  purchaseCheckResult?: PurchaseCheckResultView | null;
+  purchaseCheckBusy?: boolean;
+  purchaseCheckError?: string;
+  purchaseCheckSourceItemKey?: string;
+  feedbackBusyGarmentId?: number | null;
+  onModeChange?: (mode: ImportViewMode) => void;
+  onPurchaseCheckSourceItemKey?: (sourceItemKey: string) => void;
+  onPurchaseCheck?: () => void;
+  onSimilarityFeedback?: (comparedGarmentId: number, verdict: SimilarityVerdict) => void;
 }
 
 export function ImportView(props: ImportViewProps) {
+  const mode = props.mode ?? "import";
   const attachBookmarkletHref = (element: HTMLAnchorElement | null) => {
     if (element) element.setAttribute("href", props.bookmarklet);
   };
@@ -56,6 +75,8 @@ export function ImportView(props: ImportViewProps) {
         : "info"
     : "info";
   const importDecisions = props.importDecisions ?? {};
+  const purchaseCandidates = eligiblePurchaseCheckCandidates(props.importPreview);
+  const purchaseInteractionBusy = Boolean(props.purchaseCheckBusy || props.feedbackBusyGarmentId != null);
   const hasIncludedDecision = Boolean(props.importPreview?.candidates.some((item) => {
     const decision = importDecisions[item.sourceItemKey];
     if (decision) return decision.include;
@@ -66,10 +87,12 @@ export function ImportView(props: ImportViewProps) {
     : null;
 
   return (
-    <section className="view import-view" aria-busy={props.busy}>
+    <section className="view import-view" aria-busy={props.busy || purchaseInteractionBusy || undefined}>
       <PageIntro
-        title="从淘宝收进衣橱"
-        description="在浏览器里完成采集，检查候选后再写入本地衣橱。"
+        title={mode === "import" ? "从淘宝收进衣橱" : "购买前检查"}
+        description={mode === "import"
+          ? "在浏览器里完成采集，检查候选后再写入本地衣橱。"
+          : "先与本地衣橱和保存搭配比较；检查不会把候选加入衣橱。"}
         actions={(
           <a className="ui-button ui-button--secondary ui-button--md" href={TAOBAO_BOUGHT_ITEMS_URL} target="_blank" rel="noreferrer">
             <ExternalLink aria-hidden="true" size={18} />
@@ -77,6 +100,27 @@ export function ImportView(props: ImportViewProps) {
           </a>
         )}
       />
+
+      <Surface className="import-mode" aria-labelledby="import-mode-title">
+        <div>
+          <h2 id="import-mode-title">处理方式</h2>
+          <p>{mode === "import" ? "导入模式会在逐项确认后写入本地衣橱。" : "购买前检查模式只读取本地数据，不会加入衣橱。"}</p>
+        </div>
+        <div className="import-mode__actions" role="group" aria-label="选择处理方式">
+          <Button
+            variant={mode === "import" ? "primary" : "ghost"}
+            aria-pressed={mode === "import"}
+            disabled={purchaseInteractionBusy}
+            onClick={() => props.onModeChange?.("import")}
+          >导入衣橱</Button>
+          <Button
+            variant={mode === "purchase-check" ? "primary" : "ghost"}
+            aria-pressed={mode === "purchase-check"}
+            disabled={purchaseInteractionBusy}
+            onClick={() => props.onModeChange?.("purchase-check")}
+          >购买前检查</Button>
+        </div>
+      </Surface>
 
       <div className="capture-choice-grid">
         <Surface className="capture-choice capture-choice--orders">
@@ -190,14 +234,25 @@ export function ImportView(props: ImportViewProps) {
               <Sparkles aria-hidden="true" size={18} />
               {props.busyAction === "preview-import" ? "预览中" : "预览"}
             </Button>
-            <Button
-              disabled={props.busyAction === "import" || !props.importText.trim() || !props.importPreview || !hasIncludedDecision}
-              onClick={props.onImport}
-              variant="primary"
-            >
-              <Upload aria-hidden="true" size={18} />
-              {props.busyAction === "import" ? "提交中" : "提交选择"}
-            </Button>
+            {mode === "import" ? (
+              <Button
+                disabled={props.busyAction === "import" || !props.importText.trim() || !props.importPreview || !hasIncludedDecision}
+                onClick={props.onImport}
+                variant="primary"
+              >
+                <Upload aria-hidden="true" size={18} />
+                {props.busyAction === "import" ? "提交中" : "提交选择"}
+              </Button>
+            ) : (
+              <Button
+                disabled={purchaseInteractionBusy || !props.importText.trim() || !props.onPurchaseCheck || Boolean(props.importPreview && !purchaseCandidates.length)}
+                onClick={props.onPurchaseCheck}
+                variant="primary"
+              >
+                <Sparkles aria-hidden="true" size={18} />
+                {props.purchaseCheckBusy ? "检查中" : "运行购买前检查"}
+              </Button>
+            )}
           </div>
         </div>
 
@@ -230,6 +285,7 @@ export function ImportView(props: ImportViewProps) {
               <textarea
                 id="import-json"
                 className="import-box"
+                disabled={purchaseInteractionBusy}
                 value={props.importText}
                 onChange={(event) => props.onImportText(event.target.value)}
                 placeholder={'{"source":"taobao-bookmarklet","items":[]}'}
@@ -239,7 +295,7 @@ export function ImportView(props: ImportViewProps) {
         </details>
       </Surface>
 
-      {props.importResult ? (
+      {mode === "import" && props.importResult ? (
         <Surface className="import-result" aria-live="polite">
           <div className="section-heading">
             <h2>导入完成</h2>
@@ -266,7 +322,7 @@ export function ImportView(props: ImportViewProps) {
         </Surface>
       ) : null}
 
-      {props.importPreview ? (
+      {mode === "import" && props.importPreview ? (
         <Surface className="preview-panel">
           <div className="section-heading">
             <div>
@@ -296,6 +352,39 @@ export function ImportView(props: ImportViewProps) {
               description="当前产物可能只有退款订单、重复项或非服饰商品。可以返回淘宝重新采集。"
             />
           )}
+        </Surface>
+      ) : null}
+
+      {mode === "purchase-check" ? (
+        <Surface className="purchase-check-panel-shell">
+          {purchaseCandidates.length && props.onPurchaseCheckSourceItemKey ? (
+            <label className="purchase-check-candidate" htmlFor="purchase-check-candidate">
+              <span>待检查候选</span>
+              <select
+                id="purchase-check-candidate"
+                className="ui-select"
+                disabled={purchaseInteractionBusy}
+                value={props.purchaseCheckSourceItemKey ?? purchaseCandidates[0]?.sourceItemKey ?? ""}
+                onChange={(event) => props.onPurchaseCheckSourceItemKey?.(event.target.value)}
+              >
+                {purchaseCandidates.map((candidate) => (
+                  <option key={candidate.sourceItemKey} value={candidate.sourceItemKey}>{candidate.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {props.importPreview && props.importPreview.candidates.length > purchaseCandidates.length ? (
+            <Notice tone="info" role="status" title="已排除不可检查候选">
+              {props.importPreview.candidates.length - purchaseCandidates.length} 个退款、非服饰或待人工处理候选不会进入购买前检查。
+            </Notice>
+          ) : null}
+          <PurchaseCheckPanel
+            result={props.purchaseCheckResult ?? null}
+            busy={props.purchaseCheckBusy}
+            error={props.purchaseCheckError}
+            feedbackBusyGarmentId={props.feedbackBusyGarmentId}
+            onFeedback={props.onSimilarityFeedback}
+          />
         </Surface>
       ) : null}
     </section>

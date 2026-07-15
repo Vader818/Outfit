@@ -376,7 +376,14 @@ function assertProductionMigration(
     "garment_availability_events",
     "wear_events",
     "wear_event_items",
-    "outfit_plan_entries"
+    "outfit_plan_entries",
+    "garment_similarity_feedback",
+    "garment_embeddings",
+    "trips",
+    "trip_days",
+    "trip_day_activities",
+    "trip_outfit_selections",
+    "trip_packing_items"
   ]);
   assertLegacySchemaContract(db, true);
 
@@ -387,20 +394,24 @@ function assertProductionMigration(
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
       { version: 4, name: "feedback-availability" },
-      { version: 5, name: "diary-week-planner" }
+      { version: 5, name: "diary-week-planner" },
+      { version: 6, name: "decision-support" },
+      { version: 7, name: "trip-capsule-planner" }
   ]);
 
   expect(db.prepare(`
-    SELECT origin, archived_at, acquired_at, purchase_price_cents, currency, availability_status
+    SELECT origin, archived_at, acquired_at, purchase_price_cents, currency,
+      cost_source, availability_status
     FROM garments
     ORDER BY id ASC
   `).all()).toEqual([
     {
       origin: "taobao",
       archived_at: null,
-      acquired_at: null,
+      acquired_at: "2025-12-01",
       purchase_price_cents: null,
       currency: null,
+      cost_source: null,
       availability_status: "available"
     }
   ]);
@@ -408,6 +419,16 @@ function assertProductionMigration(
   expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
   expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_pair_stats").get()).toEqual({ count: 0 });
   expect(db.prepare("SELECT COUNT(*) AS count FROM garment_availability_events").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM garment_similarity_feedback").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM garment_embeddings").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM trips").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM trip_days").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM trip_day_activities").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM trip_outfit_selections").get()).toEqual({ count: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS count FROM trip_packing_items").get()).toEqual({ count: 0 });
+  expect(db.prepare(`
+    SELECT quantity_explicit, payment_explicit FROM source_order_items
+  `).get()).toEqual({ quantity_explicit: 0, payment_explicit: 1 });
   expect(db.prepare(`
     SELECT id, worn_at, time_zone, occasion, legacy_snapshot
     FROM wear_events

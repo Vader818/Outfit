@@ -1,4 +1,4 @@
-import { Badge, EmptyState } from "../../components/ui";
+import { Badge, Button, EmptyState } from "../../components/ui";
 import { SUGGESTION_PRIORITY_LABELS } from "../../shared/presentation";
 import type { WardrobeSuggestion } from "../../shared/types";
 
@@ -8,7 +8,19 @@ const TONE_BY_PRIORITY = {
   low: "info"
 } as const;
 
-export function InsightSuggestionList({ items, empty }: { items: WardrobeSuggestion[]; empty: string }) {
+export interface InsightSuggestionListProps {
+  items: WardrobeSuggestion[];
+  empty: string;
+  onViewRelated?: (garmentIds: number[]) => void;
+  onApplyRelatedFilter?: (garmentIds: number[]) => void;
+}
+
+export function InsightSuggestionList({
+  items,
+  empty,
+  onViewRelated,
+  onApplyRelatedFilter
+}: InsightSuggestionListProps) {
   if (!items.length) {
     return <EmptyState compact title={empty} />;
   }
@@ -25,6 +37,20 @@ export function InsightSuggestionList({ items, empty }: { items: WardrobeSuggest
               <ul className="insight-suggestion__evidence">
                 {item.evidence.map((evidence, index) => <li key={`${index}-${evidence}`}>{evidence}</li>)}
               </ul>
+            ) : null}
+            {item.relatedGarmentIds?.length && (onViewRelated || onApplyRelatedFilter) ? (
+              <div className="insight-suggestion__actions">
+                {onViewRelated ? (
+                  <Button size="sm" variant="secondary" onClick={() => onViewRelated(item.relatedGarmentIds ?? [])}>
+                    查看相关衣物
+                  </Button>
+                ) : null}
+                {onApplyRelatedFilter ? (
+                  <Button size="sm" variant="ghost" onClick={() => onApplyRelatedFilter(item.relatedGarmentIds ?? [])}>
+                    应用筛选
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         </li>

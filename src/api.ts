@@ -1,4 +1,5 @@
 import type { AuthStatus, CaptureArtifact, CaptureEngine, CaptureJob, CaptureJobMode, Garment, GarmentAvailabilityChangeResult, GarmentAvailabilityStatus, GarmentThumbnailCandidatesResponse, GarmentUpdateInput, ManualGarmentCreate, MarkWornInput, MarkWornResult, OutfitExport, OutfitPlanEntry, OutfitPlanInput, OutfitPlanMutationResult, OutfitPlanUpdate, PersonalProfile, RecommendationFeedback, RecommendationFeedbackClearPreview, RecommendationFeedbackClearResult, RecommendationFeedbackClearScope, RecommendationFeedbackInput, RecommendationRequest, RecommendationResult, RecommendationRunEntry, SaveRecommendationCandidateInput, SavedOutfit, SavedOutfitCreateInput, SavedOutfitReplacementInput, SavedOutfitUpdateInput, TaobaoImportCommitRequest, TaobaoImportCommitResult, TaobaoImportPreview, TaobaoWardrobeFilterSummary, ThumbnailRefreshResult, VisionModelId, VisionModelJob, VisionModelsResponse, VisionTagSuggestion, WardrobeInsights, WearEvent, WearEventInput, WearEventPage, WearLogEntry, WeatherSnapshot } from "./shared/types";
+import type { GarmentSimilarityFeedback, GarmentSimilarityMatch, PurchaseCheckResult, SimilarityFeedbackInput, TaobaoCapturedBatch, Trip, TripCompleteInput, TripCompleteResult, TripCreateInput, TripDayInput, TripGenerationInput, TripGenerationResult, TripPackingItem, TripPackingItemCreateInput, TripPackingItemUpdateInput, TripSelectionRecalculateInput, TripUpdateInput, TripWeatherRefreshResult, WardrobeValueInsights } from "./shared/types";
 
 export const AUTH_REQUIRED_EVENT = "outfit:auth-required";
 
@@ -471,6 +472,94 @@ export async function markOutfitPlanWorn(id: number, input: MarkWornInput): Prom
   });
 }
 
+export async function getTrips(options: { archived?: boolean } = {}): Promise<Trip[]> {
+  const query = options.archived ? "?archived=1" : "";
+  return request<Trip[]>(`/api/trips${query}`, { method: "GET" });
+}
+
+export async function getTrip(id: number): Promise<Trip> {
+  return request<Trip>(`/api/trips/${id}`, { method: "GET" });
+}
+
+export async function createTrip(input: TripCreateInput): Promise<Trip> {
+  return request<Trip>("/api/trips", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateTrip(id: number, input: TripUpdateInput): Promise<Trip> {
+  return request<Trip>(`/api/trips/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function archiveTrip(id: number): Promise<Trip> {
+  return request<Trip>(`/api/trips/${id}`, { method: "DELETE" });
+}
+
+export async function updateTripDays(id: number, days: TripDayInput[]): Promise<Trip> {
+  return request<Trip>(`/api/trips/${id}/days`, {
+    method: "PUT",
+    body: JSON.stringify({ days })
+  });
+}
+
+export async function refreshTripWeather(id: number): Promise<TripWeatherRefreshResult> {
+  return request<TripWeatherRefreshResult>(`/api/trips/${id}/weather/refresh`, { method: "POST" });
+}
+
+export async function generateTrip(id: number, input: TripGenerationInput = {}): Promise<TripGenerationResult> {
+  return request<TripGenerationResult>(`/api/trips/${id}/generate`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function recalculateTripSelection(
+  tripId: number,
+  selectionId: number,
+  input: TripSelectionRecalculateInput
+): Promise<TripGenerationResult> {
+  return request<TripGenerationResult>(`/api/trips/${tripId}/selections/${selectionId}/recalculate`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function createTripPackingItem(
+  tripId: number,
+  input: TripPackingItemCreateInput
+): Promise<TripPackingItem> {
+  return request<TripPackingItem>(`/api/trips/${tripId}/packing`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateTripPackingItem(
+  tripId: number,
+  itemId: number,
+  input: TripPackingItemUpdateInput
+): Promise<TripPackingItem> {
+  return request<TripPackingItem>(`/api/trips/${tripId}/packing/${itemId}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteTripPackingItem(tripId: number, itemId: number): Promise<{ ok: true }> {
+  return request<{ ok: true }>(`/api/trips/${tripId}/packing/${itemId}`, { method: "DELETE" });
+}
+
+export async function completeTrip(id: number, input: TripCompleteInput): Promise<TripCompleteResult> {
+  return request<TripCompleteResult>(`/api/trips/${id}/complete`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function getRecommendationRuns(): Promise<RecommendationRunEntry[]> {
   return request<RecommendationRunEntry[]>("/api/recommendation-runs", {
     method: "GET"
@@ -480,6 +569,37 @@ export async function getRecommendationRuns(): Promise<RecommendationRunEntry[]>
 export async function getInsights(): Promise<WardrobeInsights> {
   return request<WardrobeInsights>("/api/insights", {
     method: "GET"
+  });
+}
+
+export async function getValueInsights(): Promise<WardrobeValueInsights> {
+  return request<WardrobeValueInsights>("/api/insights/value", {
+    method: "GET"
+  });
+}
+
+export async function getSimilarGarments(id: number): Promise<GarmentSimilarityMatch[]> {
+  return request<GarmentSimilarityMatch[]>(`/api/garments/${id}/similar`, {
+    method: "GET"
+  });
+}
+
+export async function checkTaobaoPurchaseCandidate(input: {
+  batch: TaobaoCapturedBatch;
+  sourceItemKey: string;
+}): Promise<PurchaseCheckResult> {
+  return request<PurchaseCheckResult>("/api/purchase-checks/taobao-candidate", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function submitSimilarityFeedback(
+  input: SimilarityFeedbackInput
+): Promise<GarmentSimilarityFeedback> {
+  return request<GarmentSimilarityFeedback>("/api/similarity-feedback", {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }
 

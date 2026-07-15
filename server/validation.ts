@@ -158,6 +158,12 @@ export function validateGarmentUpdate(value: unknown): GarmentUpdate {
   if ("owned" in record) update.owned = booleanValue(record.owned, "owned");
   if ("confirmed" in record) update.confirmed = booleanValue(record.confirmed, "confirmed");
   if ("excluded" in record) update.excluded = booleanValue(record.excluded, "excluded");
+  if ("purchasePriceCents" in record) {
+    update.purchasePriceCents = nonNegativeSafeInteger(
+      record.purchasePriceCents,
+      "purchasePriceCents"
+    );
+  }
 
   return update;
 }

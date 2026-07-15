@@ -501,7 +501,6 @@ async function startAuthenticatedApp(db: AppDatabase): Promise<{ baseUrl: string
 function jsonHeaders(authCookie: string): Record<string, string> {
   return {
     "content-type": "application/json",
-    cookie: authCookie,
-    origin: "http://127.0.0.1"
+    cookie: authCookie
   };
 }

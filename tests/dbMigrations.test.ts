@@ -14,6 +14,131 @@ function migration(version: number, name: string, up: Migration["up"]): Migratio
 }
 
 describe("versioned database migrations", () => {
+  it("migrates decision-support cost provenance without trusting legacy default quantities", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE source_order_items (
+        id INTEGER PRIMARY KEY,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        payment REAL,
+        order_time TEXT,
+        is_refunded INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE garments (
+        id INTEGER PRIMARY KEY,
+        source_order_item_id INTEGER UNIQUE,
+        acquired_at TEXT,
+        purchase_price_cents INTEGER,
+        currency TEXT,
+        FOREIGN KEY (source_order_item_id) REFERENCES source_order_items(id)
+      );
+    `);
+    const appliedAt = "2026-07-13T00:00:00.000Z";
+    const applied = db.prepare(`
+      INSERT INTO schema_migrations (version, name, applied_at)
+      VALUES (?, ?, ?)
+    `);
+    for (const [version, name] of [
+      [0, "legacy-baseline"],
+      [1, "recommendation-candidates"],
+      [2, "trusted-ingestion"],
+      [3, "saved-outfits"],
+      [4, "feedback-availability"],
+      [5, "diary-week-planner"]
+    ] as const) {
+      applied.run(version, name, appliedAt);
+    }
+
+    const insertSource = db.prepare(`
+      INSERT INTO source_order_items (id, quantity, payment, order_time, is_refunded)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    insertSource.run(1, 2, 399, "2025-12-01 08:30:00", 0);
+    insertSource.run(2, 1, 129, "2025-12-02T09:00:00.000Z", 0);
+    insertSource.run(3, 3, 0, "2025-12-03", 0);
+    insertSource.run(4, 2, null, "not-a-date", 0);
+    insertSource.run(5, 2, -1, "2025-02-30 10:00:00", 0);
+    insertSource.run(6, 2, 50, "2025-12-06 10:00:00", 1);
+    insertSource.run(7, 2, 999, "2025-12-07 10:00:00", 0);
+    insertSource.run(8, 2, 1e308, "2025-12-08 10:00:00", 0);
+
+    const insertGarment = db.prepare(`
+      INSERT INTO garments (
+        id, source_order_item_id, acquired_at, purchase_price_cents, currency
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+    for (let id = 1; id <= 6; id += 1) {
+      insertGarment.run(id, id, null, null, null);
+    }
+    insertGarment.run(7, 7, "2024-01-01", 12345, "CNY");
+    insertGarment.run(8, 8, null, null, null);
+    insertGarment.run(9, null, "2025-01-01", 8888, "CNY");
+
+    migrate(db);
+
+    expect(db.prepare(`
+      SELECT version, name FROM schema_migrations ORDER BY version
+    `).all()).toEqual([
+      { version: 0, name: "legacy-baseline" },
+      { version: 1, name: "recommendation-candidates" },
+      { version: 2, name: "trusted-ingestion" },
+      { version: 3, name: "saved-outfits" },
+      { version: 4, name: "feedback-availability" },
+      { version: 5, name: "diary-week-planner" },
+      { version: 6, name: "decision-support" },
+      { version: 7, name: "trip-capsule-planner" }
+    ]);
+    expect(db.prepare(`
+      SELECT id, quantity_explicit, payment_explicit
+      FROM source_order_items
+      ORDER BY id
+    `).all()).toEqual([
+      { id: 1, quantity_explicit: 1, payment_explicit: 1 },
+      { id: 2, quantity_explicit: 0, payment_explicit: 1 },
+      { id: 3, quantity_explicit: 1, payment_explicit: 1 },
+      { id: 4, quantity_explicit: 1, payment_explicit: 0 },
+      { id: 5, quantity_explicit: 1, payment_explicit: 1 },
+      { id: 6, quantity_explicit: 1, payment_explicit: 1 },
+      { id: 7, quantity_explicit: 1, payment_explicit: 1 },
+      { id: 8, quantity_explicit: 1, payment_explicit: 1 }
+    ]);
+    expect(db.prepare(`
+      SELECT id, acquired_at, purchase_price_cents, currency, cost_source
+      FROM garments
+      ORDER BY id
+    `).all()).toEqual([
+      { id: 1, acquired_at: "2025-12-01", purchase_price_cents: 19950, currency: "CNY", cost_source: "taobao" },
+      { id: 2, acquired_at: "2025-12-02", purchase_price_cents: null, currency: null, cost_source: null },
+      { id: 3, acquired_at: "2025-12-03", purchase_price_cents: 0, currency: "CNY", cost_source: "taobao" },
+      { id: 4, acquired_at: null, purchase_price_cents: null, currency: null, cost_source: null },
+      { id: 5, acquired_at: null, purchase_price_cents: null, currency: null, cost_source: null },
+      { id: 6, acquired_at: "2025-12-06", purchase_price_cents: null, currency: null, cost_source: null },
+      { id: 7, acquired_at: "2024-01-01", purchase_price_cents: 12345, currency: "CNY", cost_source: "manual" },
+      { id: 8, acquired_at: "2025-12-08", purchase_price_cents: null, currency: null, cost_source: null },
+      { id: 9, acquired_at: "2025-01-01", purchase_price_cents: 8888, currency: "CNY", cost_source: "manual" }
+    ]);
+    expect(() => db.prepare("UPDATE garments SET cost_source = 'backup' WHERE id = 1").run()).toThrow();
+    expect(() => db.prepare("UPDATE source_order_items SET quantity_explicit = 2 WHERE id = 1").run()).toThrow();
+
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN ('garment_similarity_feedback', 'garment_embeddings')
+      ORDER BY name
+    `).all()).toEqual([
+      { name: "garment_embeddings" },
+      { name: "garment_similarity_feedback" }
+    ]);
+  });
+
   it("registers the frozen legacy schema as baseline version 0", () => {
     const db = new DatabaseSync(":memory:");
 
@@ -30,7 +155,9 @@ describe("versioned database migrations", () => {
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
       { version: 4, name: "feedback-availability" },
-      { version: 5, name: "diary-week-planner" }
+      { version: 5, name: "diary-week-planner" },
+      { version: 6, name: "decision-support" },
+      { version: 7, name: "trip-capsule-planner" }
     ]);
   });
 
@@ -61,7 +188,9 @@ describe("versioned database migrations", () => {
       { version: 2 },
       { version: 3 },
       { version: 4 },
-      { version: 5 }
+      { version: 5 },
+      { version: 6 },
+      { version: 7 }
     ]);
   });
 
@@ -257,7 +386,9 @@ describe("versioned database migrations", () => {
       { version: 2, name: "trusted-ingestion" },
       { version: 3, name: "saved-outfits" },
       { version: 4, name: "feedback-availability" },
-      { version: 5, name: "diary-week-planner" }
+      { version: 5, name: "diary-week-planner" },
+      { version: 6, name: "decision-support" },
+      { version: 7, name: "trip-capsule-planner" }
     ]);
     expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
       "idx_recommendation_candidates_run_id",

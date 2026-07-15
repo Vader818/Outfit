@@ -60,8 +60,8 @@ STATUS_PATTERN = re.compile(
     re.I,
 )
 REFUND_PATTERN = re.compile(
-    r"Refund successful|Refunding|Refund closed|After-sale successful|After-sale|"
-    r"退款成功|退款中|退货退款|售后成功|售后中|申请退款|退款关闭",
+    r"Refund successful|Refunding|After-sale successful|"
+    r"退款成功|退款中|退货退款|售后成功|售后中|申请退款",
     re.I,
 )
 SKU_PATTERN = re.compile(
@@ -151,25 +151,30 @@ def extract_sku(raw_text: str) -> str:
     return "; ".join(unique_strings(parts))
 
 
-def extract_quantity(raw_text: str) -> int:
+def extract_quantity(raw_text: str) -> int | None:
     match = re.search(r"(?:Quantity|Qty|数量)\s*[:：]?\s*(\d{1,3})", raw_text, re.I)
     if not match:
-        match = re.search(r"[xX×]\s*(\d{1,3})(?!\d)", raw_text)
+        match = re.search(r"(?:^|\s)[x×]\s*(\d{1,3})(?=\s*[$¥￥])", raw_text)
     if not match:
-        return 1
+        return None
     parsed = int(match.group(1))
-    return parsed if parsed > 0 else 1
+    return parsed if parsed > 0 else None
 
 
 def extract_payment(raw_text: str) -> str:
-    patterns = [
-        r"(?:Total|Paid|Payment|实付款|实付|付款|合计|总价)?\s*[$¥￥]\s*([0-9]+(?:\.[0-9]{1,2})?)",
-        r"(?:Total|Paid|Payment|实付款|实付|付款|合计|总价)\s*[:：]?\s*([0-9]+(?:\.[0-9]{1,2})?)",
-    ]
-    for pattern in patterns:
+    labels = r"(?:Total(?:\s+Paid)?|Paid|Payment|实付款|实付|付款|合计|总价)"
+    amount = r"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"
+    for pattern in [
+        rf"{labels}\s*[:：]?\s*[$¥￥]?\s*{amount}",
+        rf"[$¥￥]\s*{amount}\s*{labels}",
+    ]:
         match = re.search(pattern, raw_text, re.I)
         if match:
-            return clean_text(match.group(1))
+            return clean_text(match.group(1)).replace(",", "")
+    unlabeled = re.findall(rf"[$¥￥]\s*{amount}", raw_text)
+    quantity = extract_quantity(raw_text)
+    if len(unlabeled) == 1 and quantity in {None, 1}:
+        return clean_text(unlabeled[0]).replace(",", "")
     return ""
 
 
@@ -196,6 +201,25 @@ def first_link(links: Any) -> dict[str, Any]:
         if isinstance(link, dict):
             return link
     return {}
+
+
+def unique_product_links(links: Any, base_url: str) -> list[dict[str, Any]]:
+    if not isinstance(links, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in links:
+        if not isinstance(value, dict):
+            continue
+        href = normalize_resource_url(str(value.get("href", "")), base_url)
+        if not re.search(r"item\.taobao\.com|detail\.tmall\.com|item\.tmall\.com", href, re.I):
+            continue
+        key = extract_item_id(href) or href
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append({**value, "href": href})
+    return result
 
 
 def first_image(images: Any, base_url: str) -> str:
@@ -241,14 +265,13 @@ def normalize_order_item(container: dict[str, Any], base_url: str) -> dict[str, 
     if not raw_text and not title and not item_url:
         return None
 
-    return {
+    item = {
         "pageType": "order-list",
         "itemId": extract_item_id(item_url),
         "orderId": extract_order_id(raw_text),
         "orderTime": extract_order_time(raw_text),
         "title": title,
         "sku": extract_sku(raw_text),
-        "quantity": extract_quantity(raw_text),
         "payment": extract_payment(raw_text),
         "status": extract_status(raw_text),
         "refundText": extract_refund_text(raw_text),
@@ -256,6 +279,45 @@ def normalize_order_item(container: dict[str, Any], base_url: str) -> dict[str, 
         "imageUrl": image_url,
         "rawText": raw_text[:2000],
     }
+    quantity = extract_quantity(raw_text)
+    if quantity is not None:
+        item["quantity"] = quantity
+    return item
+
+
+def normalize_order_items(container: dict[str, Any], base_url: str) -> list[dict[str, Any]]:
+    links = unique_product_links(container.get("links", []), base_url)
+    if len(links) <= 1:
+        item = normalize_order_item(container, base_url)
+        return [item] if item else []
+
+    raw_text = clean_text(container.get("rawText", ""))
+    common = {
+        "pageType": "order-list",
+        "orderId": extract_order_id(raw_text),
+        "orderTime": extract_order_time(raw_text),
+        "sku": "",
+        "payment": "",
+        "status": extract_status(raw_text),
+        "refundText": extract_refund_text(raw_text),
+        "imageUrl": "",
+        "rawText": raw_text[:2000],
+    }
+    return [{
+        **common,
+        "itemId": extract_item_id(str(link.get("href", ""))),
+        "title": title_from_container(container, link, raw_text),
+        "itemUrl": str(link.get("href", "")),
+    } for link in links]
+
+
+def merge_order_items(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in incoming.items():
+        if key not in merged or merged[key] in {None, ""}:
+            if value not in {None, ""}:
+                merged[key] = value
+    return merged
 
 
 def item_dedupe_key(item: dict[str, Any]) -> str:
@@ -277,8 +339,8 @@ def build_order_payload(snapshots: list[dict[str, Any]], captured_at: str | None
             if isinstance(snapshot, dict)
         )
     )
-    items: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    items_by_key: dict[str, dict[str, Any]] = {}
+    item_order: list[str] = []
 
     for snapshot in snapshots:
         base_url = clean_text(snapshot.get("url", "")) or page_url
@@ -288,14 +350,15 @@ def build_order_payload(snapshots: list[dict[str, Any]], captured_at: str | None
         for container in containers:
             if not isinstance(container, dict):
                 continue
-            item = normalize_order_item(container, base_url)
-            if not item:
-                continue
-            key = item_dedupe_key(item)
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(item)
+            for item in normalize_order_items(container, base_url):
+                key = item_dedupe_key(item)
+                if key in items_by_key:
+                    items_by_key[key] = merge_order_items(items_by_key[key], item)
+                    continue
+                item_order.append(key)
+                items_by_key[key] = item
+
+    items = [items_by_key[key] for key in item_order]
 
     return {
         "source": "taobao-selenium-order-list",

@@ -44,6 +44,7 @@ export type WardrobeFilters = {
   season: "all" | Garment["seasons"][number];
   owned: WardrobeOwnedFilter;
   query: string;
+  relatedGarmentIds?: number[];
 };
 
 export const CATEGORY_LABELS: Record<Garment["category"], string> = {
@@ -170,7 +171,8 @@ export const DEFAULT_WARDROBE_FILTERS: WardrobeFilters = {
   color: "all",
   season: "all",
   owned: "all",
-  query: ""
+  query: "",
+  relatedGarmentIds: []
 };
 
 export function toOptions<T extends string>(labels: Record<T, string>): SelectOption[] {

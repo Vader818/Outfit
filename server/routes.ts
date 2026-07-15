@@ -18,7 +18,10 @@ import { registerGarmentRoutes } from "./routes/garments";
 import { registerOutfitRoutes } from "./routes/outfits";
 import { registerFeedbackRoutes } from "./routes/feedback";
 import { registerPlannerRoutes } from "./routes/planner";
+import { registerDecisionSupportRoutes } from "./routes/decisionSupport";
 import { listWearEvents } from "./services/wearEvents";
+import { registerTripRoutes } from "./routes/trips";
+import type { TripWeatherForecast } from "./services/tripPlanner";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -32,6 +35,7 @@ export interface ApiAppOptions {
   rembgProvider?: VisionServiceOptions["rembgProvider"];
   runRembg?: VisionServiceOptions["runRembg"];
   inferVisionTags?: VisionServiceOptions["inferVisionTags"];
+  fetchTripWeatherForecast?: TripWeatherForecast;
 }
 
 export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): express.Express {
@@ -111,6 +115,8 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   registerOutfitRoutes(app, db);
   registerFeedbackRoutes(app, db);
   registerPlannerRoutes(app, db);
+  registerDecisionSupportRoutes(app, db);
+  registerTripRoutes(app, db, { fetchForecast: options.fetchTripWeatherForecast });
 
   app.post("/api/import/taobao-batch", (request, response) => {
     handle(response, () => {
@@ -623,22 +629,11 @@ function isTrustedMutatingRequest(request: Request): boolean {
   try {
     const parsed = new URL(origin);
     if (!["http:", "https:"].includes(parsed.protocol)) return false;
-    const requestHost = request.headers.host || "";
-    if (parsed.host === requestHost) return true;
-    return isLocalHostname(parsed.hostname) && isLocalRequestHost(requestHost);
+    const requestHost = (request.headers.host || "").trim().toLowerCase();
+    return requestHost.length > 0 && parsed.host.toLowerCase() === requestHost;
   } catch {
     return false;
   }
-}
-
-function isLocalRequestHost(value: string): boolean {
-  const host = value.split(":")[0]?.replace(/^\[/, "").replace(/\]$/, "") || "";
-  return isLocalHostname(host);
-}
-
-function isLocalHostname(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function createLoginRateLimiter(): {

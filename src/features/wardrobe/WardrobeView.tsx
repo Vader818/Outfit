@@ -125,6 +125,21 @@ export function WardrobeView(props: WardrobeViewProps) {
         <Notice tone="success" role="status">{props.thumbnailRefreshMessage}</Notice>
       ) : null}
 
+      {filters.relatedGarmentIds?.length ? (
+        <Notice tone="info" role="status" title={`正在查看 ${filters.relatedGarmentIds.length} 件相关衣物`}>
+          <div className="wardrobe-related-filter">
+            <span>该范围来自洞察证据；其他筛选仍可继续叠加。</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => props.onFilters?.({ ...filters, relatedGarmentIds: [] })}
+            >
+              清除相关筛选
+            </Button>
+          </div>
+        </Notice>
+      ) : null}
+
       <Surface as="div" className="wardrobe-filter-panel" aria-labelledby="wardrobe-filter-title">
         <div className="wardrobe-filter-panel__heading">
           <div>

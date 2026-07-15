@@ -174,6 +174,7 @@ function makePreview(...candidates: TaobaoImportPreviewItem[]): TaobaoImportPrev
 function makeItem(overrides: Partial<TaobaoImportPreviewItem>): TaobaoImportPreviewItem {
   return {
     sourceItemKey: "item-1",
+    purchaseCheckEligible: true,
     brand: "示例品牌",
     name: "示例上衣",
     rawName: "示例上衣",

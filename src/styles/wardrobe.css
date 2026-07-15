@@ -15,6 +15,14 @@
   border-right: 0;
 }
 
+.wardrobe-related-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
 .wardrobe-filter-panel {
   display: grid;
   gap: var(--space-5);

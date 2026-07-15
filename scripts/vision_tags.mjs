@@ -22,13 +22,48 @@ try {
   env.allowRemoteModels = false;
   env.allowLocalModels = true;
   const classifier = await pipeline("zero-shot-image-classification", path.resolve(modelDir), { device });
-  const image = await RawImage.read(path.resolve(imagePath));
-  const output = await classifier(image, labels);
-  await classifier.dispose();
-  console.log(JSON.stringify(toSuggestion(output), null, 2));
+  try {
+    const image = await RawImage.read(path.resolve(imagePath));
+    const analysis = await analyzeLocally(classifier, image, labels);
+    console.log(JSON.stringify({
+      ...toSuggestion(analysis.scores),
+      embedding: analysis.embedding
+    }, null, 2));
+  } finally {
+    await classifier.dispose();
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
+}
+
+async function analyzeLocally(classifier, image, candidateLabels) {
+  const texts = candidateLabels.map((label) => `This is a photo of ${label}`);
+  const textInputs = classifier.tokenizer(texts, {
+    padding: true,
+    truncation: true
+  });
+  const { pixel_values: pixelValues } = await classifier.processor([image]);
+  const output = await classifier.model({ ...textInputs, pixel_values: pixelValues });
+  const logits = Array.from(output.logits_per_image)[0];
+  if (!logits?.data || !output.image_embeds?.data) {
+    throw new Error("CLIP 本地模型没有返回预期的图片向量");
+  }
+  const probabilities = softmax(Array.from(logits.data));
+  return {
+    scores: probabilities
+      .map((score, index) => ({ label: candidateLabels[index], score }))
+      .sort((left, right) => right.score - left.score),
+    embedding: Array.from(output.image_embeds.data, Number)
+  };
+}
+
+function softmax(values) {
+  if (values.length === 0) return [];
+  const maximum = Math.max(...values);
+  const exponentials = values.map((value) => Math.exp(value - maximum));
+  const total = exponentials.reduce((sum, value) => sum + value, 0);
+  return exponentials.map((value) => value / total);
 }
 
 function toSuggestion(results) {

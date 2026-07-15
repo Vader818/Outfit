@@ -778,3 +778,252 @@
 - 正式计划 mark-worn 后卡片不再提供计划编辑，只显示“编辑穿着”；实际时间从 11:28 改为 12:15 后，计划卡同步显示 12:15，验证前后端时间副本一致。
 - 390×844 视口下 document 为 375/375 无横向溢出；周网格容器为 375/2344、`overflow-x:auto`；移动导航精确 5 项。
 - 浏览器控制台 0 warning、0 error。QA 浏览器已关闭，8788/5174 服务进程已停止；临时数据库、日志与快照保留。
+
+## 2026-07-13 Outfit M5 成本、重复购买与购买前检查
+
+### 需求与硬约束
+- 严格执行 `docs/2026-07-10-outfit-m5-decision-support-plan.md` 的全部 12 项实施任务与 5 条验收标准；M5 硬依赖已经落地的 M1 与 M4。
+- 成本/次只对已知价格计算，零穿着显示“尚无穿着”；最佳价值要求至少穿着 3 次；低利用高成本要求购入至少 90 天、穿着不超过 1 次且价格位于已知价格最高四分位；沉睡单品排除购入未满 30 天的新衣。
+- 结构相似度以同类别为硬条件，首版使用颜色、风格、材质、图案、品牌/规范化名称，缺字段时重新归一化；总分达到 75% 才提示可能重复。
+- 本地 CLIP 只在已安装时作为可选 10% 特征，禁止自动下载模型、禁止外发图片；embedding 是可重建缓存且不进入导出。
+- 购买前检查必须只预览，不写 `source_order_items` 或 `garments`；只有用户显式提交 duplicate/not-duplicate 反馈时允许写数据库。
+- 候选 `subject_key` 必须由服务端根据规范化输入生成稳定 fingerprint，不接受客户端提供的任意路径或超长键；同配对反馈使用幂等 upsert，not-duplicate 后立即隐藏。
+- 新写接口继续继承本地 session、Origin/Sec-Fetch-Site、结构化错误和严格输入校验；本轮不原地迁移真实数据库，不删除任何电脑文件。
+
+### 恢复基线
+- 当前 HEAD 为 `4120491 fix(planner): harden diary integrity and interactions`。
+- session catchup 检出上一轮续接消息，但 Git 实际差异只包含本轮 `task_plan.md` 的 M5 规划追加；产品源码尚未修改。
+- 规划文件将继续保留 M1–M4 历史证据，M5 只追加新章节和阶段，不覆盖旧完成记录。
+
+### 本轮恢复补记
+- 主 Agent 再次完整读取文件规划技能并确认承接现有 M5 阶段 59–63，不另起或覆盖历史阶段。
+- 三份规划记录当前规模为：`task_plan.md` 522 行、`findings.md` 796 行、`progress.md` 842 行；首次合并读取因输出过长被截断，后续按区段恢复。
+- `session-catchup.py` 成功执行且未报告未同步上下文；尚未修改产品代码，尚未删除任何文件。
+- Git 复核确认当前 HEAD 为 `4120491`，分支为 `codex/outfit-m0-foundation`；产品源码干净，仅 `task_plan.md`、`findings.md`、`progress.md` 包含 M5 规划增量。
+- 当前 M5 计划列出的三个后端 service、decisionSupport 路由、两个前端组件与 `tests/decisionSupport.test.ts` 均尚未存在，符合从 TDD 红灯开始实施的预期。
+- 修改前基线为 `npm run typecheck` 通过、Vitest 32 个文件 464/464 通过；该数字作为 M5 回归比较基线。
+- 现有 migration 2 已提供 `garments.acquired_at/purchase_price_cents/currency`，但没有 `cost_source`；可信淘宝 commit 只更新来源和衣物描述字段，不回填价格，因此 M5 必须新增编号迁移，不能改写冻结的旧迁移。
+- 当前价值洞察的穿着事实已来自 `wear_event_items + wear_events`，活跃范围来自默认 `listGarments()`；这可直接复用，但 M5 的 90 天/30 天口径、价格四分位和退款排除需要独立纯函数与查询证据。
+- 本机 `clip-vit-base-patch32` 已安装在 `output/models/huggingface/Xenova/clip-vit-base-patch32`；现有 `scripts/vision_tags.mjs` 已通过 `env.allowRemoteModels=false` 强制本地模型，可复用同类离线边界，绝不能触发 `models:download:clip`。
+- 三个只读审计一致建议 M5 只新增 migration 6 `decision-support`，统一承载 `cost_source`、来源金额/数量显式性、`garment_similarity_feedback` 与可选 `garment_embeddings` 缓存表。
+- `normalizeItem()`、`sourceItemToCapturedItem()`、重复项合并和 Python Selenium 采集器都会把缺失 quantity 固化为 1；M5 必须保留 `quantityExplicit/paymentExplicit`，且历史 quantity=1 默认不得回填价格。
+- 价值服务不能复用 UI 截断列表；应一次查询 active、非退款衣物和全量 WearEvent 聚合，零穿着用 `costPerWearCents=null`，最高四分位按降序 `ceil(n/4)` 边界并纳入阈值并列项。
+- 相似度固定为同类别硬门槛；文本做 NFKC/空白/大小写/列表规范化，缺字段时按参与字段权重重算，总分至少 75 才提示；已有本地 embedding 只作为 10% 可选特征。
+- 候选 subject 使用服务端规范化输入的 SHA-256 fingerprint；API 不接收任意 subjectKey。衣物对按 ID 规范化为对称配对，`not-duplicate` upsert 后立即从查询结果隐藏。
+- `worksWith` 必须使用活动 Saved Outfit 的 live garment 解析；丢失关联时跳过，不能把历史 snapshot 当成当前兼容字段。购买检查前后须以数据库计数证明无来源/衣物/反馈/缓存写入。
+- 洞察 relatedGarmentIds 的精确筛选需要扩展 `WardrobeFilters`，并显示可清除的筛选摘要；跳转前要清除冲突旧筛选与批量选择。
+- relatedGarmentIds UI 红灯准确复现为筛选仍返回全部 3 件、建议列表无动作；实现后精确返回目标 2 件，并通过真实 Button 回调传递稳定 ID 列表。
+- 历史洞察接线红灯显示底层动作不会自动进入生产页面；补 props 透传后，洞察/购物/身材建议都可调用相关衣物动作。App 跳转时会去重/校验 ID、清空旧批量选择并重置冲突筛选。
+- `ValueInsights` 与 `PurchaseCheckPanel` 的首次专项因文件不存在而 0 项加载失败；创建受控组件后 5/5 通过，覆盖零穿着“尚无穿着”、原生 details 证据、87% 相似理由和 duplicate/not-duplicate 明确动作。
+- 页面级红灯进一步显示 History 未嵌入价值区域、ImportView 检查模式仍会显示写入流程；补受控 mode 后，检查模式保留采集/预览能力但完全隐藏“提交选择”，只显示“运行购买前检查”和受控结果面板。
+- DB/导入 Agent 已完成 migration 6：显式 payment/quantity、cost_source、similarity feedback、embedding 缓存、保守历史回填与双导入链保护；专项 90/90、Python 11/11。
+- 价值 Agent 完成 `buildWardrobeValueInsights/getWardrobeValueInsights`，纯函数与 DB 集成 9/9；相似度 Agent 完成三项 service/route 专项 13/13，主线已把四个 API 注册到认证与同源中间件之后。
+- 迁移 6 使旧测试中的 schemaVersion=5、feature 列表及 planner 最小 v4 fixture 成为预期跨范围失败；现已统一为 schemaVersion 6、`decision-support` feature，并让最小 v4 fixture 具备迁移 6 依赖表。
+- OutfitExportV2 只读取并稳定排序 `garment_similarity_feedback`；测试向 embedding 缓存写入哨兵向量后确认导出完全不含向量、成本/次或排行，旧 V2 无新 feature 时继续兼容。
+- 前端四个 API 客户端使用固定路径与 `{ batch, sourceItemKey }`/显式 feedback DTO；主应用不接受/生成客户端 fingerprint，购买检查后由服务端返回 `subjectKey`。
+- 价值洞察刷新具有独立 busy/error 边界：失败不会使既有历史、日记、计划与保存搭配刷新整体失败。
+- 主应用安全集成测试证明未登录价值 API 返回 401、登录后返回 200、跨站购买检查写请求返回 403；决策支持路由继承既有 session 与同源保护。
+- 阶段 60–62 合并专项最终为 Vitest 14 文件 323/323、Python 采集 11/11、`tests/app.test.tsx` 80/80、typecheck 通过。
+
+### 最终实现与验收结论
+- 最终只读审查发现初版只有 embedding 读取路径、没有生产写入入口；现已复用受鉴权与同源保护的显式 `POST /api/garments/:id/vision-tags`：本地 CLIP 同次推理输出 512 维 `image_embeds`，服务端校验、单位归一化并编码为 Float32 小端 BLOB，标签与缓存原子幂等 upsert。模型缺失或无效向量不会留下部分数据；相似查询和购买检查仍纯读、不下载、不联网。
+- embedding 生产路径 TDD 从 3 失败/1 通过转为 4/4；相关回归 15/15，导出排除 1/1；真实本地离线 CLIP 烟测输出 512 维，范数约 1.0。
+- 隔离浏览器先验证价值洞察：3 件已知价格、0 件未知价格、最高四分位 ¥1299；最佳价值衣物穿着 4 次、¥74.75/次；低利用高成本衣物展开后可见 ¥1299、购入日 2025-01-01、穿着 0 次与“尚无穿着”。相关衣物动作精确跳到 1 件衣物并可清除筛选。
+- 购买前检查运行前后数据库保持 `garments=3`、`source_order_items=0`、`feedback=0`、`embeddings=0`，结果给出 1 件 100% 可解释重复项、1 套兼容搭配与类别缺口。只有点击“不是重复”后反馈变为 1；UI 立即隐藏该配对，复跑仍为 0 件重复，衣物和来源项未变化。
+- 390×844 移动端与 1440×900 桌面端均无横向溢出；移动/桌面导航按断点互斥显示，浏览器页面控制台 0 warning/error。浏览器会话已结束。
+- 最终自动化：Vitest 38 文件 508/508、Pytest 34/34、typecheck、视觉脚本语法、`git diff --check`、生产构建均通过。npm 官方生产审计 0 漏洞；`python -m pip_audit -r requirements.lock.txt` 为 0 已知漏洞，`pip check` 无破损依赖。无参数全局 pip 审计只反映宿主 Anaconda 环境，未作为项目结论。
+- 非破坏性构建输出保留于 `output/build-m5-final2-20260713`；隔离 QA 数据库与日志全部保留，真实数据库未触碰，本轮未删除任何电脑文件。
+
+## 2026-07-14 Outfit M5 独立验收与修复
+
+### 验收基线
+- 本轮以 `docs/2026-07-10-outfit-m5-decision-support-plan.md` 的 12 项实施任务、5 条验收标准和共同执行约束为准，不直接继承 2026-07-13 的完成结论。
+- 当前 HEAD 为 `4120491`；M5 产品代码、测试和文档均位于未提交工作树，必须保留并逐项审查，不能用重置或覆盖方式回退。
+- `session-catchup.py` 本轮无未同步报告；真实数据库、现有 `dist`、QA 证据和构建产物均不删除。
+- 当前独立验收将重点重建四类证据：价格/退款/手工优先的数据事实；价值洞察统计口径；相似度、指纹、反馈幂等与纯读购买检查；前端、导出、安全和文档闭环。
+- Git 差异包含 36 个已跟踪文件和 12 个新增文件；产品实现约新增 2,475 行，全部仍未提交。`git diff --check` 通过，仅有 Git 的 LF→CRLF 工作区提示，不属于内容缺陷。
+- 修改前独立基线可复现：`npm run typecheck` 通过；10 个 M5/迁移/导入/导出专项文件 141/141 通过；淘宝 Selenium 采集脚本测试 11/11 通过。
+
+### 主线静态审查（进行中）
+- 决策支持路由注册位于全局 `/api` session 鉴权之后，所有 POST 同时受既有 Origin/Sec-Fetch-Site 中间件保护；前端 API 使用四个固定路径，不允许调用方拼任意 subject 路径。
+- V2 导出新增 `decision-support` feature 和稳定排序的 `similarityFeedback`，shape 校验接受规范候选指纹或规范衣物对；embedding 与派生价值排行不在导出 DTO 中。
+- 购买检查 UI 已把导入提交按钮从 `purchase-check` 模式移除，并在运行前/后通过同一原始 batch 与服务端候选 key 调用；原始 JSON 或候选变化会清空旧结果，避免对过期候选反馈。
+- 待复现的前端错误态缺口：`PurchaseCheckPanel` 仅在“没有旧结果”时展示 `error`。若显式反馈或复查失败而旧结果仍在，App 只写 `purchaseCheckError`，页面当前不会显示该错误，可能违反计划要求的错误状态闭环。
+- 该错误态缺口已由新增回归稳定复现；修复后页面保留上一次成功结果，并同时用 `role=alert` 展示失败原因。`decisionSupportUi` 7/7 与 typecheck 通过。
+- `purchaseCheck` 对顶层、batch、item、detailProps 执行 exact-key 校验，并通过既有正规化/预览双重解析要求 `sourceItemKey` 唯一命中未退款服饰；服务只读取衣物、保存搭配、feedback 和 embedding 缓存，没有写语句。
+- 相似度实现固定同类别硬门槛、75 分阈值、25/20/15/15/15/10 权重；缺失双方字段时不计入 availableWeight，数组字段用 Jaccard、品牌/名称组合归一化，视觉向量仅在两侧缓存都存在时加入并限制到 0–1。
+- garment feedback 对称规范为 `garment:minId + maxId`；candidate subject 仅接受服务端生成的 64 位 SHA-256 格式。`not-duplicate` 读取时在评分前隐藏，upsert 保留 createdAt、更新 verdict/updatedAt，结构上满足幂等。
+
+### 独立审查收口与确认缺口
+- 三个只读审查均已返回。价格/价值范围确认价值聚合口径正确，但采集器曾漏认英文退款、误取单价、把型号当数量、截断千分位、丢弃更完整重复快照并合并同单多商品；这些问题均已由对抗回归复现并修复为保守证据策略。
+- 相似度/购买检查范围确认核心权重、同类别门槛、反馈幂等与纯读边界正确，但发现 74.96 被展示舍入到 75 后误收录、候选指纹受详情补全影响，以及本机不同端口被宽松当作同源。阈值现使用未舍入得分；指纹仅绑定规范商品身份与 SKU；Origin 必须完整匹配 Host 的主机和端口。
+- 前端/导出/文档范围确认 V2 只导出 similarity feedback，不含 embedding 或派生排行；同时发现旧价值结果会掩盖刷新失败、检查/反馈请求缺少归属校验、反馈已保存但复查失败会误报保存失败、退款候选可能成为默认检查对象。上述前端缺口均已补回归并修复。
+- 购买检查预览 DTO 现在显式返回 `purchaseCheckEligible` 与不可用原因；前端只列出合格候选，运行检查或保存反馈期间锁定候选、原始 JSON 与所有反馈按钮。App 使用请求版本号丢弃过期响应；`not-duplicate` 保存成功后先本地移除配对，复查失败会明确提示“已保存但重新检查失败”。
+- 原有手工价格优先只存在存储层，没有导入衣物可达的公开编辑路径。现有 PUT 严格接受非负安全整数分，服务端强制 `CNY/manual`，衣物编辑器提供元金额控件，淘宝重导入不会覆盖；专项 TDD 15 项全部转绿。
+- 当前聚焦验证：typecheck 通过；UI 10/10；按单 worker 重跑 App 80/80、API/DB 92/92、UI/导入 61/61，共 233/233。一次默认并发 worker 异常退出未计为通过，并已用分组结果替代。
+
+### 最终独立验收结论
+- 真实浏览器补充发现一个静态/API 专项无法暴露的集成缺口：Vite 的字符串形式代理会隐式改写 `Host`，导致严格 Origin 校验把同一页面发出的正常请求拒绝为 403。对象代理显式 `changeOrigin: false` 后，浏览器登录与所有写接口恢复，同时仍拒绝跨端口 Origin。
+- 五条验收标准均有独立证据：未知价格不作为 0、退款不入排行；低利用高成本可展开证据；购买检查本身零写入且只访问本地；重复结果包含理由且反馈可用；not-duplicate 幂等保存后立即及复查时隐藏。
+- 最终工作树为 42 个已跟踪文件修改、16 个新增文件；`git diff --check` 无内容错误，仅有 Windows 下预期的 LF→CRLF 提示。所有改动仍未提交，未覆盖用户已有成果。
+- 最终自动化基线提升为 Vitest 41 文件 532/532、Pytest 38/38、typecheck 与生产构建全部通过；非破坏性构建位于 `output/build-m5-accept-final-20260714-0134`。
+- 无残余已知 M5 功能缺口。真实淘宝页面结构仍属于外部变化风险，但采集器现采用保守证据策略，并由多商品、千分位、显式总额、退款状态和重复快照对抗测试覆盖。
+- 本轮未删除文件、未触碰真实数据库；隔离服务和浏览器已关闭，所有 QA 证据均保留。
+
+## 2026-07-15 Outfit M6 Trip Capsule
+
+### 恢复基线
+- 当前系统已存在与用户请求完全一致的 active goal，无需重复创建。
+- 既有阶段 1–67 均已记录完成；M5 最终工作树包含大量尚未提交的用户成果，M6 必须在保留这些改动的前提下增量实施。
+- 文件规划技能的 session catchup 本轮未报告需恢复的未同步内容；项目仅发现根目录 `AGENTS.md`。
+- 用户要求严格执行 `docs/2026-07-10-outfit-m6-trip-capsule-plan.md`；尚未读取计划正文前不冻结实现方案。
+- 本轮不删除任何电脑文件；若后续确需删除，必须先让用户知晓。
+- M6 MVP 固定为 1–7 天旅行、每天一个或多个活动、最多 7 天天气、胶囊硬约束、逐日搭配、去重衣物清单、覆盖解释和本地装箱状态；不扩张到第三方行程、体积重量、签证药品或 7 天以上优化。
+- 计划要求五张新表、beam width=100、每个 activity slot Top 12、全程遵守 M0 候选预算；maxGarments/maxShoes/repeatPolicy/availability/槽位完整/天气与场合阈值全部是硬约束，无解不得输出违规方案。
+- 洗衣只重置优化器内存中的核心件计数，绝不改变 garments availability；只有逐日确认后才可通过既有 wear/availability 服务改变现实数据。
+- 旅行入口必须位于“计划与洞察”二级区域，不新增主导航项；非衣物必需品使用自由文本 checklist。
+- 当前 HEAD 为 `4120491`，M5 留有 42 个已跟踪文件修改和 16 个新增文件，约 2999 行新增；M6 必须逐文件避让并保留这些用户工作区成果。
+- M6 修改前基线稳定：`npm run typecheck` 通过；全量 Vitest 41 文件、532/532 通过（单 worker），可将后续失败归因于 M6 增量。
+- 当前协作并发上限只允许额外两个只读 Agent；数据库/API/天气/wear 与推荐/优化器已并行审计，前端/导出/文档由主线审计。
+- `server/services/recommend.ts` 已导出 `generateCandidates(input, options)`，支持 `maxEvaluatedCandidates`、内部 beam width、include/exclude、confirmed/active/available 过滤与 `evaluatedCandidates/truncated` 结果；M6 应扩展/适配这个现成入口，不另写推荐规则。
+- 当前推荐默认候选预算为 20,000，并按 core/outerwear/shoes/accessories 分层分配；M6 每个 activity slot 的 Top 12 必须仍把总评估数约束在该预算下，并显式传递预算而非绕过。
+- 数据库已有编号迁移 1–6：recommendation candidates、garment assets、saved outfits、feedback/pair stats/availability events、wear events/outfit plans、M5 similarity/embeddings；M6 新表必须加入 `NUMBERED_MIGRATIONS`，不得修改 frozen baseline。
+- 现有 planner 客户端已覆盖 wear events、outfit plans、mark-worn 与天气 forecast；M6 可以复用日期范围查询、天气 DTO 和逐日 wear service，但需要新增固定 trip API，而不是让前端拼路径。
+- 当前 OutfitExportV2 已可选包含 wearEvents/outfitPlanEntries 等里程碑数据；M6 应延续可选字段与 feature 标记的向后兼容模式，不能把 embedding、图片二进制或派生排行混入 JSON。
+- `HistoryInsightsView` 当前二级分区精确为 `planner | diary | saved | insights`，由 `activeSection/onSectionChange` 驱动并接收内容节点；M6 可新增 `trips` 二级分区及 `tripContent`，无需触碰五项主导航结构。
+- 旅行 UI 可沿用现有 `PlannerView`/`OutfitPlanDialog`/`WeekGrid` 的表单、状态与响应式模式，但计划要求创建独立 `TripPlannerView.tsx` 和 `PackingChecklist.tsx`，不能把旅行逻辑塞进周计划组件。
+- `exportOutfitDataV2()` 在单一只读事务中收集所有表并调用严格 `validateOutfitExport()`；M6 trips/activities/selections/packing states 应在同一快照内稳定排序并纳入 shape 校验与 `features`。
+- `OutfitExportV2` 的新增里程碑字段目前均为可选，以保持旧 V2 兼容；M6 应保持这一约定，并让新导出始终实际填充旅行数组。
+- `MainApp` 已集中维护 history section、周计划、日记、天气和保存搭配状态，启动时通过 `Promise.allSettled` 恢复；旅行状态可采用独立加载/错误/忙碌状态并只在 `trips` 二级分区渲染，避免把旅行失败变成整页启动阻断。
+- 五项主导航是单一 `NAV_ITEMS` 数组，同时驱动桌面和移动导航；只修改 History 二级分区即可精确保持五项主导航。
+- 导出 feature 目前严格要求对应字段存在：`diary-week-planner` → wearEvents/outfitPlanEntries，`decision-support` → similarityFeedback。M6 应新增 `trip-capsule` feature，并让 trips、tripDays、activities、selections、packingItems 全部成为 feature 存在时的必填数组。
+- 完整 ZIP 直接把同一 V2 JSON 流式写入归档并只读取 M1 garment assets；因此扩展 JSON DTO 即可自然进入显式 ZIP，无需也不应增加旅行图片处理或临时文件。
+- `NUMBERED_MIGRATIONS` 最新为 version 6 `decision-support`，M6 应新增 version 7；现有 STRICT 表、CHECK、外键、索引和迁移前缀校验模式可直接复用。
+- 所有子路由都在全局 `/api` session 鉴权和 `rejectUntrustedMutatingRequests` 之后注册；新增 `registerTripRoutes()` 必须放在同一位置，沿用 `ApiError` 与结构化 `{error:{code,message,details?}}`。
+- planner 路由当前仅做薄适配，服务层负责严格验证与事务；M6 也应保持 route thin/service strict，尤其是生成、局部重算、packing 状态和逐日确认等写操作。
+- wear event 表要求真实时间、时区、至少一件衣物且与 saved outfit/plan 保持一致；旅行批量实穿应调用可复用服务函数并包裹外层事务/逐日确认，而不是直接拼 SQL 或写旧 wear_logs。
+- 前端测试大量使用纯函数/SSR 静态标记/直接触发受控回调，M6 可建立独立 `tests/tripPlannerUi.test.tsx` 覆盖可访问表单、活动共用/独立、清单状态、锁定替换和响应式 CSS，并在 `app.test.tsx` 只验证二级入口及五项主导航不变。
+- API 集成测试已有内存数据库、真实 Express 监听、session cookie、Origin 头与完整安全路径；M6 应在独立 `tests/tripPlanner.test.ts` 覆盖服务/优化器，并在 `tests/api.test.ts` 仅覆盖认证、同源、严格 DTO 与关键事务端点。
+- 导出测试明确保留 V1/旧 V2 兼容，并对每个新 feature 的字段缺失/畸形/稳定排序做回归；M6 需要在 schemaVersion 7 上新增同型测试，不能把旧 V2 强制要求旅行数组。
+- 现有推荐中的 `weatherComfortScore` 与 `occasionScore` 只是可加减的软评分，完整度缺鞋也只是减分；M6 不能直接取 Top 12 就算满足计划，必须在 optimizer 扩展前额外硬过滤：核心+鞋槽完整，并让共享活动的每个活动天气/场合适配均达到明确阈值。
+- `generateCandidates` 已把上限夹在 4–20,000、内部 beam 3–120；M6 每个 activity slot 应显式传预算并只取排序后的 Top 12，跨日 beam 单独固定 100，二者不能混为一个无限搜索。
+- 天气应采用显式 `POST /api/trips/:id/weather/refresh` opt-in：Trip CRUD、读取与优化均不得联网；刷新依赖需可注入，测试断言非刷新路径调用次数为 0，失败时不能清空既有冻结快照。
+- 现有 forecast GET 只按“从今天起的天数”缓存，不能可靠覆盖任意旅行起止日期；M6 TripDay 应持久化与 date 精确对齐的冻结 WeatherSnapshot，默认无坐标调用时使用本地估算或保持未设置。
+- `insertWearEvent()` 可安全嵌入 M6 `BEGIN IMMEDIATE` 外层事务；`createWearEvent()` 和 `setGarmentAvailability()` 都自行开事务，不能在旅行批量确认中调用。selection 应用唯一 `actual_wear_event_id` 链接实现重放幂等与冲突检测。
+- 五张 M6 表建议通过 trip→days→selections/activities 与 trip→packing 级联，selection→wear event、packing garment→garments 使用受保护外键；自由文本 checklist 与 garment_id 必须 XOR，不能扩张 GarmentCategory。
+- Trip 天气、活动、坐标、清单和实际穿着均属敏感本地数据；JSON V2 可以按显式导出携带，weather cache 不导出，图片仍只在显式 ZIP 中携带。
+- 已冻结共享 Trip DTO：嵌套 days/activities、selection 的活动评估与锁定项、packing coverage、可行/不可行判别联合、显式天气刷新、局部重算和逐日确认；新增类型后统一 typecheck 仍通过。
+- 硬阈值冻结为：核心槽 `dress` 或 `top+bottom` 且必须有鞋；`weatherComfort >= 0`；`occasion / items.length >= 2`。极冷天气额外要求 outerwear，避免件数补偿掩盖结构缺口。
+- `TripActivity.occasion` 保持自由文本用于覆盖解释，`formality` 才进入既有 scorer；共享活动每个分别评估，排序取最低总分，任一未过硬阈值则整套剪枝。
+- maxGarments 包含鞋；M6 core 仅 top/bottom/dress。共享 slot 只计一次 core wear，独立 slot 每次计数；no-consecutive 只跨日期比较，no-repeat 即使洗衣后仍禁止。
+- 优化器实现已独立复验：推荐/约束/Trip 三文件 59/59 通过；`recommend.ts` 仅新增统一候选评分导出和 scoringContexts 最低分路径，原单场景输入不走新分支，保护既有精确排名。
+- `tripOptimizer.ts` 明确区分 generation beam≤120 与 Trip beam=100，并按约束状态去重；infeasible 文案限定在 Top12/beam100/当前预算内，避免宣称穷举最优。
+- 前端组件采用完全受控 props，不直接调用 API；归档只对 planning/ready 可见，装箱、锁定/替换、天气刷新、无解放宽和逐套实穿确认均由 App 显式接线。
+- 三个实施子任务均已返回。优化器复用统一推荐评分并通过 59/59；前端新增四个限定文件并通过组件 5/5、Planner 联合 16/16；Trip 后端的 5 表 migration 7、认证 CRUD、显式天气、生成/重算、装箱与幂等实际穿着事务通过 25 项服务/迁移专项和类型检查。
+- 后端联合回归 89 项通过、2 项失败的根因已交叉确认：`server/services/export.ts` 已声明 `trip-capsule` feature 且校验五数组必填，但 `buildOutfitExportV2` 对象仍只构建到 `similarityFeedback`，因此 `/api/export` 在自身验证阶段失败。其余 Trip 路由不受影响。
+- M6 当前无并发写入剩余；下一步由主线按 migration 7 的真实列名补五组单事务稳定查询，并验证不导出图片二进制、embedding 或任何新隐私数据。
+- `buildOutfitExportV2` 现在在既有 deferred read transaction 内调用 Trip 读取映射，合并 active/archived 并按 startDate/id、day date、activity position、selection slot、packing kind/id 保持稳定顺序；selection 仅导出 `garmentIds`，不重复嵌入 Garment，也不新增天气缓存、embedding 或图片二进制。
+- 新增真实关系回归后，export/API 87/87、M6 跨层专项 11 文件 281/281、全项目 typecheck 均通过；阶段 69–72 已完成，只剩文档、全量自动化、安全审计、非破坏性构建和真实浏览器验收。
+- 真实浏览器隔离验收使用新数据库 `output/qa-m6-final-20260715-100357/outfit-qa.sqlite`：主导航保持五项，旅行入口位于历史洞察二级区；3 天旅行按“健身共享标志 + 正式晚宴独立”生成 4 套选择，去重清单为 6 件，替换末日上装后局部重算为 7 件，均满足衣物上限 8、鞋履上限 2。
+- 浏览器内锁定、同类别替换、`unpacked/packed/on-body/not-taking` 四态、自由文本充电器、覆盖日期/活动解释均可见且持久化；逐套确认后 `/api/trips/1/complete` 一次返回 4 个 WearEvent 和 4 个唯一 actualWearEventId，全部 selection 中的 garment availability 仍为 available。
+- 第二个极限旅行将 maxGarments 设为 2，UI 未输出违规搭配，明确显示“继续规划会超过最大衣物数”并建议至少放宽到 3。整个浏览器会话的 Performance resource origin 只有 `http://127.0.0.1:5174`，创建/生成/锁定/替换/装箱/完成均未访问第三方；天气保持“暂无天气”，说明非显式刷新路径不发送坐标。
+- 390×844 与 1440×900 均满足 document scrollWidth=clientWidth；checkbox 原生框虽为 18px，但其可点击 label 目标全部不小于 44×44；控制台 0 error/0 warning。隔离浏览器和 5174/8788 服务已关闭，QA 数据与日志保留，未删除文件。
+- 最终全量签收：typecheck、lint 通过；Vitest 44 文件 562/562；Pytest 38/38；npm 生产与全量官方审计均 0 漏洞；`pip-audit -r requirements.lock.txt` 为 0 已知漏洞，`pip check` 无破损。
+- `npm run build -- --outDir output/build-m6-final-20260715-1017 --emptyOutDir=false` 成功，保留既有 dist/构建产物且没有删除；最终 `git diff --check` 无内容错误，仅输出 Windows LF→CRLF 提示。
+- M6 原计划 11/11 实施任务、6/6 验收标准全部满足；未发现剩余已知功能缺口，阶段 68–73 均可完成。
+
+## 2026-07-15：M6 Trip Capsule 独立验收
+
+### 恢复与基线
+- 系统 active goal 与用户本次请求完全一致，继续沿用；重复创建 goal 被系统拒绝，不影响任务。
+- 旧规划记录声称 M6 已完成 11/11 实施任务与 6/6 验收标准，但本轮将其视为待验证声明，不直接作为通过依据。
+- `session-catchup.py` 无未同步报告。当前 HEAD 为 `4120491 fix(planner): harden diary integrity and interactions`。
+- 工作区包含 M5/M6 大量既有未提交成果：44 个已跟踪文件产生约 5087 行新增、178 行删除，另有 M5/M6 新源码、测试和 Playwright QA 证据；这些均按用户既有工作保护。
+- 当前已看到 M6 主要新增文件：`server/routes/trips.ts`、`server/services/tripPlanner.ts`、`server/services/tripOptimizer.ts`、`src/features/planner/TripPlannerView.tsx`、`PackingChecklist.tsx` 及对应测试；存在不等同于验收通过，后续逐条检查。
+- 本轮不删除文件、不修改真实数据库；任何修复必须先有可复现缺口并避免覆盖 M1–M5 改动。
+
+### 独立验证矩阵
+- `package.json` 的正式门禁为 `npm run typecheck`、`npm test`、`npm run build`；`lint` 当前等价于 typecheck，另有 `audit:prod`。
+- M6 核心实现体量较大：`tripPlanner.ts` 1648 行、`tripOptimizer.ts` 875 行、`TripPlannerView.tsx` 1043 行，不能只依赖少量 happy-path 测试，需要结合源码边界审查。
+- 直接命中 Trip 契约的现有测试至少包括 `api`、`dbMigrationRehearsal`、`dbMigrations`、`export`、`frontendApi`、`planner`、`tripOptimizer`、`tripPlanner`、`tripPlannerUi` 九个文件；还需核对 recommendation/app 回归是否通过跨层接线间接覆盖。
+- 本轮独立重跑 M6 11 文件跨层专项为 281/281，通过；`npm run typecheck` 通过；Python 全量为 38/38。后续仍需源码边界审查、全量 Vitest、非破坏性构建和必要交互复验。
+
+### 前端源码审查（进行中）
+- `TripPlannerView` 暴露受控 CRUD、显式天气、生成/放宽、锁定/替换、装箱、必需品、逐套确认和完成回调；组件本身不直接联网或写库。
+- 编辑器包含 1–7 天日期提示、经纬度可选输入、衣物/鞋履上限、三种 repeat policy、洗衣前核心穿着次数、洗衣日和逐日多活动/独立搭配开关；仍需核对客户端日期辅助函数与服务端严格校验一致。
+- 天气按钮旁明确写明“仅在点击后使用目的地坐标”；装箱组件提供 `unpacked/packed/on-body/not-taking` 四态和非衣物自由文本清单，并展示覆盖日期。
+- 当前未从已读前 650 行发现可确认阻断缺陷；下一步继续检查完成条件、方案卡、替换候选、日期辅助函数及 App 的异步状态接线。
+- 后半组件明确显示不可行冲突/最小放宽、逐日活动与天气快照、选择理由、同类别且 confirmed/active/available/not-excluded 的替换候选，以及逐套实际穿着确认；完成按钮只有在当前全部 selection 被确认时启用。
+- 日期辅助函数用严格 UTC 日期往返校验，客户端拒绝无效日期、倒序、超过 7 天、负/非整数上限、天数不一致、空活动；服务端仍是最终信任边界。
+- App 为 Trip 使用固定 API 客户端和全局 `tripBusy` 串行化写操作；归档后从活动列表移除。待继续检查保存两步原子性、局部重算确认状态、完成请求 payload 及错误恢复。
+- App 的实际完成 payload 从当前服务端 selection 组装日期、时区、场合和全部 garment IDs；客户端先检查每个 selection ID 都在本地确认集合，服务端应再次校验不可只信客户端。
+- **待复现假设：** 局部锁定/替换成功后，App 只过滤“仍存在的 selection ID”，若服务保持目标 selection ID 不变，先确认再替换可能保留旧确认并允许对新搭配直接完成，弱化“逐套确认实际穿着”。现有测试未命中 `confirmedTripSelectionIds` 与替换交互；需读服务实现并补失败测试判断是否为真实缺口。
+- 上述“确认后替换仍保留确认”假设经服务实现排除：`persistOptimization()` 在事务中删除并重建全部 selections，新 ID 会使 App 的过滤结果清空，用户必须重新逐套确认。
+- **新的高风险假设：** `completeTrip()` 读取 selection 归属，却把客户端提交的 `itemIds` 原样交给 `insertWearEvent()`；当前专项只使用正确 garmentId，未见“确认内容必须等于该 selection 的存储 garment IDs”测试。如果服务未比较两者，任意同会话客户端可把不属于旅行方案的衣物写成实际穿着，违反逐套确认的事实完整性。下一步读取 helper 并用隔离数据库红灯复现。
+- **已静态确认的 P1/P2 边界缺陷：** `getSelectionForCompletion()` 只查询 selection id/day/已有 wear link/weather，不读取 `garment_ids_json`；`parseCompleteInput()` 只校验 `itemIds` 是合法 WearEvent ID 数组；首次完成时 `completeTrip()` 直接把客户端数组传给 `insertWearEvent()`。因此服务端没有把“确认的实际穿着”绑定到持久化旅行方案。应拒绝集合不完全一致的 itemIds，且在任何写入前失败；重放仍沿用原幂等冲突语义。
+- 新增隔离数据库回归 `binds actual-wear confirmations to the garments stored in each trip selection` 后，旧实现稳定为 1/8 失败：`completeTrip()` 未抛错并接受 unrelated garment。缺陷已从静态怀疑转为可复现事实。
+- itemIds 绑定已修复：completion 查询增加 `garment_ids_json`，首次写入前用严格持久化数组校验；不一致抛结构化验证错误且事务无残留，既有重放冲突语义不变。`tripPlanner` 8/8、typecheck 通过。
+
+### 后端并行审查新增缺口
+- **Trip 日期编辑死锁：** `updateTrip()` 合并新 start/end 后仍用旧 `current.days` 做完整覆盖校验；`replaceTripDays()` 又要求新 days 服从旧 start/end。当前前端依次调用两个接口，因此从单日扩成两日或反向缩短，无论先改哪一侧都会被拒绝，实施任务“Day/Activity 编辑”未完整达成。需提供单事务更新 Trip 字段+days 的服务/API 路径，或调整现有 update 契约为可原子携带 days。
+- **导出约束漂移：** Trip 创建允许 `maxGarments=1,maxShoes=2`（计划也只规定各自合法上限），但 `isTripExportRecordShape()` 额外要求 `maxShoes <= maxGarments`，导致合法 Trip 让整个 V2 导出失败。应移除导出层未在写入域模型中建立的额外关系，并补真实 builder 回归。
+- 日期编辑的最小兼容方案：扩展现有 `PUT /api/trips/:id`/`TripUpdateInput` 允许可选 `days`，当提供时在同一个 `inImmediateTransaction` 内校验合并后的日期+days、更新 Trip、清除旧 selection/garment packing、重建 days，并重置为 planning；前端编辑改为一次提交完整 draft。保留 `PUT /days` 供仅替换活动的旧客户端使用。
+- 现有 `tripPlanner` CRUD 测试只分别覆盖“非日期字段 update”和“相同日期范围 replace days”，因此没有暴露跨日期编辑死锁；将在同文件新增单请求缩短/扩展日期回归。导出真实 builder 测试已有 Trip 建档，可直接加入 `maxShoes > maxGarments` 的合法 Trip 以防 shape 校验漂移。
+- 两项红灯稳定复现：`tripPlanner` 原子日期更新报“旅行更新不允许字段 days”；`export` builder 报“trips contains an invalid entry”。两文件合计 2/31 失败，其余通过。
+- 同时发现日期编辑相关的契约缺口：后端虽接受 `laundryDay:null`，共享 `TripUpdateInput` 不允许 null；当前 App 从 draft 省略已清空的 laundryDay，导致旧值无法清除。原子更新修复需一并允许显式 null 并由 App 转换。
+- 日期/导出首轮修复转绿：现有 update 端点可选携带 days，前端一次提交完整 draft 并显式发送 `laundryDay:null`；服务在单事务重建 days、清旧派生选择/garment packing 并回 planning。独立上限导出校验已与计划对齐。两文件 31/31、typecheck 通过。
+- 关于 `maxShoes > maxGarments`：后生成文档曾额外写“拒绝”，但 M6 计划将两者定义为独立硬上限，算法也分别判断“总唯一衣物数”和“唯一鞋履数”；鞋上限更宽只是冗余，不会产生违规方案。验收以用户指定开发计划为基线，保留创建合法性、移除导出层漂移，并同步修正文档。
+- **派生状态失效缺口：** 直接 `updateTrip` 修改约束后仍可保留旧 ready selections/garment packing；修改目的地后仍保留旧坐标对应天气快照。任何影响优化上下文的更新都应清除相关派生状态并回 planning；名称/纯状态更新才可保留。
+- **受保护状态夹带更新：** completed 请求 `{status:'archived', name:...}`、archived 请求 `{status:'planning', name:...}` 当前可借合法状态转移同时修改其他字段。受保护状态应只接受唯一 status 字段，修改必须恢复后另发请求。
+- **装箱生成项可误删：** `deleteTripPackingItem()` 未限制 kind，客户端可删除 optimizer 生成的 garment 项；API 文档只允许删除 essential。应在事务内拒绝非 essential，并保证行/coverage/status 原样保留。
+- 派生失效首轮实现后 11/12 新旧服务用例通过；唯一旧失败同时提交 `{maxShoes:1,status:'ready'}`。为避免改变约束后仍声明旧方案 ready，确定规则为：优化上下文更新只能回 planning；若确需状态转换，必须在无夹带字段的后续请求完成。
+- 派生清理/受保护状态/packing 删除保护已全部转绿：目的地变化清天气+选择+garment packing，约束变化清选择+garment packing，essential 保留，availability 不变；completed/archived 只能单字段状态转移；garment packing 删除返回结构化冲突。`tripPlanner` 12/12、typecheck 通过。
+- **中间态回归（交付前需修）：** App 编辑提交完整 draft，当前服务按字段“是否出现”判定上下文变化，因此只改 name 也会因 days/destination/constraints 出现而重建 days、清天气/selection/packing。失效判断必须比较规范化后的实际值；相同完整 draft 只更新非派生字段并保留 IDs/天气/方案/装箱。
+- 中间态回归已用完整 draft 红灯稳定复现后修复：服务现在比较规范化日期/活动、目的地、日期范围和各约束的实际值；等值完整 payload 只改 name 时保留 ready、weather、selection IDs 与 packing，真实上下文变化才失效。`tripPlanner` 12/12、typecheck 通过。
+
+### 独立验收最终结论
+- 初始实现不能直接签收：独立审查和红灯回归确认了实际穿着 itemIds 未绑定持久化方案、日期与 days 无法原子变更、派生状态失效不完整、受保护状态可夹带修改、生成型 packing 可误删、局部重算固定前缀绕过硬约束且前缀 ID 被重建、放宽建议可能并不让全程可行，以及多项前端竞态/只读/解释性缺口。
+- 所有确认缺口已按 TDD 修复：完成接口在任何 WearEvent 写入前要求 itemIds 集合与 selection garmentIds 完全一致；Trip header+days 单事务更新并按实际值决定天气/方案失效；completed/archived 只允许受控单字段状态转移；生成 packing 受保护。
+- 优化器现在重新硬验证固定前缀的资格、槽位、天气和场合，局部持久化只重建目标及后缀；仅由同一优化器证明全程可行的 relaxation 标为 guaranteed，advisory 不提供一键应用。
+- App 将编辑目标绑定到发起旅行，使用请求版本阻止迟到 GET 覆盖写结果，重算仅保留目标之前的确认，完成/归档全界面只读；packing 覆盖可持久化并展示日期、活动、场合和原因。
+- migration 7 的五张表均已独立断言 STRICT、FK 删除策略、复合 FK、显式/唯一部分索引与 `foreign_key_check`，并单独覆盖合法格式下的反向日期拒绝。
+- 当前唯一记录的非阻断残差是 `idx_trips_status_updated_at` 不服务现有按 `start_date,id` 排序的列表查询；功能与本次 M6 计划验收均不受影响，未为此改写已发布 migration 7 或引入无计划的新 migration。
+- 最终自动化：Vitest 44 文件 572/572、Pytest 38/38、lint/typecheck、生产构建、npm 双审计、pip-audit、pip check 与 diff check 全部通过。
+- 最终浏览器：隔离 QA 库验证跨旅行编辑不会串写、completed 旅行没有写入口、packing 状态只读；390×844 的 document/body scrollWidth 均为 390，控制台 0 error/0 warning，网络仅本机同源。
+- 未删除任何文件、未写真实 `data/outfit.sqlite`；QA 数据、日志、快照和截图全部保留。
+
+### 优化器并行审查待修缺口
+- **局部重算前缀绕过硬资格：** `recalculateTripSelection()` 将目标之前的旧 selections 转为 prefix；optimizer 对 prefix 只执行容量/repeat/laundry 的 `extendState`，不重新验证 active/confirmed/available/not-excluded、必需槽、天气、场合。已由 Agent 用内存 DB 复现：首日上衣改为 `laundry` 后重算第二日，仍返回 feasible 并持久化该不合格首日前缀。
+- **放宽建议不保证可行且可能方向错误：** optimizer 在首个失败 slot 即返回，只基于当步 rejection；`no-repeat-core` 固定建议为 `no-consecutive-core`，单件 dress 连续两天应用后仍无解；多日 garment/shoe/laundry 也可能只够通过当前槽。共享活动场合失败的 observedValue 取 max，可产生“当前阈值 2，建议降低到 7”。需用纯函数红灯明确“建议应用后可行”或在不能保证时不宣称最小/可直接应用，并修正阈值聚合方向。
+- 源码复核确认 prefix 入口位于 `optimizeTrip` 搜索前，直接 `extendState`；`extendState` 只实现总数/鞋数/repeat/laundry/目标函数，不具备候选 pool 的资格、必需槽和活动阈值判断。修复应在接纳 prefix 前对它相对当前 garment source 与对应历史 slot 进行完整验证，或服务局部重算时从全行程重新优化并用锁定保持前缀；后者更能避免陈旧评分/上下文。
+- relaxation 当前 DTO 没有“保证可行”标记，而 UI 会提供“应用建议”按钮。可自动应用的数值/策略建议必须经过同一 optimizer 试跑验证；无法证明的 required/weather/occasion/locked/search 建议只能作为人工建议，不应伪装成可直接更改的约束。
+- 现有 optimizer 测试只断言首槽的 maxGarments/maxShoes 建议值，且 prefix 用例只把 suffix slots 传入，因此无法重验 prefix；将改为全 slots + prefix，新增 unavailable prefix、三日 maxGarments、repeat 二级放宽与共享活动阈值方向回归。
+- 公共 DTO 当前把内部 `currentValue/suggestedValue` 映射为 `from/to`，没有可应用性标记；需新增 `guaranteed`（或等价）并让 UI 仅对经过全程试跑的单约束建议显示“一键应用”。
+- Prefix 修复已转绿：optimizer 现在要求 prefix 对应完整 slots，重验当前 garment source 的 owned/archived/confirmed/excluded/availability、必需槽、逐活动天气和场合阈值，再跳过固定 slot 搜索 suffix；服务局部重算传入完整 slots 并使用已有天气快照。相关两文件从 4 项红灯降为仅 relaxation 2 项失败，planner unavailable-prefix 回归通过且数据库原 selection IDs/内容不变。
+- `mapInfeasibleOptimization()` 是内部建议到公共 `from/to` 的唯一转换点；在此透传 `guaranteed`，UI 对 false 仅显示说明、不渲染应用按钮，可避免无法证明的建议被当作单击修复。
+- 放宽建议修复已转绿：maxGarments/maxShoes 递增试跑、repeat 逐级试跑、核心穿着次数递增试跑，只有单项应用后完整行程 feasible 才标 `guaranteed:true`；其余建议为 advisory，UI 不显示应用按钮。已修共享活动 observedValue 取最低活动值，避免反向“降低”。optimizer/planner/UI 34/34、typecheck 通过。
+- **局部持久化 ID 红灯：** 添加另一旅行的 sentinel selection 后，旧 recalc 把未变化前缀 ID 从 1 改成 4，证明“删除全部再插入”会破坏前缀身份。应仅删除目标及后续 selection rows，保留 prefix 行和 activity 关联；前端确认集合只保留目标之前的 ID，不能依赖重插是否复用 ID。
+- 局部行级持久化已转绿：target 之前 slot 的 selection row/activity 关联原样保留，只清除并重建 target+suffix；sentinel 回归中前缀 ID 保持 1。`tripPlanner` 13/13、typecheck 通过。
+
+### 前端并行审查新增缺口
+- **跨旅行误保存：** editorMode=edit 时左侧列表仍可切换，选择 B 只改 selectedTripId、不关闭编辑；`saveTripDraft` 用当前 selectedTrip，因此 A 草稿会 PUT 到 B。选择旅行必须退出编辑并丢弃旧 draft，或保存时绑定显式 editingTripId。
+- **历史刷新竞态：** `refreshHistoryData` 并发 `refreshTrips`，Trip UI 只看 `tripBusy` 不看全局 refresh busy；旧 GET 可能在写操作后覆盖 `upsertTrip`，且成功刷新未清旧 tripError。需把刷新纳入 Trip busy/loading 或使用 request version 防迟到覆盖。
+- **已记录状态显示错误：** selection 有 `actualWearEventId` 时 checkbox 被禁用，但 checked 仍只看临时 confirmed 集合；重载后显示“实际穿着已记录”却未勾选。渲染应使用 `confirmed || actualWearEventId`。
+- **天气披露不足：** 按钮只写“点击后使用坐标”，未在操作现场明确“发送给 Open-Meteo”；README 有说明但交互缺少知情提示。
+- **每件衣物解释未落地：** Packing coverage/API 只有 dates/activityIds，UI 只显示日期，没有活动名称/场合与选择原因；直接违反任务 5/验收 5，需扩展持久化 JSON、共享 DTO、导出兼容和 UI。
+- Coverage 存储是 JSON 文本，无需新增 migration；可向后兼容地加入 `activities/occasions/reasons`，解析旧 `{dates,activityIds}` 时补空数组。export shape 应接受旧字段缺省并校验新数组，builder 新输出完整字段。
+- **完成态仍可操作：** completed Trip 仍显示编辑/刷新天气/生成，PackingChecklist 也可改状态/增删必需品；服务必然返回 409。完成态应统一只读/隐藏无效动作，测试不能只断言“归档按钮消失”。
+- `refreshTrips()` 当前既没有 request version，也不在成功时清 tripError；`refreshHistory()` 的 busyAction 值为 `history`，但 Trip 只接收 `tripBusy`。最小安全修复是引入递增请求版本/写入时使旧读取失效，并把 `busyAction === 'history'` 合并到 Trip busy。
+- Relaxation 还有两步一致性：非 guaranteed 防御分支先设错误再调用会清错的 `startTripEdit`；guaranteed 分支先 PUT 后 generate，若第二步失败 UI 不接收已持久化的新 planning Trip。应调整提示顺序，并在 PUT 成功后立即 upsert/update draft，再尝试生成。
+- Packing 解释链路已补齐：优化器原有 `dates/activityIds/occasions/reasons` 现完整写入 coverage JSON，并由活动 ID 解析去重后的活动名；共享 DTO、导出 shape 与 UI 均向后兼容旧 `{dates,activityIds}` 数据。生成项展示覆盖日期、活动与选择原因。
+- 已记录 WearEvent 的 selection 现在以 `confirmed || actualWearEventId` 呈现勾选，避免重载后“文字显示已记录、复选框却未勾选”的矛盾。
+- completed/archived Trip 已统一为只读：隐藏编辑、显式天气、重新生成和完成动作，锁定/替换/确认及装箱状态禁用，且不显示必需品增删表单。
+- 操作现场天气文案已明确：坐标只在用户点击后发送给 Open-Meteo 获取天气；无自动刷新路径。
+- 本批专项 `tripPlanner + tripPlannerUi` 为 18/18，`npm run typecheck` 通过；尚需修 App 竞态与状态绑定后再做全量验收。
+- App 已用独立 `editingTripId` 绑定编辑目标；切换旅行或取消会同时退出编辑，从根源上避免 A 草稿写入 B。所有 Trip mutation 开始时递增读取版本，迟到 GET 不再覆盖新写入；history refresh 同时进入 Trip busy，成功读取会清旧错误。
+- 局部重算确认集合按“旧 selections 中目标之前的 ID”保留；可行重算会清目标与后缀，即使 SQLite 复用数值 ID 也不会误继承确认。不可行且未落库时保留现有确认。
+- guaranteed relaxation 的 PUT 成功后立即 upsert planning Trip、更新 draft、清旧 optimization/确认，再调用 generate；第二步失败时 UI 与服务端不再分叉。advisory 分支先打开编辑器再显示提示，避免提示被 `startTripEdit` 清掉。
+- 前端约束已与服务端对齐：`maxGarments=0..100`、`maxShoes=0..20`，经纬度要求同时填写；按 M6 原计划保留两上限独立，不新增 `maxShoes<=maxGarments` 关系。
+- Trip 初始读取有独立 `tripLoading`，10 秒全局骨架超时后若 Trip GET 仍未完成会显示真实加载态，而不是错误空态。
+- Migration 7 专项现明确断言五表 `STRICT`、显式索引、packing 唯一部分索引、CASCADE/RESTRICT FK、`foreign_key_check=[]`、孤儿 day 拒绝，并独立覆盖合法日期形状下的反向范围；`tripPlanner` 13/13。
+- API/schema/README 已同步原子 update+days、`laundryDay:null`、派生失效、独立上限、guaranteed relaxation、完整 packing coverage 和局部重算确认语义。

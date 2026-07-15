@@ -6,6 +6,7 @@ import type { Garment, VisionModelId, VisionModelJob, VisionModelStatus, VisionM
 import type { AppDatabase } from "../db";
 import { ensureGarmentLocalThumbnail, getGarmentById, saveGarmentVisionTags, updateGarmentCutoutImage } from "../db";
 import { ApiError } from "../validation";
+import { normalizeGarmentEmbedding, upsertGarmentEmbedding } from "./garmentSimilarity";
 import { defaultThumbnailOutputDir } from "./thumbnails";
 
 export interface RembgRunInput {
@@ -23,6 +24,10 @@ export interface VisionTagInput {
   device: string;
 }
 
+export interface VisionTagInferenceResult extends VisionTagSuggestion {
+  embedding?: readonly number[];
+}
+
 export interface VisionServiceOptions {
   modelRoot?: string;
   thumbnailCaptureRoot?: string;
@@ -33,7 +38,7 @@ export interface VisionServiceOptions {
   visionDevice?: string;
   rembgProvider?: string;
   runRembg?: (input: RembgRunInput) => Promise<void>;
-  inferVisionTags?: (input: VisionTagInput) => Promise<VisionTagSuggestion>;
+  inferVisionTags?: (input: VisionTagInput) => Promise<VisionTagInferenceResult>;
 }
 
 interface VisionModelDefinition {
@@ -195,13 +200,28 @@ export async function createGarmentVisionTags(db: AppDatabase, id: number, optio
   const thumbnailDir = options.thumbnailOutputDir || defaultThumbnailOutputDir();
   const imagePath = await resolveVisionImagePath(db, garment, thumbnailDir, options);
   const tagger = options.inferVisionTags || inferVisionTagsCli;
-  const suggestion = normalizeVisionTagSuggestion(await tagger({
+  const inference = await tagger({
     garment,
     imagePath: imagePath && existsSync(imagePath) ? imagePath : undefined,
     modelDir: modelPath(modelRoot, getModelDefinition("clip-vit-base-patch32")),
     device: defaultVisionDevice(options)
-  }));
-  return saveGarmentVisionTags(db, id, suggestion);
+  });
+  const suggestion = normalizeVisionTagSuggestion(inference);
+  if (inference.embedding === undefined) {
+    return saveGarmentVisionTags(db, id, suggestion);
+  }
+
+  const normalizedEmbedding = normalizeGarmentEmbedding(inference.embedding);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const saved = saveGarmentVisionTags(db, id, suggestion);
+    upsertGarmentEmbedding(db, id, Array.from(normalizedEmbedding));
+    db.exec("COMMIT");
+    return saved;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 async function visionModelStatus(modelRoot: string, definition: VisionModelDefinition): Promise<VisionModelStatus> {
@@ -339,7 +359,7 @@ async function runRembgCli(input: RembgRunInput): Promise<void> {
   ]);
 }
 
-async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagSuggestion> {
+async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagInferenceResult> {
   if (!input.imagePath) {
     throw new ApiError("VISION_INPUT_NOT_FOUND", "请先为这件衣物生成本地缩略图，再执行图片分析。", 400);
   }
@@ -352,7 +372,7 @@ async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagSugge
     "--device",
     input.device
   ]);
-  return JSON.parse(stdout) as VisionTagSuggestion;
+  return JSON.parse(stdout) as VisionTagInferenceResult;
 }
 
 function normalizeVisionDevice(value: string): string {

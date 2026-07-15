@@ -71,6 +71,31 @@ export function GarmentEditor({
           onBlur={(event) => onUpdate({ size: event.target.value })}
         />
         <Field
+          key={`purchase-price-${item.purchasePriceCents ?? ""}`}
+          label="购入价格（元）"
+          type="text"
+          inputMode="decimal"
+          defaultValue={formatCentsAsYuan(item.purchasePriceCents)}
+          placeholder="例如 299.00"
+          hint="按人民币保存；手工填写的价格不会被淘宝重导入覆盖"
+          onInput={(event) => event.currentTarget.setCustomValidity("")}
+          onBlur={(event) => {
+            const value = event.currentTarget.value.trim();
+            if (!value) {
+              event.currentTarget.setCustomValidity("");
+              return;
+            }
+            const cents = yuanPriceToCents(value);
+            if (cents === null) {
+              event.currentTarget.setCustomValidity("价格应为不超过两位小数的非负金额");
+              event.currentTarget.reportValidity();
+              return;
+            }
+            event.currentTarget.setCustomValidity("");
+            onUpdate({ purchasePriceCents: cents });
+          }}
+        />
+        <Field
           key={`materials-${formatList(item.materials)}`}
           label="材质"
           defaultValue={formatList(item.materials)}
@@ -204,4 +229,16 @@ function visionSuggestionPatch(suggestion: VisionTagSuggestion): Partial<Garment
     patterns: suggestion.patterns,
     tags: suggestion.tags
   };
+}
+
+export function yuanPriceToCents(value: string): number | null {
+  const cleaned = value.trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(cleaned)) return null;
+  const [yuan, fraction = ""] = cleaned.split(".");
+  const cents = Number(yuan) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents >= 0 ? cents : null;
+}
+
+function formatCentsAsYuan(cents: number | undefined): string {
+  return cents === undefined ? "" : (cents / 100).toFixed(2);
 }

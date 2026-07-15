@@ -11,6 +11,12 @@ export interface RecommendInput {
   includeGarmentIds?: number[];
   excludeGarmentIds?: number[];
   pairStats?: OutfitPairStat[];
+  scoringContexts?: readonly RecommendationScoringContext[];
+}
+
+export interface RecommendationScoringContext {
+  weather: WeatherSnapshot;
+  occasion: Formality;
 }
 
 export interface RecommendationIdentityOptions {
@@ -192,6 +198,19 @@ export function generateCandidates(
     evaluatedCandidates,
     truncated
   };
+}
+
+/**
+ * Scores an already assembled outfit with the exact same rules used by
+ * generateCandidates(). Trip planning uses this to evaluate a shared outfit
+ * independently against every activity context without copying score logic.
+ */
+export function evaluateRecommendationCandidate(
+  items: readonly Garment[],
+  input: RecommendInput,
+  sequence = 0
+): GeneratedRecommendationCandidate {
+  return scoreCandidate([...items], input, sequence);
 }
 
 function eligibleGarments(garments: Garment[], excludeGarmentIds: readonly number[] = []): Garment[] {
@@ -413,6 +432,23 @@ function selectDiverseCandidates(candidates: Candidate[]): Candidate[] {
 }
 
 function scoreCandidate(items: Garment[], input: RecommendInput, sequence = 0): Candidate {
+  const contexts = input.scoringContexts;
+  if (!contexts?.length) return scoreCandidateForContext(items, input, sequence);
+
+  let limiting: Candidate | undefined;
+  for (const context of contexts) {
+    const evaluated = scoreCandidateForContext(items, {
+      ...input,
+      weather: context.weather,
+      occasion: context.occasion,
+      scoringContexts: undefined
+    }, sequence);
+    if (!limiting || evaluated.score < limiting.score) limiting = evaluated;
+  }
+  return limiting!;
+}
+
+function scoreCandidateForContext(items: Garment[], input: RecommendInput, sequence = 0): Candidate {
   const reasons: string[] = [];
   const scoreBreakdown: RecommendationScoreBreakdown = {
     slotCompleteness: slotCompletenessScore(items, reasons),

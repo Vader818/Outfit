@@ -1,6 +1,6 @@
 # Outfit
 
-Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单页或商品详情页采集服饰候选，导入到本地 SQLite 衣橱库，结合天气、场合和既有反馈生成可解释的搭配建议，并在本机管理穿着日记与周计划。
+Outfit 是一个本地优先的穿搭管理与推荐工具。它从淘宝订单页或商品详情页采集服饰候选，导入到本地 SQLite 衣橱库，结合天气、场合和既有反馈生成可解释的搭配建议，并在本机管理穿着日记、周计划与 1–7 天旅行胶囊衣橱。
 
 项目当前定位是个人本地应用，不是多用户账号系统，也不是云端导购平台。淘宝采集、衣橱数据、推荐历史默认都保存在本机工作目录下。
 
@@ -56,7 +56,7 @@ npm run start
 
 前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8788`。
 
-API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 5（`recommendation-candidates`、`trusted-ingestion`、`saved-outfits`、`feedback-availability`、`diary-week-planner`）。版本 5 会把旧 `wear_logs` 无损迁移为带 legacy snapshot 的 WearEvent，并创建周计划表与关联索引。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
+API 首次打开项目支持的、尚无 `schema_migrations` 的 M0 前数据库时，会先用 legacy baseline 0 将其归一并登记版本 0，再顺序执行编号迁移；已经版本化的数据库会直接校验迁移前缀并继续执行尚未应用的编号迁移。当前编号版本为 7（`recommendation-candidates`、`trusted-ingestion`、`saved-outfits`、`feedback-availability`、`diary-week-planner`、`decision-support`、`trip-capsule-planner`）。版本 5 会把旧 `wear_logs` 无损迁移为带 legacy snapshot 的 WearEvent 并创建周计划表；版本 6 增加淘宝数量/付款显式性、成本来源、相似度反馈和可重建的本地 embedding 缓存；版本 7 增加旅行、逐日活动、胶囊方案与装箱清单五张严格表。每个迁移独立事务执行，只支持前向修复；重复启动不会重复应用已登记迁移。由更新版本应用迁移过的数据库不能交给更旧版本代码继续写入。
 
 ## 测试与构建
 
@@ -148,6 +148,7 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - 当前自动衣橱导入会为 `top`、`bottom`、`dress`、`outerwear`、`shoes`、`accessory` 创建衣橱草稿；配饰在推荐中作为可选增强项，不作为完整搭配的必需核心单品。
 - 导入预览不会写入数据库，可用于在正式导入前检查自动分类、置信度、重复项和跳过原因。
 - 商品详情采集可以补充品牌、商品名、详情图、参数和描述；后导入的详情会合并到已购 SKU。
+- 淘宝价格只有在付款金额与数量都由采集结果明确提供、订单项未退款且数值有效时才按“付款金额 ÷ 数量”写为单件价格，并标记 `costSource=taobao`。旧数据中的默认数量 `1` 不会被当作明确数量；手工价格标记为 `manual`，不会被淘宝重导入覆盖。
 - 淘宝导入创建的衣物默认 `confirmed=false`；重复导入不会把用户已经确认的衣物重新设为未确认。导入后的条目可以在应用中确认、编辑、排除或标记为未拥有。
 - `POST /api/garments` 先以 JSON 创建不关联淘宝来源的手工衣物，服务端固定写入 `owned=true`、`confirmed=true`、`excluded=false`；随后可用 `PUT /api/garments/:id/image` 上传不超过 5 MB 的 JPEG、PNG 或 WebP，本地服务会净化并统一重编码为无原始元数据的 WebP。通用 `PUT /api/garments/:id` 不接受 `imageUrl`，图片只能走这些受控专用路径。
 - 推荐及替代单品只使用同时满足 `owned=true`、未归档、`confirmed=true`、`excluded=false`、`availabilityStatus=available` 的衣物。待洗、维修中、借出或已装箱衣物仍保留在衣服库与历史中，但会被候选硬过滤；无法组成连衣裙或“上装＋下装”核心时，响应会通过 `missingSlots` 和 `missingSlotDetails[].unavailableCount` 说明缺口与不可用数量。
@@ -186,10 +187,28 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 - 主 `App` 已把 7 天周网格、上/下周、今日、计划卡、穿着日记、保存搭配和洞察接入“历史洞察”二级导航；移动主导航仍保持五项。推荐卡与保存搭配均可打开安排日期流程，重复提醒对话框明确显示计划已经保存。
 - 旧 `/api/wear-logs` 仅作兼容适配器：POST 转写新事件并保存 legacy snapshot，GET 从 WearEvent 投影旧 DTO。新功能应使用 `/api/wear-events`。
 
+## 价值洞察与购买前检查
+
+- 「历史洞察 → 价值与利用」按完整 WearEvent 明细计算穿着次数。成本/次为购入价格除以穿着次数；没有穿着记录时显示“尚无穿着”，不会把缺失价格当作 `0` 或制造无穷值。
+- “最佳价值”只比较价格已知且至少穿着 3 次的衣物；“低利用高成本”要求购入至少 90 天、穿着不超过 1 次且价格位于当前已知价格最高四分位；有穿着记录的“沉睡单品”要求最近 90 天未穿，从未穿过的衣物则在购入满 30 天后才提示。证据卡会展开显示价格、购入时间和穿着次数。
+- 结构相似度以同类别为硬条件，按颜色 25%、风格 20%、材质 15%、图案 15%、品牌/规范化名称 15% 和可选本地视觉向量 10% 计算；缺失字段会按现有证据重新归一化，总分达到 75% 才显示为“可能重复”。
+- 用户显式运行衣物“图片标签建议”时，`POST /api/garments/:id/vision-tags` 会在同一次本地 CLIP 推理中取得模型的 512 维 `image_embeds`。服务端验证并单位归一化后，以 Float32 小端格式幂等写入 `garment_embeddings`；标签建议与向量在同一事务提交。响应仍只返回标签建议，不返回向量；模型缺失时结构化失败且不写缓存，也不会为相似查询自动下载模型。
+- 「导入淘宝订单 → 购买前检查」接收现有预览候选，返回可能重复衣物、可复用的保存搭配和类别/季节/场合覆盖变化。检查本身不提交淘宝导入、不写 `source_order_items` 或 `garments`、不调用云端 AI，也不会自动下载模型；当前候选未生成视觉向量时按其余结构字段重新归一化。
+- 候选稳定指纹由服务端依据规范化商品身份与 SKU 生成；详情字段后续补全不会改变同一商品候选的身份。结构字段只参与相似度计算，客户端不能提交任意 `subjectKey` 或文件路径。只有用户显式点击“确实重复”或“不是重复”才写入幂等相似度反馈；标记“不是重复”后，该配对会立即从后续结果中隐藏。
+- 洞察建议中的相关衣物可直接打开衣服库或应用精确 ID 筛选，便于核对提示证据。
+
+## 旅行胶囊与装箱清单
+
+- 进入「历史洞察 → 旅行计划」可创建 1–7 天旅行，逐日填写一个或多个活动，并明确活动共用一套或需要独立搭配；入口属于既有二级区域，移动与桌面主导航仍保持五项。
+- 生成器复用现有推荐评分，为每个活动槽保留 Top 12，并以宽度 100 的有界 beam search 组合全程方案。最大衣物数、最大鞋数、衣物可用状态、核心重复规则、洗衣前穿着次数、槽位完整以及天气/场合阈值都是硬约束；预算内无解时只返回冲突和最小放宽建议，不输出违规方案或宣称穷举最优。
+- 相邻活动可以共用一套并按最低适配分评估；标记为独立的活动必须单独搭配。用户可锁定或同类别替换衣物，系统保留目标之前的方案身份、从目标日向后局部重算，并显示每件衣物覆盖的日期、活动和选择原因；发生重算的搭配必须重新确认实际穿着。
+- 装箱清单将衣物去重，并支持“未打包、已打包、穿在身上、不带”四态；充电器等非衣物必需品使用自由文本，不扩张衣物类别。规划、保存、装箱和洗衣模拟都不会改写现实衣物可用状态。
+- 只有用户点击刷新旅行天气时才会把该旅行的经纬度发送给 Open-Meteo，并把与旅行日期严格对齐的快照冻结在本地；创建、编辑、读取和生成旅行均不会自行联网。完成旅行前必须逐套确认实际穿着，服务端才在一个事务中幂等写入 WearEvent；完成或归档后的旅行只显示冻结记录，不再暴露编辑、生成、装箱或必需品写操作。
+
 ## 隐私边界
 
 - API 只监听 `127.0.0.1`，默认不对局域网开放。
-- Express 会发送基础安全响应头，并对 mutating API 做本地 Origin/Sec-Fetch-Site 校验。
+- Express 会发送基础安全响应头，并对 mutating API 做 Origin/Sec-Fetch-Site 校验；浏览器请求的 Origin 必须与请求 Host 的完整主机和端口一致，不会因为双方都是本机地址就忽略端口。
 - 淘宝账号、密码、Cookie、浏览器凭据不会被应用 API 保存。
 - 书签脚本只读取当前页面可见 DOM、页面脚本中的商品字段和图片 URL，不读取 `document.cookie`、`localStorage`、`sessionStorage` 或密码字段。
 - Selenium 使用本地 Chrome 用户数据目录 `output/chrome-taobao-profile` 复用登录态；Playwright 商品详情采集使用 `output/playwright-taobao-profile`；这些目录在本机保存。
@@ -201,15 +220,15 @@ Playwright 使用独立 profile：`output/playwright-taobao-profile`。该目录
 
 ## 数据删除、导出与备份
 
-- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着日记、周计划、天气/场合快照、旧日志原始 context、推荐历史、推荐反馈与评论、衣物状态历史、保存搭配及个人画像。
+- `data/outfit.sqlite*` 包含衣橱、订单摘要、穿着日记、周计划、旅行目的地/活动/冻结天气/方案/装箱状态、旧日志原始 context、推荐历史、推荐反馈与评论、相似度反馈、可重建的本地 embedding 缓存、衣物状态历史、保存搭配及个人画像。
 - `data/garment-assets` 包含净化后的本地衣物照片；它与数据库一样属于敏感本地数据。
 - `output/chrome-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Selenium Chrome 退出淘宝登录态。
 - `output/playwright-taobao-profile` 可能包含淘宝登录态 Cookie/session；清理它会让 Playwright Chrome 退出淘宝登录态。
 - `output/taobao-captures` 可能包含订单号、付款金额、商品标题、SKU、商品链接和图片 URL。
 - `output/garment-thumbnails` 是本地缩略图缓存。
-- `GET /api/export` 当前始终返回 `OutfitExportV2`：envelope 保持 `version=2`，当前数据库自动报告 `schemaVersion=5`，并带有 `diary-week-planner` 功能标识。除原有画像、衣物、淘宝来源、旧 wearLogs、推荐与保存搭配数据外，还完整导出 `wearEvents`、legacy snapshots、`outfitPlanEntries`、推荐反馈、衣物组合统计和状态变更历史。
-- 反馈 verdict/评分、拒绝原因、自由文本评论、实际穿着选择、日记备注、计划、场合、天气、IANA 时区与 legacy context 都是敏感本地数据。前端请求 JSON 或完整 ZIP 前会明确提示这些内容；直接调用 API 的人必须自行确认接收方和存放位置可信。
-- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。`plannedDate` 作为本地日历键原样往返，不经 UTC 转换。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1，以及缺少 M3/M4 可选数组的旧 V2 导出。
+- `GET /api/export` 当前始终返回 `OutfitExportV2`：envelope 保持 `version=2`，当前数据库自动报告 `schemaVersion=7`，并带有 `diary-week-planner`、`decision-support` 与 `trip-capsule` 功能标识。除原有画像、衣物、淘宝来源、旧 wearLogs、推荐与保存搭配数据外，还完整导出 `wearEvents`、legacy snapshots、`outfitPlanEntries`、推荐反馈、衣物组合统计、状态变更历史、`similarityFeedback` 以及 Trip/Day/Activity/Selection/Packing 关系记录。
+- 反馈 verdict/评分、拒绝原因、自由文本评论、实际穿着选择、相似度反馈、日记备注、旅行目的地和活动、装箱状态、计划、场合、天气、IANA 时区与 legacy context 都是敏感本地数据。前端请求 JSON 或完整 ZIP 前会明确提示这些内容；直接调用 API 的人必须自行确认接收方和存放位置可信。
+- 导出 JSON 不内嵌图片二进制；图片和资产字段不输出绝对文件系统路径。本地图保留为可移植的 `/api/...` 引用，远程来源仍保存为 URL。`plannedDate` 作为本地日历键原样往返，不经 UTC 转换。成本/次、四分位与排行属于派生结果，`garment_embeddings` 属于可重建缓存，二者都不进入导出。当前没有恢复导入接口；内部版本校验器仍能识别旧 V1，以及缺少较新可选数组的旧 V2 导出。
 
 查看隐私清理计划但不删除任何文件：
 
@@ -266,7 +285,7 @@ npm run models:verify
 说明：
 
 - `rembg` 去背景模型默认使用 `isnet-general-use`，模型目录为 `output/models/rembg`；低配置或网络较慢时可以运行 `npm run models:download:rembg -- --model u2netp` 或 `npm run models:download:rembg -- --model silueta`，运行时会按 `isnet-general-use`、`u2netp`、`silueta` 顺序选择本地已存在模型。
-- CLIP 标签建议模型使用 `Xenova/clip-vit-base-patch32`，缓存目录在 `output/models/huggingface` 下。
+- CLIP 标签建议模型使用 `Xenova/clip-vit-base-patch32`，缓存目录在 `output/models/huggingface` 下。用户显式执行图片标签建议时，同次推理还会刷新该衣物的本地相似度 embedding 缓存；普通相似查询和购买前检查只读缓存，不触发推理或下载。
 - 网页端的本地视觉下载、验证、去背景和标签建议默认显式走 GPU：`rembg` 使用 `OUTFIT_REMBG_PROVIDER=cuda`，CLIP 使用 `OUTFIT_VISION_DEVICE=dml`。如需临时回退，可在启动服务前把它们改成 `cpu` 或 `auto`。
 - 命令行脚本仍可用 `scripts/models.mjs ... --provider cuda`、`scripts/vision_tags.mjs ... --device dml` 显式指定后端；`rembg` 使用 CUDA 需要安装 `requirements.gpu.txt`。
 - `npm run models:verify` 会用临时小图实际加载 rembg 和 CLIP，而不只是检查文件是否存在。
