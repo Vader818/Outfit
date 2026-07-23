@@ -105,7 +105,17 @@ import { WearEventDialog, zonedDateTimeToIso, type WearEventDialogInitial } from
 import { addCalendarDays } from "../features/planner/WeekGrid";
 import { REMOTE_TAOBAO_IMAGES_SESSION_KEY, downloadBlob, downloadJson, exportBackupWithConfirmation, exportCompleteBackupWithConfirmation, readLocalStorageValue, readSessionStorageValue, updateCoordinateForRecommendation, writeLocalStorageValue, writeSessionStorageValue } from "../lib/browser";
 import { prepareGarmentImageForUpload } from "../lib/imageSanitization";
-import { applyGarmentPatch, isRecommendationEligibleGarment, isRecommendationPendingGarment, isWardrobeReviewPendingGarment } from "../lib/garments";
+import {
+  applyGarmentPatch,
+  garmentPatchAffectsRecommendationConstraints,
+  isRecommendationEligibleGarment,
+  isRecommendationPendingGarment,
+  isWardrobeReviewPendingGarment,
+  omitGarmentIds
+} from "../lib/garments";
+import { createKeyedSerialQueue } from "../lib/keyedSerialQueue";
+import { createLatestRequestGate } from "../lib/latestRequest";
+import { settleMutations } from "../lib/settledMutations";
 import {
   DEFAULT_LATITUDE,
   DEFAULT_LONGITUDE,
@@ -115,6 +125,7 @@ import {
   type AppTab,
   type AuthInput,
   type BusyAction,
+  type GarmentVisionAction,
   type WearLogFeedback,
   type WardrobeFilters
 } from "../shared/presentation";
@@ -203,6 +214,11 @@ type WearEventDialogState = {
   event?: WearEvent;
   plan?: OutfitPlanEntry;
   initial?: WearEventDialogInitial;
+} | null;
+
+type RecommendationCardAction = {
+  kind: "save" | "schedule" | "record";
+  candidateId: string;
 } | null;
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: ReactNode }> = [
@@ -498,8 +514,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [bootstrapping, setBootstrapping] = useState(() => typeof window !== "undefined");
   const [garments, setGarments] = useState<Garment[]>([]);
   const [archivedGarments, setArchivedGarments] = useState<Garment[]>([]);
+  const [garmentRequestGate] = useState(createLatestRequestGate);
   const garmentUpdateVersions = useRef(new Map<number, number>());
-  const garmentUpdateQueues = useRef(new Map<number, Promise<Garment>>());
+  const [garmentMutationQueue] = useState(() => createKeyedSerialQueue<number>());
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [wardrobeFilters, setWardrobeFilters] = useState<WardrobeFilters>(DEFAULT_WARDROBE_FILTERS);
   const [importText, setImportText] = useState("");
@@ -513,6 +530,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [purchaseCheckError, setPurchaseCheckError] = useState("");
   const [similarityFeedbackBusyGarmentId, setSimilarityFeedbackBusyGarmentId] = useState<number | null>(null);
   const purchaseCheckRequestVersion = useRef(0);
+  const [importPreviewRequestGate] = useState(createLatestRequestGate);
   const [captureFilterSummary, setCaptureFilterSummary] = useState<TaobaoWardrobeFilterSummary | null>(null);
   const [captureUrl, setCaptureUrl] = useState("");
   const [captureEngine, setCaptureEngine] = useState<CaptureEngine>("selenium");
@@ -524,6 +542,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [excludeGarmentIds, setExcludeGarmentIds] = useState<number[]>([]);
   const [profile, setProfile] = useState<PersonalProfile>(DEFAULT_PROFILE);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileRequestGate] = useState(createLatestRequestGate);
   const [wearLogs, setWearLogs] = useState<WearLogEntry[]>([]);
   const [wearEvents, setWearEvents] = useState<WearEvent[]>([]);
   const [outfitPlans, setOutfitPlans] = useState<OutfitPlanEntry[]>([]);
@@ -536,6 +555,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   ));
   const [plannerBusy, setPlannerBusy] = useState(false);
   const [plannerError, setPlannerError] = useState("");
+  const [historyRequestGate] = useState(createLatestRequestGate);
+  const [valueInsightsRequestGate] = useState(createLatestRequestGate);
+  const [plannerWeekRequestGate] = useState(createLatestRequestGate);
+  const [recommendationRequestGate] = useState(createLatestRequestGate);
+  const [locationRequestGate] = useState(createLatestRequestGate);
+  const plannerLoadRequestVersion = useRef(0);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
   const [tripEditorMode, setTripEditorMode] = useState<"create" | "edit" | null>(null);
@@ -552,7 +577,6 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const tripRequestVersion = useRef(0);
   const [busyPlanId, setBusyPlanId] = useState<number | null>(null);
   const [busyWearEventId, setBusyWearEventId] = useState<number | null>(null);
-  const [schedulingOutfitId, setSchedulingOutfitId] = useState<string | null>(null);
   const [outfitPlanDialog, setOutfitPlanDialog] = useState<OutfitPlanDialogState>(null);
   const [wearEventDialog, setWearEventDialog] = useState<WearEventDialogState>(null);
   const [planRepeatWarning, setPlanRepeatWarning] = useState("");
@@ -562,8 +586,10 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [valueInsightsBusy, setValueInsightsBusy] = useState(false);
   const [valueInsightsError, setValueInsightsError] = useState("");
   const [savedOutfits, setSavedOutfits] = useState<SavedOutfit[]>([]);
+  const [savedOutfitRequestGate] = useState(createLatestRequestGate);
   const [savedOutfitBusy, setSavedOutfitBusy] = useState(false);
-  const [savingOutfitId, setSavingOutfitId] = useState<string | null>(null);
+  const [recommendationCardAction, setRecommendationCardAction] = useState<RecommendationCardAction>(null);
+  const recommendationCardActionRef = useRef<RecommendationCardAction>(null);
   const [outfitBuilderOutfit, setOutfitBuilderOutfit] = useState<SavedOutfit | null | undefined>(undefined);
   const [outfitBuilderError, setOutfitBuilderError] = useState("");
   const [replacementDialog, setReplacementDialog] = useState<ReplacementDialogState>(null);
@@ -571,20 +597,24 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [replacementError, setReplacementError] = useState("");
   const [applyingReplacementId, setApplyingReplacementId] = useState<number | null>(null);
   const [visionModels, setVisionModels] = useState<VisionModelsResponse | null>(null);
+  const [visionModelsRequestGate] = useState(createLatestRequestGate);
   const [visionEnabled, setVisionEnabled] = useState(() => readLocalStorageValue("outfit.localVision.enabled", "true") !== "false");
   const [remoteTaobaoImagesEnabled, setRemoteTaobaoImagesEnabled] = useState(() =>
     readSessionStorageValue(REMOTE_TAOBAO_IMAGES_SESSION_KEY, "false") === "true"
   );
-  const [recordingOutfitId, setRecordingOutfitId] = useState<string | null>(null);
   const [feedbackDialog, setFeedbackDialog] = useState<FeedbackDialogState>(null);
   const [feedbackBusyCandidateId, setFeedbackBusyCandidateId] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState("");
-  const [availabilityBusyGarmentId, setAvailabilityBusyGarmentId] = useState<number | null>(null);
+  const [availabilityBusyGarmentIds, setAvailabilityBusyGarmentIds] = useState<ReadonlySet<number>>(
+    () => new Set()
+  );
   const [feedbackManagementOpen, setFeedbackManagementOpen] = useState(false);
   const [feedbackClearPreview, setFeedbackClearPreview] = useState<RecommendationFeedbackClearPreview | null>(null);
   const [feedbackClearBusy, setFeedbackClearBusy] = useState(false);
   const [feedbackClearError, setFeedbackClearError] = useState("");
-  const [visionBusyId, setVisionBusyId] = useState<number | null>(null);
+  const [visionBusyActions, setVisionBusyActions] = useState<ReadonlyMap<number, GarmentVisionAction>>(
+    () => new Map()
+  );
   const [wearLogFeedback, setWearLogFeedback] = useState<WearLogFeedback | null>(null);
   const [thumbnailRefreshMessage, setThumbnailRefreshMessage] = useState("");
   const [thumbnailPicker, setThumbnailPicker] = useState<ThumbnailPickerState>(null);
@@ -598,6 +628,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
   const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
   const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
+  const settingsSaveInProgress = useRef(false);
   const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
 
@@ -607,6 +638,16 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     [archivedGarments, garments]
   );
   const selectedTrip = trips.find((trip) => trip.id === selectedTripId) ?? null;
+  const recommendationCardActionBusy = recommendationCardAction !== null;
+  const savingOutfitId = recommendationCardAction?.kind === "save"
+    ? recommendationCardAction.candidateId
+    : null;
+  const schedulingOutfitId = recommendationCardAction?.kind === "schedule"
+    ? recommendationCardAction.candidateId
+    : null;
+  const recordingOutfitId = recommendationCardAction?.kind === "record"
+    ? recommendationCardAction.candidateId
+    : null;
   const reviewPendingCount = garments.filter(isWardrobeReviewPendingGarment).length;
   const recommendationPendingCount = garments.filter(isRecommendationPendingGarment).length;
   const recommendationGarments = garments.filter(isRecommendationEligibleGarment);
@@ -678,38 +719,49 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }, [statusMessage]);
 
   async function refreshGarments() {
+    const garmentRequest = garmentRequestGate.begin();
     setError("");
     try {
       const [active, archived] = await Promise.all([
         getGarments(),
         getGarments({ archived: true })
       ]);
+      if (!garmentRequest.isCurrent()) return;
       setGarments(active);
       setArchivedGarments(archived);
     } catch (garmentError) {
+      if (!garmentRequest.isCurrent()) return;
       setError(garmentError instanceof Error ? garmentError.message : "衣橱读取失败");
     }
   }
 
   async function refreshProfile() {
+    const profileRequest = profileRequestGate.begin();
     try {
-      setProfile(await getPersonalProfile());
+      const nextProfile = await getPersonalProfile();
+      if (!profileRequest.isCurrent()) return;
+      setProfile(nextProfile);
       setProfileLoaded(true);
     } catch (profileError) {
+      if (!profileRequest.isCurrent()) return;
       setProfileLoaded(false);
       setError(profileError instanceof Error ? profileError.message : "个人画像读取失败");
     }
   }
 
   async function refreshValueInsights() {
+    const valueRequest = valueInsightsRequestGate.begin();
     setValueInsightsBusy(true);
     setValueInsightsError("");
     try {
-      setValueInsights(await getValueInsights());
+      const nextValueInsights = await getValueInsights();
+      if (!valueRequest.isCurrent()) return;
+      setValueInsights(nextValueInsights);
     } catch (valueError) {
+      if (!valueRequest.isCurrent()) return;
       setValueInsightsError(valueError instanceof Error ? valueError.message : "价值与利用数据读取失败");
     } finally {
-      setValueInsightsBusy(false);
+      if (valueRequest.isCurrent()) setValueInsightsBusy(false);
     }
   }
 
@@ -734,12 +786,15 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function refreshHistoryData() {
+    const historyRequest = historyRequestGate.begin();
+    const plannerRequest = plannerWeekRequestGate.begin();
     void refreshValueInsights();
     setError("");
-    try {
-      const weekEnd = addCalendarDays(plannerWeekStart, 6);
-      const coordinates = parseLocationCoordinates(latitude, longitude);
-      const [nextWearLogs, nextRuns, nextInsights, nextWearEvents, nextPlans, nextForecasts] = await Promise.all([
+    setPlannerError("");
+    const weekEnd = addCalendarDays(plannerWeekStart, 6);
+    const coordinates = parseLocationCoordinates(latitude, longitude);
+    const [historyResult, plannerResult] = await Promise.allSettled([
+      Promise.all([
         getWearLogs(),
         getRecommendationRuns(),
         getInsights(),
@@ -748,7 +803,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           from: addCalendarDays(plannerToday, -3650),
           to: plannerToday,
           limit: 100
-        }),
+        })
+      ]),
+      Promise.all([
         getOutfitPlans({
           timeZone: plannerTimeZone,
           from: plannerWeekStart,
@@ -757,20 +814,41 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         coordinates
           ? getWeatherForecast(coordinates.latitude, coordinates.longitude, 7)
           : Promise.resolve([])
-      ]);
-      setWearLogs(nextWearLogs);
-      setRecommendationRuns(nextRuns);
-      setInsights(nextInsights);
-      setWearEvents(nextWearEvents);
+      ])
+    ]);
+
+    if (historyRequest.isCurrent()) {
+      if (historyResult.status === "fulfilled") {
+        const [nextWearLogs, nextRuns, nextInsights, nextWearEvents] = historyResult.value;
+        setWearLogs(nextWearLogs);
+        setRecommendationRuns(nextRuns);
+        setInsights(nextInsights);
+        setWearEvents(nextWearEvents);
+      } else {
+        setError(historyResult.reason instanceof Error ? historyResult.reason.message : "历史数据读取失败");
+      }
+    }
+
+    if (!plannerRequest.isCurrent()) return;
+    if (plannerResult.status === "rejected") {
+      setPlannerError(plannerResult.reason instanceof Error ? plannerResult.reason.message : "周计划读取失败");
+      return;
+    }
+    try {
+      const [nextPlans, nextForecasts] = plannerResult.value;
       const hydratedPlans = await hydratePlannerPlansWeather(nextPlans, nextForecasts);
+      if (!plannerRequest.isCurrent()) return;
       setOutfitPlans(hydratedPlans);
       setPlannerForecasts(nextForecasts);
-    } catch (historyError) {
-      setError(historyError instanceof Error ? historyError.message : "历史数据读取失败");
+    } catch (plannerLoadError) {
+      if (!plannerRequest.isCurrent()) return;
+      setPlannerError(plannerLoadError instanceof Error ? plannerLoadError.message : "周计划读取失败");
     }
   }
 
   async function refreshPlannerWeek(weekStart = plannerWeekStart) {
+    const plannerRequest = plannerWeekRequestGate.begin();
+    const loadRequestVersion = ++plannerLoadRequestVersion.current;
     setPlannerBusy(true);
     setPlannerError("");
     try {
@@ -785,31 +863,42 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           ? getWeatherForecast(coordinates.latitude, coordinates.longitude, 7)
           : Promise.resolve([])
       ]);
-      setOutfitPlans(await hydratePlannerPlansWeather(nextPlans, nextForecasts));
+      if (!plannerRequest.isCurrent()) return;
+      const hydratedPlans = await hydratePlannerPlansWeather(nextPlans, nextForecasts);
+      if (!plannerRequest.isCurrent()) return;
+      setOutfitPlans(hydratedPlans);
       setPlannerForecasts(nextForecasts);
     } catch (plannerLoadError) {
+      if (!plannerRequest.isCurrent()) return;
       setPlannerError(plannerLoadError instanceof Error ? plannerLoadError.message : "周计划读取失败");
     } finally {
-      setPlannerBusy(false);
+      if (loadRequestVersion === plannerLoadRequestVersion.current) setPlannerBusy(false);
     }
   }
 
   async function refreshSavedOutfits() {
+    const savedOutfitRequest = savedOutfitRequestGate.begin();
     try {
       const [active, archived] = await Promise.all([
         getSavedOutfits(),
         getSavedOutfits({ archived: true })
       ]);
+      if (!savedOutfitRequest.isCurrent()) return;
       setSavedOutfits([...active, ...archived]);
     } catch (savedOutfitError) {
+      if (!savedOutfitRequest.isCurrent()) return;
       setError(savedOutfitError instanceof Error ? savedOutfitError.message : "保存搭配读取失败");
     }
   }
 
   async function refreshVisionModels() {
+    const visionModelsRequest = visionModelsRequestGate.begin();
     try {
-      setVisionModels(await getVisionModels());
+      const nextVisionModels = await getVisionModels();
+      if (!visionModelsRequest.isCurrent()) return;
+      setVisionModels(nextVisionModels);
     } catch {
+      if (!visionModelsRequest.isCurrent()) return;
       setVisionModels(null);
     }
   }
@@ -819,6 +908,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError("请先预览并逐项确认导入内容");
       return;
     }
+    invalidateImportPreviewRequest();
+    invalidateWardrobeRecommendations();
     setBusyAction("import");
     setError("");
     try {
@@ -829,6 +920,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
           include: false
         })
       });
+      invalidateWardrobeRecommendations("all");
       setImportResult(result);
       setImportPreview(null);
       setImportDecisions({});
@@ -842,7 +934,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入失败");
     } finally {
-      setBusyAction(null);
+      setBusyAction((current) => current === "import" ? null : current);
     }
   }
 
@@ -891,7 +983,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  function invalidateImportPreviewRequest() {
+    importPreviewRequestGate.invalidate();
+    setBusyAction((current) => current === "preview-import" ? null : current);
+  }
+
   async function readLatestCapture() {
+    invalidateImportPreviewRequest();
     setBusyAction("read-capture");
     setError("");
     try {
@@ -913,6 +1011,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function updateImportText(value: string) {
+    invalidateImportPreviewRequest();
     setImportText(value);
     setCaptureFilterSummary(null);
     setImportPreview(null);
@@ -921,11 +1020,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function previewImport() {
+    const previewRequest = importPreviewRequestGate.begin();
     resetPurchaseCheck();
     setBusyAction("preview-import");
     setError("");
     try {
       const preview = await previewTaobaoImport(JSON.parse(importText));
+      if (!previewRequest.isCurrent()) return;
       const purchaseCandidates = eligiblePurchaseCheckCandidates(preview);
       setImportPreview(preview);
       setPurchaseCheckSourceItemKey((current) => purchaseCandidates.some((candidate) => candidate.sourceItemKey === current)
@@ -942,9 +1043,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       ])));
       setImportResult(null);
     } catch (previewError) {
+      if (!previewRequest.isCurrent()) return;
       setError(previewError instanceof Error ? previewError.message : "预览失败");
     } finally {
-      setBusyAction(null);
+      if (previewRequest.isCurrent()) {
+        setBusyAction((current) => current === "preview-import" ? null : current);
+      }
     }
   }
 
@@ -1097,74 +1201,129 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     navigateTo("wardrobe");
   }
 
-  async function updateOne(id: number, update: Partial<Garment>) {
+  function beginGarmentMutation(id: number): number {
     const version = (garmentUpdateVersions.current.get(id) ?? 0) + 1;
-    let previous: Garment | undefined;
     garmentUpdateVersions.current.set(id, version);
+    return version;
+  }
+
+  function isCurrentGarmentMutation(id: number, version: number): boolean {
+    return garmentUpdateVersions.current.get(id) === version;
+  }
+
+  function queueGarmentMutation<Value>(
+    id: number,
+    operation: () => Promise<Value>
+  ): Promise<Value> {
+    return garmentMutationQueue.run(id, operation);
+  }
+
+  function commitCurrentGarmentMutation(
+    id: number,
+    version: number,
+    update: Partial<Garment>
+  ): boolean {
+    if (!isCurrentGarmentMutation(id, version)) return false;
+    setGarments((items) => applyGarmentPatch(items, id, update));
+    setArchivedGarments((items) => applyGarmentPatch(items, id, update));
+    return true;
+  }
+
+  async function recoverCurrentGarmentMutation(id: number, version: number): Promise<void> {
+    if (!isCurrentGarmentMutation(id, version)) return;
+    await refreshGarments();
+  }
+
+  async function updateOne(id: number, update: Partial<Garment>) {
+    const version = beginGarmentMutation(id);
+    invalidateWardrobeRecommendations();
     setError("");
-    setGarments((items) => {
-      previous = items.find((item) => item.id === id);
-      return applyGarmentPatch(items, id, update);
-    });
+    setGarments((items) => applyGarmentPatch(items, id, update));
+    setArchivedGarments((items) => applyGarmentPatch(items, id, update));
     try {
-      const queued = (garmentUpdateQueues.current.get(id) ?? Promise.resolve())
-        .catch(() => undefined)
-        .then(() => updateGarment(id, update));
-      garmentUpdateQueues.current.set(id, queued);
-      const updated = await queued;
-      if (garmentUpdateVersions.current.get(id) === version) {
-        setGarments((items) => applyGarmentPatch(items, id, updated));
+      const updated = await queueGarmentMutation(id, () => updateGarment(id, update));
+      if (garmentPatchAffectsRecommendationConstraints(update)) {
+        invalidateWardrobeRecommendations([id]);
       }
+      commitCurrentGarmentMutation(id, version, updated);
     } catch (updateError) {
-      if (garmentUpdateVersions.current.get(id) !== version) return;
-      if (previous) setGarments((items) => applyGarmentPatch(items, id, previous as Garment));
+      await recoverCurrentGarmentMutation(id, version);
       setError(updateError instanceof Error ? updateError.message : "衣物保存失败");
-    } finally {
-      if (garmentUpdateQueues.current.get(id) && garmentUpdateVersions.current.get(id) === version) {
-        garmentUpdateQueues.current.delete(id);
-      }
     }
   }
 
   async function archiveOne(id: number) {
+    const version = beginGarmentMutation(id);
+    invalidateWardrobeRecommendations();
     setError("");
     try {
-      const archived = await archiveGarment(id);
+      const archived = await queueGarmentMutation(id, () => archiveGarment(id));
+      invalidateWardrobeRecommendations([id]);
       setGarments((items) => items.filter((item) => item.id !== id));
       setArchivedGarments((items) => [archived, ...items.filter((item) => item.id !== id)]);
       setSelectedIds((ids) => ids.filter((selectedId) => selectedId !== id));
       setStatusMessage("衣物已归档，可在衣服库底部恢复");
       await refreshHistoryData();
     } catch (archiveError) {
+      await recoverCurrentGarmentMutation(id, version);
       setError(archiveError instanceof Error ? archiveError.message : "衣物归档失败");
     }
   }
 
   async function restoreOne(id: number) {
+    const version = beginGarmentMutation(id);
+    invalidateWardrobeRecommendations();
     setError("");
     try {
-      const restored = await restoreGarment(id);
+      const restored = await queueGarmentMutation(id, () => restoreGarment(id));
+      invalidateWardrobeRecommendations([id]);
       setArchivedGarments((items) => items.filter((item) => item.id !== id));
       setGarments((items) => [restored, ...items.filter((item) => item.id !== id)]);
       setStatusMessage("衣物已恢复到衣橱");
       await refreshHistoryData();
     } catch (restoreError) {
+      await recoverCurrentGarmentMutation(id, version);
       setError(restoreError instanceof Error ? restoreError.message : "衣物恢复失败");
     }
   }
 
   async function bulkConfirm() {
+    const ids = [...selectedIds];
+    invalidateWardrobeRecommendations();
     setBusyAction("bulk-confirm");
     setError("");
     try {
-      await Promise.all(selectedIds.map((id) => updateGarment(id, { confirmed: true })));
-      setSelectedIds([]);
+      const {
+        succeeded: succeededIds,
+        failed: failedIds,
+        failureReasons
+      } = await settleMutations(ids, (id) => {
+        beginGarmentMutation(id);
+        return queueGarmentMutation(id, () => updateGarment(id, { confirmed: true }));
+      });
+      invalidateWardrobeRecommendations(succeededIds);
+      setSelectedIds(failedIds);
       await refreshGarments();
-      setStatusMessage("所选衣物已确认");
+      if (succeededIds.length) {
+        setStatusMessage(
+          failedIds.length
+            ? `${succeededIds.length} 件衣物已确认`
+            : "所选衣物已确认"
+        );
+      }
+      if (failedIds.length) {
+        const firstFailure = failureReasons[0];
+        setError(
+          failedIds.length === 1 && firstFailure instanceof Error
+            ? firstFailure.message
+            : `${failedIds.length} 件衣物确认失败，已保留选择以便重试`
+        );
+      }
     } catch (bulkError) {
+      await refreshGarments();
       setError(bulkError instanceof Error ? bulkError.message : "批量确认失败");
     } finally {
-      setBusyAction(null);
+      setBusyAction((current) => current === "bulk-confirm" ? null : current);
     }
   }
 
@@ -1172,19 +1331,51 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     label: string,
     buildUpdate: (garment: Garment) => Partial<Garment>
   ) {
+    invalidateWardrobeRecommendations();
     setBusyAction("bulk-update");
     setError("");
     try {
       const selected = garments.filter((garment) => selectedIds.includes(garment.id));
-      await Promise.all(selected.map((garment) => updateGarment(garment.id, buildUpdate(garment))));
-      setSelectedIds([]);
+      const updates = selected.map((garment) => ({
+        garment,
+        update: buildUpdate(garment)
+      }));
+      const {
+        succeeded: succeededUpdates,
+        failed: failedUpdates,
+        failureReasons
+      } = await settleMutations(
+        updates,
+        ({ garment, update }) => {
+          beginGarmentMutation(garment.id);
+          return queueGarmentMutation(garment.id, () => updateGarment(garment.id, update));
+        }
+      );
+      const succeededIds = succeededUpdates.map(({ garment }) => garment.id);
+      const failedIds = failedUpdates.map(({ garment }) => garment.id);
+      invalidateWardrobeRecommendations(
+        succeededUpdates
+          .filter(({ update }) => garmentPatchAffectsRecommendationConstraints(update))
+          .map(({ garment }) => garment.id)
+      );
+      setSelectedIds(failedIds);
       await refreshGarments();
-      setStatusMessage(label);
+      if (succeededIds.length) {
+        setStatusMessage(failedIds.length ? `${succeededIds.length} 件衣物更新成功` : label);
+      }
+      if (failedIds.length) {
+        const firstFailure = failureReasons[0];
+        setError(
+          failedIds.length === 1 && firstFailure instanceof Error
+            ? firstFailure.message
+            : `${failedIds.length} 件衣物更新失败，已保留选择以便重试`
+        );
+      }
     } catch (bulkError) {
       await refreshGarments();
       setError(bulkError instanceof Error ? bulkError.message : "批量更新失败");
     } finally {
-      setBusyAction(null);
+      setBusyAction((current) => current === "bulk-update" ? null : current);
     }
   }
 
@@ -1203,32 +1394,59 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function changeGarmentAvailability(id: number, status: GarmentAvailabilityStatus) {
-    setAvailabilityBusyGarmentId(id);
+    const version = beginGarmentMutation(id);
+    invalidateWardrobeRecommendations();
+    markGarmentAvailabilityBusy(id);
     setError("");
     try {
-      const result = await updateGarmentAvailability(id, status);
-      setGarments((items) => applyGarmentPatch(items, id, result.garment));
-      setArchivedGarments((items) => applyGarmentPatch(items, id, result.garment));
+      const result = await queueGarmentMutation(
+        id,
+        () => updateGarmentAvailability(id, status)
+      );
+      invalidateWardrobeRecommendations([id]);
+      commitCurrentGarmentMutation(id, version, result.garment);
       if (status !== "available") {
         setIncludeGarmentIds((ids) => ids.filter((garmentId) => garmentId !== id));
       }
-      setRecommendations(null);
       setStatusMessage(result.changed ? "衣物可用状态已更新" : "衣物已经是该状态");
       await refreshHistoryData();
     } catch (availabilityError) {
+      await recoverCurrentGarmentMutation(id, version);
       setError(availabilityError instanceof Error ? availabilityError.message : "衣物状态更新失败");
     } finally {
-      setAvailabilityBusyGarmentId(null);
+      clearGarmentAvailabilityBusy(id);
     }
+  }
+
+  function markGarmentAvailabilityBusy(id: number) {
+    setAvailabilityBusyGarmentIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }
+
+  function clearGarmentAvailabilityBusy(id: number) {
+    setAvailabilityBusyGarmentIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
   }
 
   async function bulkAvailability(status: GarmentAvailabilityStatus) {
     if (!selectedIds.length) return;
+    invalidateWardrobeRecommendations();
     setBusyAction("bulk-availability");
     setError("");
     const ids = [...selectedIds];
     try {
-      const results = await Promise.allSettled(ids.map((id) => updateGarmentAvailability(id, status)));
+      const results = await Promise.allSettled(ids.map((id) => {
+        beginGarmentMutation(id);
+        return queueGarmentMutation(id, () => updateGarmentAvailability(id, status));
+      }));
       const succeededIds = ids.filter((_, index) => results[index].status === "fulfilled");
       const failedIds = ids.filter((_, index) => results[index].status === "rejected");
       setSelectedIds(failedIds);
@@ -1236,7 +1454,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         const succeeded = new Set(succeededIds);
         setIncludeGarmentIds((current) => current.filter((id) => !succeeded.has(id)));
       }
-      setRecommendations(null);
+      invalidateWardrobeRecommendations(succeededIds);
       await Promise.all([refreshGarments(), refreshHistoryData()]);
       if (succeededIds.length) {
         setStatusMessage(`${succeededIds.length} 件衣物状态已更新`);
@@ -1269,13 +1487,20 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     try {
       if (!saved) {
         saved = await createGarment(input);
+        invalidateWardrobeRecommendations();
         setManualSavedGarment(saved);
         setGarments((items) => [saved as Garment, ...items.filter((item) => item.id !== saved?.id)]);
       }
       if (imageFile) {
         const prepared = await prepareGarmentImageForUpload(imageFile);
-        saved = await uploadGarmentImage(saved.id, prepared);
-        setGarments((items) => items.map((item) => item.id === saved?.id ? saved as Garment : item));
+        const savedId = saved.id;
+        const version = beginGarmentMutation(savedId);
+        saved = await queueGarmentMutation(
+          savedId,
+          () => uploadGarmentImage(savedId, prepared)
+        );
+        invalidateWardrobeRecommendations();
+        commitCurrentGarmentMutation(savedId, version, saved);
       }
       setManualGarmentOpen(false);
       setManualSavedGarment(null);
@@ -1302,6 +1527,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     setThumbnailRefreshMessage("");
     try {
       const result = await refreshGarmentThumbnails({ maxDownloads: 8 });
+      if (result.updated > 0) invalidateWardrobeRecommendations();
       setThumbnailRefreshMessage(`缩略图更新 ${result.updated} 件，尝试下载 ${result.attemptedDownloads} 张`);
       await refreshGarments();
     } catch (thumbnailError) {
@@ -1351,13 +1577,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function saveThumbnailSelection() {
     if (!thumbnailPicker?.selectedUrl) return;
     const { garment, selectedUrl } = thumbnailPicker;
+    const version = beginGarmentMutation(garment.id);
     setThumbnailPicker((current) => current ? { ...current, saving: true, error: "" } : current);
     try {
-      const updated = await selectGarmentThumbnail(garment.id, selectedUrl);
-      setGarments((items) => items.map((item) => item.id === garment.id ? updated : item));
+      const updated = await queueGarmentMutation(
+        garment.id,
+        () => selectGarmentThumbnail(garment.id, selectedUrl)
+      );
+      invalidateWardrobeRecommendations();
+      commitCurrentGarmentMutation(garment.id, version, updated);
       setThumbnailPicker(null);
       setStatusMessage("主图已更新");
     } catch (pickerError) {
+      await recoverCurrentGarmentMutation(garment.id, version);
       setThumbnailPicker((current) => current && current.garment.id === garment.id ? {
         ...current,
         saving: false,
@@ -1367,33 +1599,55 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function cutoutGarment(id: number) {
-    setBusyAction("cutout-garment");
-    setVisionBusyId(id);
+    const version = beginGarmentMutation(id);
+    setGarmentVisionBusy(id, "cutout-garment");
     setError("");
     try {
-      const updated = await createGarmentCutout(id);
-      setGarments((items) => items.map((item) => item.id === id ? updated : item));
+      const updated = await queueGarmentMutation(id, () => createGarmentCutout(id));
+      invalidateWardrobeRecommendations();
+      commitCurrentGarmentMutation(id, version, updated);
     } catch (visionError) {
+      await recoverCurrentGarmentMutation(id, version);
       setError(visionError instanceof Error ? visionError.message : "去背景失败");
     } finally {
-      setVisionBusyId(null);
-      setBusyAction(null);
+      clearGarmentVisionBusy(id, "cutout-garment");
     }
   }
 
   async function analyzeVisionTags(id: number) {
-    setBusyAction("vision-tags");
-    setVisionBusyId(id);
+    const version = beginGarmentMutation(id);
+    setGarmentVisionBusy(id, "vision-tags");
     setError("");
     try {
-      const suggestion = await analyzeGarmentVisionTags(id);
-      setGarments((items) => items.map((item) => item.id === id ? { ...item, visionTags: suggestion, visionUpdatedAt: new Date().toISOString() } : item));
+      const suggestion = await queueGarmentMutation(id, () => analyzeGarmentVisionTags(id));
+      commitCurrentGarmentMutation(id, version, {
+        visionTags: suggestion,
+        visionUpdatedAt: new Date().toISOString()
+      });
     } catch (visionError) {
+      await recoverCurrentGarmentMutation(id, version);
       setError(visionError instanceof Error ? visionError.message : "图片分析失败");
     } finally {
-      setVisionBusyId(null);
-      setBusyAction(null);
+      clearGarmentVisionBusy(id, "vision-tags");
     }
+  }
+
+  function setGarmentVisionBusy(id: number, action: GarmentVisionAction) {
+    setVisionBusyActions((current) => {
+      if (current.get(id) === action) return current;
+      const next = new Map(current);
+      next.set(id, action);
+      return next;
+    });
+  }
+
+  function clearGarmentVisionBusy(id: number, action: GarmentVisionAction) {
+    setVisionBusyActions((current) => {
+      if (current.get(id) !== action) return current;
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
   }
 
   async function downloadLocalVisionModel(id: VisionModelId) {
@@ -1433,20 +1687,68 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function updateLatitude(value: string) {
+    if (settingsSaveInProgress.current) return;
+    invalidateLocationRequest();
+    invalidateRecommendationRequest();
     updateCoordinateForRecommendation(value, setLatitude, setWeather, setRecommendations);
+    setWearLogFeedback(null);
   }
 
   function updateLongitude(value: string) {
+    if (settingsSaveInProgress.current) return;
+    invalidateLocationRequest();
+    invalidateRecommendationRequest();
     updateCoordinateForRecommendation(value, setLongitude, setWeather, setRecommendations);
+    setWearLogFeedback(null);
+  }
+
+  function updateRecommendationProfile(nextProfile: PersonalProfile) {
+    if (settingsSaveInProgress.current) return;
+    profileRequestGate.invalidate();
+    invalidateRecommendationRequest();
+    setProfile(nextProfile);
+    setRecommendations(null);
+    setWearLogFeedback(null);
+  }
+
+  function invalidateRecommendationRequest() {
+    recommendationRequestGate.invalidate();
+    setRecommendations(null);
+    setWearLogFeedback(null);
+    setBusyAction((current) =>
+      current === "weather" || current === "recommend" ? null : current);
+  }
+
+  function invalidateWardrobeRecommendations(
+    affectedGarmentIds: readonly number[] | "all" = []
+  ) {
+    garmentRequestGate.invalidate();
+    invalidateRecommendationRequest();
+    if (affectedGarmentIds === "all") {
+      setIncludeGarmentIds([]);
+      setExcludeGarmentIds([]);
+      return;
+    }
+    if (!affectedGarmentIds.length) return;
+    setIncludeGarmentIds((ids) => omitGarmentIds(ids, affectedGarmentIds));
+    setExcludeGarmentIds((ids) => omitGarmentIds(ids, affectedGarmentIds));
+  }
+
+  function invalidateLocationRequest() {
+    locationRequestGate.invalidate();
+    setBusyAction((current) => current === "locate" ? null : current);
   }
 
   async function locate() {
     if (!navigator.geolocation) return;
+    const locationRequest = locationRequestGate.begin();
     setBusyAction("locate");
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        if (!locationRequest.isCurrent()) return;
         const lat = position.coords.latitude.toFixed(4);
         const lon = position.coords.longitude.toFixed(4);
+        invalidateRecommendationRequest();
         setLatitude(lat);
         setLongitude(lon);
         setWeather(null);
@@ -1454,11 +1756,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         writeLocalStorageValue("outfit.latitude", lat);
         writeLocalStorageValue("outfit.longitude", lon);
         setStatusMessage("位置已更新");
-        setBusyAction(null);
+        setBusyAction((current) => current === "locate" ? null : current);
       },
       () => {
+        if (!locationRequest.isCurrent()) return;
         setError("无法获取当前位置，请检查浏览器权限或手动输入坐标");
-        setBusyAction(null);
+        setBusyAction((current) => current === "locate" ? null : current);
       }
     );
   }
@@ -1470,20 +1773,27 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       navigateTo("settings");
       return;
     }
+    const request = recommendationRequestGate.begin();
     setBusyAction("weather");
     setError("");
     try {
-      setWeather(await getWeather(coordinates.latitude, coordinates.longitude));
+      const snapshot = await getWeather(coordinates.latitude, coordinates.longitude);
+      if (!request.isCurrent()) return;
+      setWeather(snapshot);
       setRecommendations(null);
       setWearLogFeedback(null);
     } catch (weatherError) {
+      if (!request.isCurrent()) return;
       setError(weatherError instanceof Error ? weatherError.message : "天气获取失败");
     } finally {
-      setBusyAction(null);
+      if (request.isCurrent()) {
+        setBusyAction((current) => current === "weather" ? null : current);
+      }
     }
   }
 
   function updateOccasion(value: string) {
+    invalidateRecommendationRequest();
     setOccasion(value as Formality);
     setRecommendations(null);
     setWearLogFeedback(null);
@@ -1503,12 +1813,14 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       navigateTo("settings");
       return;
     }
+    const request = recommendationRequestGate.begin();
     setBusyAction("recommend");
     setError("");
     try {
       const snapshot = weather ?? await getWeather(coordinates.latitude, coordinates.longitude);
+      if (!request.isCurrent()) return;
       setWeather(snapshot);
-      setRecommendations(await getRecommendations({
+      const nextRecommendations = await getRecommendations({
         weather: snapshot,
         occasion,
         userProfile: profile,
@@ -1518,15 +1830,22 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         ...(constraints.excludeGarmentIds.length
           ? { excludeGarmentIds: constraints.excludeGarmentIds }
           : {})
-      }));
+      });
+      if (!request.isCurrent()) return;
+      setRecommendations(nextRecommendations);
     } catch (recommendError) {
+      if (!request.isCurrent()) return;
       setError(recommendError instanceof Error ? recommendError.message : "推荐失败");
     } finally {
-      setBusyAction(null);
+      if (request.isCurrent()) {
+        setBusyAction((current) => current === "recommend" ? null : current);
+      }
     }
   }
 
   function useGarmentAsCore(garment: Garment) {
+    if (recommendationCardActionRef.current) return;
+    invalidateRecommendationRequest();
     const nextInclude = [garment.id];
     setIncludeGarmentIds(nextInclude);
     setExcludeGarmentIds([]);
@@ -1537,6 +1856,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function clearGarmentConstraints() {
+    if (recommendationCardActionRef.current) return;
+    invalidateRecommendationRequest();
     setIncludeGarmentIds([]);
     setExcludeGarmentIds([]);
     setRecommendations(null);
@@ -1544,6 +1865,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function openReplacementDialog(outfit: OutfitRecommendation, targetGarment: Garment) {
+    if (recommendationCardActionRef.current) return;
     const suggestions = outfit.replacements.filter((suggestion) =>
       suggestion.targetGarmentId === targetGarment.id
     );
@@ -1587,10 +1909,30 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     }
   }
 
+  function beginRecommendationCardAction(
+    kind: NonNullable<RecommendationCardAction>["kind"],
+    candidateId: string
+  ): NonNullable<RecommendationCardAction> | null {
+    if (recommendationCardActionRef.current) return null;
+    const action = { kind, candidateId };
+    recommendationCardActionRef.current = action;
+    setRecommendationCardAction(action);
+    return action;
+  }
+
+  function finishRecommendationCardAction(action: NonNullable<RecommendationCardAction>) {
+    const current = recommendationCardActionRef.current;
+    if (!current || current.kind !== action.kind || current.candidateId !== action.candidateId) return;
+    recommendationCardActionRef.current = null;
+    setRecommendationCardAction((state) =>
+      state?.kind === action.kind && state.candidateId === action.candidateId ? null : state);
+  }
+
   async function recordRecommendationWear(outfit: OutfitRecommendation) {
+    const action = beginRecommendationCardAction("record", outfit.candidateId);
+    if (!action) return;
     setError("");
     setWearLogFeedback(null);
-    setRecordingOutfitId(outfit.candidateId);
     try {
       await submitRecommendationFeedback({
         candidateId: outfit.candidateId,
@@ -1605,7 +1947,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (wearLogError) {
       setError(wearLogError instanceof Error ? wearLogError.message : "记录实际穿着失败");
     } finally {
-      setRecordingOutfitId(null);
+      finishRecommendationCardAction(action);
     }
   }
 
@@ -1613,6 +1955,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     outfit: OutfitRecommendation,
     verdict: Extract<FeedbackVerdict, "liked" | "disliked">
   ) {
+    if (recommendationCardActionRef.current) return;
     const requestId = feedbackDialogRequestId.current + 1;
     feedbackDialogRequestId.current = requestId;
     setFeedbackError("");
@@ -1692,6 +2035,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       const result = await clearRecommendationFeedback(scope);
       setFeedbackManagementOpen(false);
       setFeedbackClearPreview(null);
+      invalidateRecommendationRequest();
       setRecommendations(null);
       setStatusMessage(`已清空 ${result.deletedFeedbackCount} 条反馈，学习权重已重算`);
       await refreshHistoryData();
@@ -1703,7 +2047,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function saveRecommendationOutfit(outfit: OutfitRecommendation) {
-    setSavingOutfitId(outfit.candidateId);
+    const action = beginRecommendationCardAction("save", outfit.candidateId);
+    if (!action) return;
     setError("");
     setOutfitBuilderError("");
     try {
@@ -1714,12 +2059,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (savedOutfitError) {
       setError(savedOutfitError instanceof Error ? savedOutfitError.message : "推荐搭配保存失败");
     } finally {
-      setSavingOutfitId(null);
+      finishRecommendationCardAction(action);
     }
   }
 
   async function scheduleRecommendationOutfit(outfit: OutfitRecommendation) {
-    setSchedulingOutfitId(outfit.candidateId);
+    const action = beginRecommendationCardAction("schedule", outfit.candidateId);
+    if (!action) return;
     setError("");
     try {
       const resolved = await resolveSavedRecommendationParent(savedOutfits, outfit);
@@ -1737,7 +2083,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (scheduleError) {
       setError(scheduleError instanceof Error ? scheduleError.message : "推荐搭配安排失败");
     } finally {
-      setSchedulingOutfitId(null);
+      finishRecommendationCardAction(action);
     }
   }
 
@@ -2040,6 +2386,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   function upsertSavedOutfit(saved: SavedOutfit) {
+    savedOutfitRequestGate.invalidate();
     setSavedOutfits((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
   }
 
@@ -2290,6 +2637,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function saveSettings() {
+    if (settingsSaveInProgress.current) return;
     if (!profileLoaded) {
       setError("个人画像尚未成功读取，请刷新后再保存");
       return;
@@ -2298,6 +2646,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError("位置需要同时填写有效的纬度和经度");
       return;
     }
+    settingsSaveInProgress.current = true;
+    profileRequestGate.invalidate();
     setBusyAction("save-settings");
     setError("");
     try {
@@ -2311,7 +2661,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (settingsError) {
       setError(settingsError instanceof Error ? settingsError.message : "设置保存失败");
     } finally {
-      setBusyAction(null);
+      settingsSaveInProgress.current = false;
+      setBusyAction((current) => current === "save-settings" ? null : current);
     }
   }
 
@@ -2408,6 +2759,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 longitude={longitude}
                 busy={Boolean(busyAction)}
                 busyAction={busyAction}
+                cardActionBusy={recommendationCardActionBusy}
                 savingOutfitId={savingOutfitId}
                 schedulingOutfitId={schedulingOutfitId}
                 feedbackBusyCandidateId={feedbackBusyCandidateId}
@@ -2449,7 +2801,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onBulkSeasons={bulkSeasons}
                 onBulkTags={bulkTags}
                 onBulkExcluded={bulkExcluded}
-                availabilityBusyGarmentId={availabilityBusyGarmentId}
+                availabilityBusyGarmentIds={availabilityBusyGarmentIds}
                 onAvailabilityChange={(id, status) => { void changeGarmentAvailability(id, status); }}
                 onBulkAvailability={(status) => { void bulkAvailability(status); }}
                 onRefreshThumbnails={refreshThumbnails}
@@ -2458,7 +2810,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onCutoutGarment={cutoutGarment}
                 onAnalyzeGarmentVision={analyzeVisionTags}
                 visionEnabled={visionEnabled}
-                visionBusyId={visionBusyId}
+                visionBusyActions={visionBusyActions}
                 thumbnailRefreshMessage={thumbnailRefreshMessage}
                 allowRemoteTaobaoImages={remoteTaobaoImagesEnabled}
               />
@@ -2628,7 +2980,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
                 onLongitude={updateLongitude}
                 onLocate={locate}
                 onSave={saveSettings}
-                onProfile={setProfile}
+                onProfile={updateRecommendationProfile}
                 onVisionEnabled={updateVisionEnabled}
                 onRemoteTaobaoImagesEnabled={updateRemoteTaobaoImagesEnabled}
                 onRefreshVisionModels={refreshVisionModels}

@@ -28,7 +28,20 @@ export interface TaobaoLatestCaptureResult {
 
 export interface CaptureFileSystem {
   readdirSync(path: string): string[];
-  statSync(path: string): { mtimeMs: number; size?: number; isFile: () => boolean; isDirectory?: () => boolean };
+  statSync(path: string): {
+    mtimeMs: number;
+    size?: number;
+    isFile: () => boolean;
+    isDirectory?: () => boolean;
+    isSymbolicLink?: () => boolean;
+  };
+  lstatSync?(path: string): {
+    mtimeMs: number;
+    size?: number;
+    isFile: () => boolean;
+    isDirectory?: () => boolean;
+    isSymbolicLink?: () => boolean;
+  };
   readFileSync(path: string, encoding: BufferEncoding): string;
 }
 
@@ -183,17 +196,24 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
   return publicJob(job);
 }
 
+export function clearTaobaoCaptureJobs(): void {
+  for (const job of captureJobs.values()) {
+    if (job.child) {
+      terminateCaptureProcess(job);
+    }
+    closeJobLog(job);
+    delete job.child;
+  }
+  captureJobs.clear();
+}
+
 export function readTaobaoCaptureJobArtifact(id: string, options: ReadLatestTaobaoCaptureOptions = {}): CaptureArtifact {
   const job = captureJobs.get(id);
   if (!job) {
     throw new ApiError("NOT_FOUND", "采集任务不存在", 404);
   }
   const latest = readLatestTaobaoCapture(job.outputDir, fs, options);
-  job.status = "succeeded";
-  job.artifactPath = latest.path;
-  job.message = "采集产物已读取。";
-  job.updatedAt = new Date().toISOString();
-  closeJobLog(job);
+  recordCaptureArtifact(job, latest.path, true);
   return {
     jobId: id,
     outputDir: latest.outputDir,
@@ -372,10 +392,22 @@ function refreshJobFromArtifact(job: InternalCaptureJob): void {
   if (job.status !== "running" && job.status !== "pending") return;
   const artifact = findLatestJsonArtifact(job.outputDir);
   if (!artifact) return;
-  job.status = "succeeded";
-  job.artifactPath = artifact.filePath;
-  job.message = "采集完成，产物已生成。";
+  recordCaptureArtifact(job, artifact.filePath, false);
+}
+
+function recordCaptureArtifact(job: InternalCaptureJob, artifactPath: string, wasRead: boolean): void {
+  job.artifactPath = artifactPath;
   job.updatedAt = new Date().toISOString();
+  if (job.child && (job.status === "running" || job.status === "pending")) {
+    job.message = wasRead
+      ? "采集产物已读取，等待采集进程结束。"
+      : "采集产物已生成，等待采集进程结束。";
+    return;
+  }
+  if (job.status !== "cancelled") {
+    job.status = "succeeded";
+    job.message = wasRead ? "采集产物已读取。" : "采集完成，产物已生成。";
+  }
   closeJobLog(job);
 }
 
@@ -385,6 +417,7 @@ function findLatestJsonArtifact(outputDir: string): { fileName: string; filePath
       .sort((left, right) => right.mtimeMs - left.mtimeMs || right.fileName.localeCompare(left.fileName))[0] ?? null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof ApiError && error.code === "CAPTURE_ARTIFACT_UNSAFE") return null;
     throw error;
   }
 }
@@ -423,10 +456,16 @@ function readCaptureDirectory(outputDir: string, fileSystem: CaptureFileSystem):
 }
 
 function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, depth = 0): Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> {
+  if (depth === 0) {
+    assertSafeCaptureRoot(outputDir, fileSystem);
+  }
   const candidates: Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> = [];
   for (const fileName of readCaptureDirectory(outputDir, fileSystem)) {
     const filePath = path.join(outputDir, fileName);
-    const stat = fileSystem.statSync(filePath);
+    const stat = fileSystem.lstatSync?.(filePath) ?? fileSystem.statSync(filePath);
+    if (stat.isSymbolicLink?.()) {
+      continue;
+    }
     if (stat.isFile() && fileName.toLowerCase().endsWith(".json")) {
       candidates.push({ fileName, filePath, mtimeMs: stat.mtimeMs, size: stat.size });
       continue;
@@ -436,6 +475,24 @@ function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, 
     }
   }
   return candidates;
+}
+
+function assertSafeCaptureRoot(outputDir: string, fileSystem: CaptureFileSystem): void {
+  if (!fileSystem.lstatSync) return;
+  let stat: ReturnType<NonNullable<CaptureFileSystem["lstatSync"]>>;
+  try {
+    stat = fileSystem.lstatSync(outputDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (stat.isSymbolicLink?.() || !stat.isDirectory?.()) {
+    throw new ApiError(
+      "CAPTURE_ARTIFACT_UNSAFE",
+      "采集产物目录不是安全的本地目录。",
+      400
+    );
+  }
 }
 
 function terminateCaptureProcess(job: InternalCaptureJob): void {

@@ -16,6 +16,14 @@ const MAX_SELECTABLE_THUMBNAIL_CANDIDATES = 24;
 const INSIGHT_SEASONS: Season[] = ["spring", "summer", "autumn", "winter"];
 const INSIGHT_FORMALITIES: Formality[] = ["casual", "smart-casual", "formal", "sport"];
 const INSIGHT_BASIC_COLORS = new Set(["black", "white", "gray", "beige", "brown"]);
+const GARMENT_CATEGORY_SET = new Set<Garment["category"]>([
+  "top",
+  "bottom",
+  "dress",
+  "outerwear",
+  "shoes",
+  "accessory"
+]);
 const OUTFIT_OCCASIONS = new Set<OutfitOccasion>([
   "casual",
   "smart-casual",
@@ -809,7 +817,7 @@ function isJsonRecord(value: unknown): value is { [key: string]: JsonValue } {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
+export function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return Object.keys(record).length === WEATHER_SNAPSHOT_FIELDS.size &&
@@ -2107,13 +2115,13 @@ export function updateGarment(db: AppDatabase, id: number, update: GarmentUpdate
     category: update.category ?? current.category,
     color: update.color ?? current.color,
     warmth: update.warmth ?? current.warmth,
-    seasons: JSON.stringify(update.seasons ?? safeJson<string[]>(current.seasons, [])),
-    styles: JSON.stringify(update.styles ?? safeJson<string[]>(current.styles, [])),
+    seasons: JSON.stringify(update.seasons ?? safeStringArrayJson(current.seasons, INSIGHT_SEASONS)),
+    styles: JSON.stringify(update.styles ?? safeStringArrayJson(current.styles)),
     formality: update.formality ?? current.formality,
     size: update.size ?? current.size ?? "",
-    materials: JSON.stringify(update.materials ?? safeJson<string[]>(current.materials || "[]", [])),
-    patterns: JSON.stringify(update.patterns ?? safeJson<string[]>(current.patterns || "[]", [])),
-    tags: JSON.stringify(update.tags ?? safeJson<string[]>(current.tags || "[]", [])),
+    materials: JSON.stringify(update.materials ?? safeStringArrayJson(current.materials || "[]")),
+    patterns: JSON.stringify(update.patterns ?? safeStringArrayJson(current.patterns || "[]")),
+    tags: JSON.stringify(update.tags ?? safeStringArrayJson(current.tags || "[]")),
     imageUrl: update.imageUrl ?? current.image_url ?? "",
     owned: boolToInt(update.owned ?? Boolean(current.owned)),
     confirmed: boolToInt(update.confirmed ?? Boolean(current.confirmed)),
@@ -2857,8 +2865,10 @@ export function getCachedWeather(db: AppDatabase, latitude: number, longitude: n
     | undefined;
   if (!row) return null;
   const fetchedAt = Date.parse(row.fetched_at);
-  if (!Number.isFinite(fetchedAt) || Date.now() - fetchedAt > maxAgeMs) return null;
-  return safeJson<WeatherSnapshot | null>(row.payload, null);
+  const ageMs = Date.now() - fetchedAt;
+  if (!Number.isFinite(fetchedAt) || ageMs < 0 || ageMs > maxAgeMs) return null;
+  const parsed = safeJson<unknown>(row.payload, null);
+  return isWeatherSnapshot(parsed) ? parsed : null;
 }
 
 export function saveWeatherCache(db: AppDatabase, latitude: number, longitude: number, weather: WeatherSnapshot): void {
@@ -2925,13 +2935,13 @@ function rowToGarment(row: GarmentRow): Garment {
     category: row.category,
     color: row.color,
     warmth: row.warmth,
-    seasons: safeJson(row.seasons, []),
-    styles: safeJson(row.styles, []),
+    seasons: safeStringArrayJson(row.seasons, INSIGHT_SEASONS),
+    styles: safeStringArrayJson(row.styles),
     formality: row.formality,
     size: row.size ?? undefined,
-    materials: safeJson(row.materials || "[]", []),
-    patterns: safeJson(row.patterns || "[]", []),
-    tags: safeJson(row.tags || "[]", []),
+    materials: safeStringArrayJson(row.materials || "[]"),
+    patterns: safeStringArrayJson(row.patterns || "[]"),
+    tags: safeStringArrayJson(row.tags || "[]"),
     imageUrl: row.image_url ?? "",
     owned: Boolean(row.owned),
     confirmed: Boolean(row.confirmed),
@@ -2946,7 +2956,7 @@ function rowToGarment(row: GarmentRow): Garment {
     itemUrl: row.item_url ?? undefined,
     detailUrl: row.detail_url ?? undefined,
     cutoutImageUrl: row.cutout_image_url ?? undefined,
-    visionTags: row.vision_tags ? safeJson<VisionTagSuggestion | undefined>(row.vision_tags, undefined) : undefined,
+    visionTags: row.vision_tags ? safeVisionTagSuggestionJson(row.vision_tags) : undefined,
     visionUpdatedAt: row.vision_updated_at ?? undefined
   };
 }
@@ -3395,6 +3405,56 @@ function safeJson<T>(value: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function safeStringArrayJson<T extends string = string>(
+  value: string,
+  allowedValues?: readonly T[]
+): T[] {
+  const parsed = safeJson<unknown>(value, []);
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    return [];
+  }
+  if (
+    allowedValues !== undefined &&
+    !parsed.every((item) => (allowedValues as readonly string[]).includes(item))
+  ) {
+    return [];
+  }
+  return parsed as T[];
+}
+
+function safeVisionTagSuggestionJson(value: string): VisionTagSuggestion | undefined {
+  const parsed = safeJson<unknown>(value, undefined);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.category !== undefined &&
+    (typeof record.category !== "string" ||
+      !GARMENT_CATEGORY_SET.has(record.category as Garment["category"]))
+  ) {
+    return undefined;
+  }
+  if (
+    !Array.isArray(record.styles) ||
+    !record.styles.every((item) => typeof item === "string") ||
+    !Array.isArray(record.patterns) ||
+    !record.patterns.every((item) => typeof item === "string") ||
+    !Array.isArray(record.tags) ||
+    !record.tags.every((item) => typeof item === "string") ||
+    !Array.isArray(record.scores) ||
+    !record.scores.every((score) =>
+      Boolean(score) &&
+      typeof score === "object" &&
+      !Array.isArray(score) &&
+      typeof (score as Record<string, unknown>).label === "string" &&
+      typeof (score as Record<string, unknown>).score === "number" &&
+      Number.isFinite((score as Record<string, unknown>).score)
+    )
+  ) {
+    return undefined;
+  }
+  return parsed as VisionTagSuggestion;
 }
 
 function boolToInt(value: boolean): number {

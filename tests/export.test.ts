@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { archiveGarment, createDatabase, savePersonalProfile, type AppDatabase } from "../server/db";
+import { archiveGarment, savePersonalProfile, type AppDatabase } from "../server/db";
 import {
   OUTFIT_EXPORT_V2_FEATURES,
   buildOutfitExportV2,
@@ -15,6 +15,7 @@ import {
   validateOutfitExport
 } from "../server/services/export";
 import { saveGarmentImageAsset } from "../server/services/garmentAssets";
+import { createDatabase } from "./helpers/testDatabase";
 import {
   applySavedOutfitReplacement,
   archiveSavedOutfit,
@@ -163,6 +164,13 @@ describe("OutfitExportV2", () => {
       recommendationFeedback: [{
         ...m3V2.recommendationFeedback[0],
         reasonCodes: ["invented"]
+      }]
+    })).toThrow(/recommendationFeedback/i);
+    expect(() => validateOutfitExport({
+      ...m3V2,
+      recommendationFeedback: [{
+        ...m3V2.recommendationFeedback[0],
+        wearEventId: 0
       }]
     })).toThrow(/recommendationFeedback/i);
     expect(() => validateOutfitExport({
@@ -928,12 +936,27 @@ describe("OutfitExportV2", () => {
       JSON.stringify([firstGarmentId, thirdGarmentId]),
       "2026-07-11T05:02:00.000Z"
     );
+    const feedbackWearEventId = Number(db.prepare(`
+      INSERT INTO wear_events (
+        worn_at, time_zone, occasion, notes, created_at, updated_at
+      ) VALUES (?, 'UTC', 'casual', '', ?, ?)
+    `).run(
+      "2026-07-11T06:00:00.000Z",
+      "2026-07-11T06:00:00.000Z",
+      "2026-07-11T06:00:00.000Z"
+    ).lastInsertRowid);
+    const insertWearEventItem = db.prepare(`
+      INSERT INTO wear_event_items (wear_event_id, item_id, position)
+      VALUES (?, ?, ?)
+    `);
+    insertWearEventItem.run(feedbackWearEventId, firstGarmentId, 0);
+    insertWearEventItem.run(feedbackWearEventId, thirdGarmentId, 1);
 
     const insertFeedback = db.prepare(`
       INSERT INTO recommendation_feedback (
         candidate_id, verdict, rating, actually_worn, reason_codes_json, comment,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        wear_event_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const laterFeedbackId = Number(insertFeedback.run(
       "candidate-later",
@@ -942,6 +965,7 @@ describe("OutfitExportV2", () => {
       0,
       JSON.stringify(["too-warm", "color"]),
       "太热",
+      null,
       "2026-07-11T07:00:00.000Z",
       "2026-07-11T07:01:00.000Z"
     ).lastInsertRowid);
@@ -949,9 +973,10 @@ describe("OutfitExportV2", () => {
       "candidate-earlier",
       "liked",
       5,
-      1,
+      0,
       "[]",
       "",
+      feedbackWearEventId,
       "2026-07-11T06:00:00.000Z",
       "2026-07-11T06:01:00.000Z"
     ).lastInsertRowid);
@@ -1000,6 +1025,7 @@ describe("OutfitExportV2", () => {
         actuallyWorn: true,
         reasonCodes: [],
         comment: "",
+        wearEventId: feedbackWearEventId,
         createdAt: "2026-07-11T06:00:00.000Z",
         updatedAt: "2026-07-11T06:01:00.000Z"
       },

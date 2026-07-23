@@ -58,6 +58,46 @@ describe("mapOpenMeteoForecast", () => {
     await request;
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the timeout active while the Open-Meteo response body is still streaming", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+          controller.enqueue(new TextEncoder().encode('{"current":'));
+          requestSignal?.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            controller.error(error);
+          }, { once: true });
+        }
+      });
+      return Promise.resolve(new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const weatherRequest = fetchWeather(39.9042, 116.4074, { timeoutMs: 10 });
+    const timeoutAssertion = expect(weatherRequest).rejects.toThrow("Open-Meteo 请求超时");
+    await vi.advanceTimersByTimeAsync(10);
+    try {
+      expect(requestSignal?.aborted).toBe(true);
+      await timeoutAssertion;
+    } finally {
+      if (!requestSignal?.aborted) {
+        const error = new Error("test cleanup");
+        error.name = "AbortError";
+        bodyController?.error(error);
+      }
+      await weatherRequest.catch(() => undefined);
+    }
+  });
 });
 
 describe("daily weather forecasts", () => {

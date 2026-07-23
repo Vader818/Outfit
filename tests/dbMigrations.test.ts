@@ -1,13 +1,10 @@
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createDatabase, legacyBaseline0, migrate } from "../server/db";
+import { legacyBaseline0, migrate } from "../server/db";
 import {
   runMigrations,
   type Migration
 } from "../server/db/migrations";
-
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+import { createDatabase, TestDatabaseSync as DatabaseSync } from "./helpers/testDatabase";
 
 function migration(version: number, name: string, up: Migration["up"]): Migration {
   return { version, name, up };

@@ -83,7 +83,8 @@ const WARMTH_VALUE: Readonly<Record<GarmentWarmth, number>> = {
   warm: 2,
   heavy: 3
 };
-const NEUTRALS = new Set(["black", "white", "gray", "beige", "brown", "blue", "navy", "unknown"]);
+const MISSING_COLORS = new Set(["", "unknown"]);
+const NEUTRALS = new Set(["black", "white", "gray", "beige", "brown", "blue", "navy"]);
 const CLASHING_ACCENTS = new Set([
   "green:red",
   "green:yellow",
@@ -281,6 +282,7 @@ function pairScore(
 function colorPairScore(leftValue: string, rightValue: string): number {
   const left = normalizeSimilarityText(leftValue);
   const right = normalizeSimilarityText(rightValue);
+  if (MISSING_COLORS.has(left) || MISSING_COLORS.has(right)) return 0;
   const leftNeutral = NEUTRALS.has(left);
   const rightNeutral = NEUTRALS.has(right);
   if (leftNeutral && rightNeutral) return 4;

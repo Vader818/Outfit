@@ -1,3 +1,5 @@
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { readLatestTaobaoCapture, type CaptureFileSystem } from "../server/services/taobaoCapture";
@@ -199,5 +201,54 @@ describe("Taobao Selenium capture artifacts", () => {
     expect(() => readLatestTaobaoCapture("captures", fakeFileSystem({
       "huge.json": { text: "{}", mtimeMs: 300, size: 20 * 1024 * 1024 + 1 }
     }))).toThrow(/超过/);
+  });
+
+  it("does not follow a symlinked subdirectory outside the capture root", (context) => {
+    const captureRoot = mkdtempSync(path.join(tmpdir(), "outfit-capture-root-"));
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), "outfit-capture-outside-"));
+    writeFileSync(path.join(captureRoot, "safe.json"), JSON.stringify({ source: "safe" }), "utf8");
+    writeFileSync(path.join(outsideRoot, "secret.json"), JSON.stringify({ source: "outside" }), "utf8");
+    try {
+      symlinkSync(
+        outsideRoot,
+        path.join(captureRoot, "linked"),
+        process.platform === "win32" ? "junction" : "dir"
+      );
+    } catch (error) {
+      if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code || "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+
+    const result = readLatestTaobaoCapture(captureRoot);
+
+    expect(result.fileName).toBe("safe.json");
+    expect(result.payload).toEqual({ source: "safe" });
+  });
+
+  it("rejects a capture root that is itself a symbolic link", (context) => {
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), "outfit-capture-root-target-"));
+    const parent = mkdtempSync(path.join(tmpdir(), "outfit-capture-root-link-"));
+    const linkedRoot = path.join(parent, "captures");
+    writeFileSync(path.join(outsideRoot, "secret.json"), JSON.stringify({ source: "outside" }), "utf8");
+    try {
+      symlinkSync(
+        outsideRoot,
+        linkedRoot,
+        process.platform === "win32" ? "junction" : "dir"
+      );
+    } catch (error) {
+      if (["EPERM", "EACCES", "UNKNOWN"].includes((error as NodeJS.ErrnoException).code || "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+
+    expect(() => readLatestTaobaoCapture(linkedRoot)).toThrowError(
+      expect.objectContaining({ code: "CAPTURE_ARTIFACT_UNSAFE" })
+    );
   });
 });

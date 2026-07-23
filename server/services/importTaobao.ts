@@ -84,8 +84,8 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
   const source = batch.source || "taobao-bookmarklet";
   const pageType = batch.pageType || guessPageType(batch.pageUrl || "");
   const pageUrl = batch.pageUrl || "";
-  const merged = new Map<string, SourceOrderItemDraft>();
-  const standaloneDetails = new Map<string, SourceOrderItemDraft>();
+  const sourceItemGroups = new Map<string, SourceOrderItemDraft[]>();
+  const standaloneDetailGroups = new Map<string, SourceOrderItemDraft[]>();
   const sourceItems: SourceOrderItemDraft[] = [];
   const garmentDrafts: Omit<Garment, "id">[] = [];
   let skippedRefunded = 0;
@@ -95,12 +95,19 @@ export function normalizeTaobaoBatch(payload: unknown): NormalizedTaobaoBatch {
     const sourceItem = normalizeItem(item, source, pageType, pageUrl);
     if (shouldSkipSourceItem(sourceItem)) continue;
     if (isStandaloneDetailSource(sourceItem)) {
-      const previousDetail = standaloneDetails.get(sourceItem.itemId);
-      standaloneDetails.set(sourceItem.itemId, previousDetail ? mergeSourceItems(previousDetail, sourceItem) : sourceItem);
+      appendSourceItemGroup(standaloneDetailGroups, sourceItem.itemId, sourceItem);
       continue;
     }
-    const previous = merged.get(sourceItem.externalKey);
-    merged.set(sourceItem.externalKey, previous ? mergeSourceItems(previous, sourceItem) : sourceItem);
+    appendSourceItemGroup(sourceItemGroups, sourceItem.externalKey, sourceItem);
+  }
+
+  const merged = new Map<string, SourceOrderItemDraft>();
+  for (const [externalKey, items] of sourceItemGroups) {
+    merged.set(externalKey, mergeSourceItemGroup(items));
+  }
+  const standaloneDetails = new Map<string, SourceOrderItemDraft>();
+  for (const [itemId, items] of standaloneDetailGroups) {
+    standaloneDetails.set(itemId, mergeSourceItemGroup(items));
   }
 
   for (const [itemId, detailItem] of standaloneDetails) {
@@ -609,6 +616,31 @@ function computeTaobaoBatchId(source: string, providedCapturedAt: string, pageUr
 
 function compareIdentityText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function appendSourceItemGroup(
+  groups: Map<string, SourceOrderItemDraft[]>,
+  key: string,
+  item: SourceOrderItemDraft
+): void {
+  const items = groups.get(key) ?? [];
+  items.push(item);
+  groups.set(key, items);
+}
+
+function mergeSourceItemGroup(items: readonly SourceOrderItemDraft[]): SourceOrderItemDraft {
+  const ordered = [...items].sort((left, right) =>
+    compareIdentityText(sourceItemMergeKey(left), sourceItemMergeKey(right))
+  );
+  const first = ordered[0];
+  if (!first) {
+    throw new Error("Cannot merge an empty Taobao source item group");
+  }
+  return ordered.slice(1).reduce(mergeSourceItems, first);
+}
+
+function sourceItemMergeKey(item: SourceOrderItemDraft): string {
+  return JSON.stringify(item);
 }
 
 function mergeSourceItems(current: SourceOrderItemDraft, incoming: SourceOrderItemDraft): SourceOrderItemDraft {

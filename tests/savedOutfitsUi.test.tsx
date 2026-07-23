@@ -7,6 +7,7 @@ import { HistoryInsightsView } from "../src/features/insights/HistoryInsightsVie
 import {
   buildOutfitBuilderSubmission,
   findUnavailableOutfitItems,
+  outfitBuilderDraftIdentity,
   OutfitBuilder
 } from "../src/features/outfits/OutfitBuilder";
 import { ReplacementDialog } from "../src/features/outfits/ReplacementDialog";
@@ -21,6 +22,17 @@ import type { Garment, OutfitRecommendation, RecommendationResult, SavedOutfit }
 const CANDIDATE_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("saved outfit recommendation actions", () => {
+  it("搭配编辑器草稿身份只随打开状态和编辑目标变化", () => {
+    const outfit = makeHistoricalOutfit();
+
+    expect(outfitBuilderDraftIdentity(false, outfit)).toBeNull();
+    expect(outfitBuilderDraftIdentity(true, null)).toBe("new");
+    expect(outfitBuilderDraftIdentity(true, outfit)).toBe(`saved:${outfit.id}`);
+    expect(outfitBuilderDraftIdentity(true, { ...outfit })).toBe(`saved:${outfit.id}`);
+    expect(outfitBuilderDraftIdentity(true, { ...outfit, id: outfit.id + 1 }))
+      .toBe(`saved:${outfit.id + 1}`);
+  });
+
   it("renders an accessible save action and forwards the exact candidate", () => {
     const outfit = makeOutfit();
     const onSaveOutfit = vi.fn();

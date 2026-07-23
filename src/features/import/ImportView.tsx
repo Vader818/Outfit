@@ -110,13 +110,13 @@ export function ImportView(props: ImportViewProps) {
           <Button
             variant={mode === "import" ? "primary" : "ghost"}
             aria-pressed={mode === "import"}
-            disabled={purchaseInteractionBusy}
+            disabled={props.busy || purchaseInteractionBusy}
             onClick={() => props.onModeChange?.("import")}
           >导入衣橱</Button>
           <Button
             variant={mode === "purchase-check" ? "primary" : "ghost"}
             aria-pressed={mode === "purchase-check"}
-            disabled={purchaseInteractionBusy}
+            disabled={props.busy || purchaseInteractionBusy}
             onClick={() => props.onModeChange?.("purchase-check")}
           >购买前检查</Button>
         </div>
@@ -137,7 +137,7 @@ export function ImportView(props: ImportViewProps) {
             <li>返回这里读取产物并检查候选。</li>
           </ol>
           <Button
-            disabled={props.busyAction === "capture-orders"}
+            disabled={props.busy}
             onClick={props.onStartOrdersCapture}
             variant="primary"
           >
@@ -190,7 +190,7 @@ export function ImportView(props: ImportViewProps) {
             </div>
           </fieldset>
           <Button
-            disabled={props.busyAction === "capture-item" || !props.captureUrl.trim()}
+            disabled={props.busy || !props.captureUrl.trim()}
             onClick={props.onStartItemCapture}
             variant="primary"
           >
@@ -223,12 +223,15 @@ export function ImportView(props: ImportViewProps) {
             <p>先读取最近一次采集产物，再预览候选。只有点击导入后才会写入本地衣橱。</p>
           </div>
           <div className="import-review-actions">
-            <Button disabled={props.busyAction === "read-capture"} onClick={props.onReadLatestCapture}>
+            <Button
+              disabled={props.busy && props.busyAction !== "preview-import"}
+              onClick={props.onReadLatestCapture}
+            >
               <Database aria-hidden="true" size={18} />
               {props.busyAction === "read-capture" ? "读取中" : "读取产物"}
             </Button>
             <Button
-              disabled={props.busyAction === "preview-import" || !props.importText.trim() || !props.onPreviewImport}
+              disabled={props.busy || !props.importText.trim() || !props.onPreviewImport}
               onClick={props.onPreviewImport}
             >
               <Sparkles aria-hidden="true" size={18} />
@@ -236,7 +239,7 @@ export function ImportView(props: ImportViewProps) {
             </Button>
             {mode === "import" ? (
               <Button
-                disabled={props.busyAction === "import" || !props.importText.trim() || !props.importPreview || !hasIncludedDecision}
+                disabled={props.busy || !props.importText.trim() || !props.importPreview || !hasIncludedDecision}
                 onClick={props.onImport}
                 variant="primary"
               >
@@ -245,7 +248,7 @@ export function ImportView(props: ImportViewProps) {
               </Button>
             ) : (
               <Button
-                disabled={purchaseInteractionBusy || !props.importText.trim() || !props.onPurchaseCheck || Boolean(props.importPreview && !purchaseCandidates.length)}
+                disabled={props.busy || purchaseInteractionBusy || !props.importText.trim() || !props.onPurchaseCheck || Boolean(props.importPreview && !purchaseCandidates.length)}
                 onClick={props.onPurchaseCheck}
                 variant="primary"
               >
@@ -285,7 +288,7 @@ export function ImportView(props: ImportViewProps) {
               <textarea
                 id="import-json"
                 className="import-box"
-                disabled={purchaseInteractionBusy}
+                disabled={purchaseInteractionBusy || props.busyAction === "import"}
                 value={props.importText}
                 onChange={(event) => props.onImportText(event.target.value)}
                 placeholder={'{"source":"taobao-bookmarklet","items":[]}'}
@@ -342,7 +345,7 @@ export function ImportView(props: ImportViewProps) {
             <ImportReviewTable
               preview={props.importPreview}
               decisions={importDecisions}
-              disabled={props.busyAction === "import"}
+              disabled={props.busy}
               onDecision={(sourceItemKey, decision) => props.onImportDecision?.(sourceItemKey, decision)}
             />
           ) : (
@@ -363,7 +366,7 @@ export function ImportView(props: ImportViewProps) {
               <select
                 id="purchase-check-candidate"
                 className="ui-select"
-                disabled={purchaseInteractionBusy}
+                disabled={props.busy || purchaseInteractionBusy}
                 value={props.purchaseCheckSourceItemKey ?? purchaseCandidates[0]?.sourceItemKey ?? ""}
                 onChange={(event) => props.onPurchaseCheckSourceItemKey?.(event.target.value)}
               >

@@ -12,8 +12,10 @@ import type {
   WeatherSnapshot
 } from "../../src/shared/types";
 import type { AppDatabase } from "../db";
-import { ApiError, ValidationError } from "../validation";
+import { ApiError, FEEDBACK_REASONS, ValidationError } from "../validation";
 import { insertWearEvent } from "./wearEvents";
+
+const FEEDBACK_REASON_SET = new Set<string>(FEEDBACK_REASONS);
 
 interface RecommendationFeedbackServiceOptions {
   now?: () => Date;
@@ -422,7 +424,13 @@ function parseReasonCodes(row: FeedbackRow): FeedbackReason[] {
   } catch {
     throw new ApiError("CORRUPT_FEEDBACK", `反馈 ${row.id} 的 reason_codes_json 损坏`, 500);
   }
-  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((value) =>
+      typeof value === "string" && FEEDBACK_REASON_SET.has(value)
+    ) ||
+    new Set(parsed).size !== parsed.length
+  ) {
     throw new ApiError("CORRUPT_FEEDBACK", `反馈 ${row.id} 的 reason_codes_json 无效`, 500);
   }
   return parsed as FeedbackReason[];

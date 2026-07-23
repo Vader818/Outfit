@@ -397,7 +397,7 @@ export function validateRecommendationFeedbackInput(value: unknown): Recommendat
     input.rating !== undefined ||
     input.actuallyWorn === true ||
     input.reasonCodes.length > 0 ||
-    Boolean(input.comment) ||
+    input.comment !== undefined ||
     input.woreInsteadOutfitId !== undefined;
   if (!hasMeaningfulSignal) {
     throw new ValidationError("推荐反馈至少需要一个有效反馈字段");
@@ -572,7 +572,7 @@ function isJsonValue(value: unknown): value is JsonValue {
 function validateWeather(value: unknown): WeatherSnapshot {
   const record = assertRecord(value, "weather 必须是天气对象");
   return {
-    date: stringValue(record.date, "weather.date"),
+    date: isoDateValue(record.date, "weather.date"),
     temperature: numberValue(record.temperature, "weather.temperature"),
     apparentTemperature: numberValue(record.apparentTemperature, "weather.apparentTemperature"),
     precipitationProbability: numberValue(record.precipitationProbability, "weather.precipitationProbability"),
@@ -742,11 +742,10 @@ function stringValue(value: unknown, name: string): string {
 }
 
 function numberValue(value: unknown, name: string): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new ValidationError(`${name} 必须是数字`);
   }
-  return parsed;
+  return value;
 }
 
 function booleanValue(value: unknown, name: string): boolean {

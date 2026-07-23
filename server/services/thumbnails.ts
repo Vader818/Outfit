@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import sharp from "sharp";
 import type { GarmentCategory } from "../../src/shared/types";
 
 export interface ThumbnailCandidateInput {
@@ -78,6 +79,7 @@ const DEFAULT_MAX_DOWNLOADS_PER_GARMENT = 4;
 const DEFAULT_DOWNLOAD_DELAY_MS = 900;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024;
+export const MAX_THUMBNAIL_IMAGE_PIXELS = 40_000_000;
 const DEFAULT_ALLOWED_IMAGE_HOST_SUFFIXES = [".alicdn.com", ".taobaocdn.com"];
 const MIN_IMAGE_SIDE = 180;
 
@@ -223,36 +225,39 @@ async function tryDownloadCandidate(options: {
     });
     if (!response) return null;
     if (!response.ok) {
+      await cancelResponseBody(response);
       recordDownloadFailure(options.input, options.candidate.url, "http_error", String(response.status));
       return null;
     }
     const contentType = response.headers.get("content-type") || "";
     if (contentType && !/^image\//i.test(contentType)) {
+      await cancelResponseBody(response);
       recordDownloadFailure(options.input, options.candidate.url, "content_type", contentType);
       return null;
     }
 
     const contentLength = parseContentLength(response.headers.get("content-length"));
     if (contentLength !== null && contentLength > maxBytes) {
+      await cancelResponseBody(response);
       recordDownloadFailure(options.input, options.candidate.url, "content_length_exceeded", String(contentLength));
       return null;
     }
 
     const bytes = await readResponseBody(response, maxBytes);
-    const imageInfo = readImageInfo(bytes);
-    if (!imageInfo || !isCategoryCompatibleImage(imageInfo, options.input.category)) {
+    const sanitized = await sanitizeDownloadedThumbnail(bytes, options.input.category, maxBytes);
+    if (!sanitized) {
       recordDownloadFailure(options.input, options.candidate.url, "invalid_image");
       return null;
     }
 
-    const fileName = localThumbnailFileName(options.input, imageInfo);
+    const fileName = localThumbnailFileName(options.input, sanitized.imageInfo);
     const filePath = join(options.outputDir, fileName);
-    await writeFile(filePath, bytes);
+    await writeFile(filePath, sanitized.bytes);
     return {
       sourceUrl: options.candidate.url,
       localUrl: `${options.publicBasePath.replace(/\/$/, "")}/${fileName}`,
       filePath,
-      imageInfo
+      imageInfo: sanitized.imageInfo
     };
   } catch (error) {
     if (error instanceof ThumbnailDownloadError) {
@@ -417,6 +422,60 @@ async function readResponseBody(response: Response, maxBytes: number): Promise<U
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response may already be closed by the fetch implementation.
+  }
+}
+
+async function sanitizeDownloadedThumbnail(
+  bytes: Uint8Array,
+  category: GarmentCategory,
+  maxBytes: number
+): Promise<{ bytes: Buffer; imageInfo: ImageInfo } | null> {
+  try {
+    const input = Buffer.from(bytes);
+    const metadata = await sharp(input, {
+      failOn: "error",
+      limitInputPixels: MAX_THUMBNAIL_IMAGE_PIXELS,
+      sequentialRead: true
+    }).metadata();
+    if (
+      !metadata.format ||
+      !["jpeg", "png", "webp"].includes(metadata.format) ||
+      !metadata.width ||
+      !metadata.height ||
+      (metadata.pages ?? 1) !== 1
+    ) {
+      return null;
+    }
+
+    const { data, info } = await sharp(input, {
+      failOn: "error",
+      limitInputPixels: MAX_THUMBNAIL_IMAGE_PIXELS,
+      sequentialRead: true
+    })
+      .rotate()
+      .webp({ quality: 88, effort: 4, smartSubsample: true })
+      .toBuffer({ resolveWithObject: true });
+    const imageInfo: ImageInfo = {
+      format: "webp",
+      width: info.width,
+      height: info.height
+    };
+    if (!isCategoryCompatibleImage(imageInfo, category)) return null;
+    if (data.byteLength > maxBytes) {
+      throw new ThumbnailDownloadError("size_limit_exceeded");
+    }
+    return { bytes: data, imageInfo };
+  } catch (error) {
+    if (error instanceof ThumbnailDownloadError) throw error;
+    return null;
+  }
 }
 
 class ThumbnailDownloadError extends Error {

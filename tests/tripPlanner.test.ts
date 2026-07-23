@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDatabase } from "../server/db";
 import { currentSchemaVersion } from "../server/db/migrations";
 import {
   archiveTrip,
@@ -16,6 +15,8 @@ import {
   updateTrip,
   updateTripPackingItem
 } from "../server/services/tripPlanner";
+import { deleteWearEvent, updateWearEvent } from "../server/services/wearEvents";
+import { createDatabase } from "./helpers/testDatabase";
 import type { TripCreateInput, WeatherSnapshot } from "../src/shared/types";
 
 const tripInput = (overrides: Partial<TripCreateInput> = {}): TripCreateInput => ({
@@ -594,6 +595,83 @@ describe("M6 trip weather, packing, and actual wear", () => {
       SELECT actual_wear_event_id FROM trip_outfit_selections WHERE id = ?
     `).get(selectionId)).toEqual({ actual_wear_event_id: null });
     expect(getTrip(db, trip.id).status).toBe("planning");
+  });
+
+  it("does not let diary edits change the garments bound to a completed trip selection", () => {
+    const db = createDatabase(":memory:");
+    const plannedGarmentId = insertGarment(db, "旅行白衬衫", "top");
+    const unrelatedGarmentId = insertGarment(db, "旅行外针织衫", "top");
+    const trip = createTrip(db, tripInput({
+      endDate: "2026-07-20",
+      laundryDay: undefined,
+      days: [tripInput().days[0]]
+    }));
+    const selectionId = insertSelection(
+      db,
+      trip.days[0].id,
+      trip.days[0].activities[0].id,
+      plannedGarmentId
+    );
+    const completed = completeTrip(db, trip.id, {
+      confirmations: [{
+        selectionId,
+        confirmed: true,
+        wornAt: "2026-07-20T09:00:00+08:00",
+        timeZone: "Asia/Shanghai",
+        occasion: "formal",
+        itemIds: [plannedGarmentId]
+      }]
+    });
+    const wearEventId = completed.wearEvents[0].id;
+
+    expect(() => updateWearEvent(db, wearEventId, {
+      itemIds: [unrelatedGarmentId]
+    })).toThrow(/旅行.*衣物|衣物.*旅行|itemIds/);
+    expect(db.prepare(`
+      SELECT item_id FROM wear_event_items WHERE wear_event_id = ? ORDER BY position
+    `).all(wearEventId)).toEqual([{ item_id: plannedGarmentId }]);
+    expect(getTrip(db, trip.id)).toMatchObject({
+      status: "completed",
+      selections: [expect.objectContaining({ actualWearEventId: wearEventId })]
+    });
+  });
+
+  it("reopens a completed trip when its diary event is deleted so it can be confirmed again", () => {
+    const db = createDatabase(":memory:");
+    const garmentId = insertGarment(db, "可撤销旅行衬衫", "top");
+    const trip = createTrip(db, tripInput({
+      endDate: "2026-07-20",
+      laundryDay: undefined,
+      days: [tripInput().days[0]]
+    }));
+    const selectionId = insertSelection(
+      db,
+      trip.days[0].id,
+      trip.days[0].activities[0].id,
+      garmentId
+    );
+    const confirmation = {
+      confirmations: [{
+        selectionId,
+        confirmed: true as const,
+        wornAt: "2026-07-20T09:00:00+08:00",
+        timeZone: "Asia/Shanghai",
+        occasion: "formal" as const,
+        itemIds: [garmentId]
+      }]
+    };
+    const completed = completeTrip(db, trip.id, confirmation);
+    const originalWearEventId = completed.wearEvents[0].id;
+
+    deleteWearEvent(db, originalWearEventId);
+    const reopened = getTrip(db, trip.id);
+    expect(reopened.status).toBe("ready");
+    expect(reopened.selections[0].actualWearEventId).toBeUndefined();
+
+    const reconfirmed = completeTrip(db, trip.id, confirmation);
+    expect(reconfirmed.trip.status).toBe("completed");
+    expect(reconfirmed.trip.selections[0].actualWearEventId).toBe(reconfirmed.wearEvents[0].id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
   });
 });
 

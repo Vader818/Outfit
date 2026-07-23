@@ -21,7 +21,7 @@ import {
   COLOR_LABELS,
   GARMENT_AVAILABILITY_LABELS,
   SEASON_LABELS,
-  type BusyAction,
+  type GarmentVisionAction,
   WARMTH_LABELS
 } from "../../shared/presentation";
 import type { Garment, GarmentAvailabilityStatus } from "../../shared/types";
@@ -32,9 +32,8 @@ export interface GarmentItemProps {
   item: Garment;
   selected: boolean;
   presentation: "review" | "card";
-  busyAction?: BusyAction | null;
   visionEnabled?: boolean;
-  visionBusyId?: number | null;
+  visionBusyAction?: GarmentVisionAction | null;
   allowRemoteTaobaoImages?: boolean;
   onSelect: (selected: boolean) => void;
   onUpdate: (id: number, update: Partial<Garment>) => void;
@@ -43,7 +42,7 @@ export interface GarmentItemProps {
   onCutoutGarment?: (id: number) => void;
   onAnalyzeGarmentVision?: (id: number) => void;
   onUseGarmentAsCore?: (garment: Garment) => void;
-  availabilityBusyGarmentId?: number | null;
+  availabilityBusy?: boolean;
   onAvailabilityChange?: (id: number, status: GarmentAvailabilityStatus) => void;
 }
 
@@ -51,9 +50,8 @@ export function GarmentItem({
   item,
   selected,
   presentation,
-  busyAction,
   visionEnabled,
-  visionBusyId,
+  visionBusyAction,
   allowRemoteTaobaoImages,
   onSelect,
   onUpdate,
@@ -62,15 +60,14 @@ export function GarmentItem({
   onCutoutGarment,
   onAnalyzeGarmentVision,
   onUseGarmentAsCore,
-  availabilityBusyGarmentId,
+  availabilityBusy = false,
   onAvailabilityChange
 }: GarmentItemProps) {
   const meta = garmentMeta(item);
   const detailUrl = item.detailUrl || item.itemUrl;
-  const visionBusy = visionBusyId === item.id;
+  const visionBusy = Boolean(visionBusyAction);
   const status = garmentStatus(item);
   const availabilityStatus = garmentAvailabilityStatus(item);
-  const availabilityBusy = availabilityBusyGarmentId === item.id;
   const available = isGarmentAvailable(item);
 
   return (
@@ -215,7 +212,7 @@ export function GarmentItem({
                 onClick={() => onCutoutGarment(item.id)}
               >
                 <Scissors aria-hidden="true" size={16} />
-                {visionBusy && busyAction === "cutout-garment" ? "处理中" : "去背景"}
+                {visionBusyAction === "cutout-garment" ? "处理中" : "去背景"}
               </Button>
             ) : null}
             {onAnalyzeGarmentVision ? (
@@ -227,7 +224,7 @@ export function GarmentItem({
                 onClick={() => onAnalyzeGarmentVision(item.id)}
               >
                 <Tags aria-hidden="true" size={16} />
-                {visionBusy && busyAction === "vision-tags" ? "分析中" : "分析图片"}
+                {visionBusyAction === "vision-tags" ? "分析中" : "分析图片"}
               </Button>
             ) : null}
             <Button variant="secondary" size="sm" onClick={() => confirmGarmentArchive(item, onDelete)}>

@@ -1,11 +1,12 @@
 import type { Server } from "node:http";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import type { AppDatabase } from "../server/db";
 import { registerDecisionSupportRoutes } from "../server/routes/decisionSupport";
 import { createApiApp } from "../server/routes";
 import { previewTaobaoImport } from "../server/services/importTaobao";
 import type { TaobaoCapturedBatch } from "../src/shared/types";
+import { createDatabase } from "./helpers/testDatabase";
 
 const servers: Server[] = [];
 

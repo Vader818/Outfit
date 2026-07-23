@@ -1,11 +1,8 @@
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { archiveGarment, commitTaobaoImport, createDatabase, createManualGarment, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
+import { archiveGarment, commitTaobaoImport, createManualGarment, importTaobaoBatchIntoDb, legacyBaseline0, listGarments, migrate, previewTaobaoImportForDb, updateGarment } from "../server/db";
 import { computeLegacyTaobaoSourceItemKey, computeTaobaoSourceItemKey } from "../server/services/importTaobao";
 import { ValidationError } from "../server/validation";
-
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+import { createDatabase, TestDatabaseSync as DatabaseSync } from "./helpers/testDatabase";
 
 const payload = {
   source: "taobao-bookmarklet",

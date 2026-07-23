@@ -74,23 +74,23 @@ async function requestOpenMeteo(
 ): Promise<OpenMeteoPayload> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_WEATHER_TIMEOUT_MS);
-  let response: Response;
   try {
-    response = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`, {
+    const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`, {
       signal: controller.signal
     });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Open-Meteo 请求失败: ${response.status}`);
+    }
+    return (await response.json()) as OpenMeteoPayload;
   } catch (error) {
-    if (isAbortError(error)) {
+    if (controller.signal.aborted || isAbortError(error)) {
       throw new Error("Open-Meteo 请求超时");
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
   }
-  if (!response.ok) {
-    throw new Error(`Open-Meteo 请求失败: ${response.status}`);
-  }
-  return (await response.json()) as OpenMeteoPayload;
 }
 
 export function buildEstimatedWeather(latitude: number, longitude: number, date = new Date()): WeatherSnapshot {

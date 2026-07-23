@@ -145,8 +145,14 @@
 }
 
 .recommendation-empty-stage .ui-empty {
+  grid-template-columns: auto minmax(0, 1fr);
   border: 0;
   background: transparent;
+}
+
+.recommendation-empty-stage .ui-empty__action {
+  grid-column: 2;
+  justify-self: start;
 }
 
 .outfit-stage {

@@ -124,7 +124,12 @@ function calculateGarmentSimilarityRaw(
   const weighted: Array<{ weight: number; score: number; reason: string }> = [];
   const subjectColor = normalizeSimilarityText(subject.color);
   const comparedColor = normalizeSimilarityText(compared.color);
-  if (subjectColor && comparedColor) {
+  if (
+    subjectColor &&
+    comparedColor &&
+    subjectColor !== "unknown" &&
+    comparedColor !== "unknown"
+  ) {
     const score = subjectColor === comparedColor ? 1 : 0;
     weighted.push({
       weight: COMPONENT_WEIGHTS.color,

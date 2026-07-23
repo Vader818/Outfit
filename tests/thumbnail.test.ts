@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import {
   downloadGarmentThumbnail,
@@ -38,17 +39,69 @@ describe("thumbnail image probing and download", () => {
     });
   });
 
+  it("rejects a truncated image even when its header reports plausible dimensions", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const failures: string[] = [];
+    const fetchMock = vi.fn(async () => new Response(truncatedPngBody(900, 700), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 41,
+      itemId: "truncated-image",
+      category: "top",
+      title: "白色衬衫",
+      candidates: ["https://img.alicdn.com/imgextra/i1/123/O1CN01truncated.jpg"],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      delayMs: 0,
+      fetcher: fetchMock,
+      onFailure: (event) => failures.push(event.reason)
+    });
+
+    expect(result).toBeNull();
+    expect(failures).toContain("invalid_image");
+    expect(existsSync(join(outputDir, "garment-41-truncated-image.webp"))).toBe(false);
+  });
+
+  it("rejects a deceptive image header that exceeds the decoded pixel ceiling", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
+    const failures: string[] = [];
+    const fetchMock = vi.fn(async () => new Response(truncatedPngBody(100_000, 100_000), {
+      status: 200,
+      headers: { "content-type": "image/png" }
+    }));
+
+    const result = await downloadGarmentThumbnail({
+      garmentId: 40,
+      itemId: "pixel-bomb",
+      category: "top",
+      title: "白色衬衫",
+      candidates: ["https://img.alicdn.com/imgextra/i1/123/O1CN01pixel-bomb.jpg"],
+      outputDir,
+      publicBasePath: "/api/garment-thumbnails",
+      delayMs: 0,
+      fetcher: fetchMock,
+      onFailure: (event) => failures.push(event.reason)
+    });
+
+    expect(result).toBeNull();
+    expect(failures).toContain("invalid_image");
+    expect(existsSync(join(outputDir, "garment-40-pixel-bomb.webp"))).toBe(false);
+  });
+
   it("downloads only a small number of candidates and stores the first valid garment image", async () => {
     const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const value = String(url);
       if (value.includes("tiny-banner")) {
-        return new Response(pngBody(91, 14), {
+        return new Response(await pngBody(91, 14), {
           status: 200,
           headers: { "content-type": "image/png" }
         });
       }
-      return new Response(pngBody(900, 700), {
+      return new Response(await pngBody(900, 700), {
         status: 200,
         headers: { "content-type": "image/png" }
       });
@@ -75,14 +128,15 @@ describe("thumbnail image probing and download", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       sourceUrl: "https://gw.alicdn.com/bao/uploaded/i3/34567/O1CN01shoe.jpg",
-      localUrl: "/api/garment-thumbnails/garment-42-sample-item-1.png"
+      localUrl: "/api/garment-thumbnails/garment-42-sample-item-1.webp",
+      imageInfo: { format: "webp", width: 900, height: 700 }
     });
-    expect(existsSync(join(outputDir, "garment-42-sample-item-1.png"))).toBe(true);
+    expect(existsSync(join(outputDir, "garment-42-sample-item-1.webp"))).toBe(true);
   });
 
   it("rejects non-Taobao and private thumbnail URLs before fetching", async () => {
     const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
-    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+    const fetchMock = vi.fn(async () => new Response(await pngBody(900, 700), {
       status: 200,
       headers: { "content-type": "image/png" }
     }));
@@ -139,12 +193,12 @@ describe("thumbnail image probing and download", () => {
       reason: "blocked_address",
       detail: "http://127.0.0.1/private.png"
     }));
-    expect(existsSync(join(outputDir, "garment-17-unknown.png"))).toBe(false);
+    expect(existsSync(join(outputDir, "garment-17-unknown.webp"))).toBe(false);
   });
 
   it("rejects thumbnail downloads with an oversized content length", async () => {
     const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
-    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+    const fetchMock = vi.fn(async () => new Response(await pngBody(900, 700), {
       status: 200,
       headers: {
         "content-type": "image/png",
@@ -165,12 +219,12 @@ describe("thumbnail image probing and download", () => {
 
     expect(result).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(existsSync(join(outputDir, "garment-8-unknown.png"))).toBe(false);
+    expect(existsSync(join(outputDir, "garment-8-unknown.webp"))).toBe(false);
   });
 
   it("aborts thumbnail streams that exceed the configured byte limit", async () => {
     const outputDir = await mkdtemp(join(tmpdir(), "outfit-thumb-test-"));
-    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+    const fetchMock = vi.fn(async () => new Response(await pngBody(900, 700), {
       status: 200,
       headers: { "content-type": "image/png" }
     }));
@@ -192,7 +246,7 @@ describe("thumbnail image probing and download", () => {
     expect(result).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(failures).toContain("size_limit_exceeded");
-    expect(existsSync(join(outputDir, "garment-9-unknown.png"))).toBe(false);
+    expect(existsSync(join(outputDir, "garment-9-unknown.webp"))).toBe(false);
   });
 });
 
@@ -208,7 +262,19 @@ function makePng(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-function pngBody(width: number, height: number): ArrayBuffer {
+function truncatedPngBody(width: number, height: number): ArrayBuffer {
   const bytes = makePng(width, height);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function pngBody(width: number, height: number): Promise<ArrayBuffer> {
+  const bytes = await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 240, g: 240, b: 240 }
+    }
+  }).png().toBuffer();
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

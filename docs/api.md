@@ -351,7 +351,7 @@ http://127.0.0.1:8788
 }
 ```
 
-`verdict` 为 `fills-gap`、`likely-duplicate`、`mixed` 或 `insufficient-data`。`possibleDuplicates` 只包含同类别且相似度达到 75% 的 active 衣物；`worksWith` 只返回仍能通过实时衣物引用验证的 active 保存搭配。覆盖变化按类别、季节和正式程度的本地目标数量计算，只提供决策证据，不替用户决定是否购买。
+`verdict` 为 `fills-gap`、`likely-duplicate`、`mixed` 或 `insufficient-data`。`possibleDuplicates` 只包含同类别且相似度达到 75% 的 active 衣物；`worksWith` 只返回仍能通过实时衣物引用验证的 active 保存搭配。分类器占位值 `color=unknown` 与空颜色都表示缺失证据，在搭配兼容评分中既不获得中性色奖励，也不制造冲突。覆盖变化按类别、季节和正式程度的本地目标数量计算，只提供决策证据，不替用户决定是否购买。
 
 该接口只读取衣橱、保存搭配和相似度反馈：不会写 `source_order_items`、`garments`、反馈或缓存，不会提交导入，不调用云端 AI，也不自动下载模型。当前淘宝候选没有视觉向量时，视觉权重不进入分母，结果按其余结构字段重新归一化。若要保留判断，必须显式调用 `POST /api/similarity-feedback`。
 
@@ -490,7 +490,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## GET /api/capture/taobao-latest
 
-读取 `output/taobao-captures` 下最新的 `.json` 采集产物。该接口用于兼容旧流程；应用内任务式采集优先使用 `/api/capture/jobs/:id/artifact`。
+读取 `output/taobao-captures` 下最新的 `.json` 采集产物。该接口用于兼容旧流程；应用内任务式采集优先使用 `/api/capture/jobs/:id/artifact`。采集根目录必须是普通本地目录；扫描不会跟随文件、目录符号链接或 Windows junction，避免读取根目录外的 JSON。单个产物仍受 20 MiB 上限保护。
 
 查询参数：
 
@@ -524,7 +524,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## GET /api/garments
 
-默认返回 active 衣橱条目：`owned=true AND archivedAt` 不存在。`excluded` 只控制推荐资格，不会让衣物从 active 列表消失。传 `?archived=1` 时只返回已归档衣物，供恢复操作使用。
+默认返回 active 衣橱条目：`owned=true AND archivedAt` 不存在。`excluded` 只控制推荐资格，不会让衣物从 active 列表消失。传 `?archived=1` 时只返回已归档衣物，供恢复操作使用。`seasons`、`styles`、`materials`、`patterns`、`tags` 始终返回字符串数组；历史库中语法合法但形状错误的 JSON 不会作为对象、数字数组或 `null` 泄漏到 DTO，而是保守返回空数组。损坏或不完整的 `visionTags` 缓存按未生成处理，不会把错误对象传给编辑器。
 
 响应：`Garment[]`
 
@@ -603,7 +603,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 为已有衣物上传本地照片。请求体是原始图片字节，不是 JSON 或 multipart；`Content-Type` 只允许 `image/jpeg`、`image/png`、`image/webp`，上限 5 MB。
 
-浏览器 canvas 预处理只负责预览和减小体积，不是安全边界。服务端仍会先限制字节数，再用 `sharp` 的像素上限解码、自动旋转并重新编码为无 EXIF/ICC/XMP 的 WebP。文件使用服务端 UUID 名称原子落盘到 `data/garment-assets`；替换图片只把旧资产置为 inactive，不删除旧文件。
+浏览器 canvas 预处理只负责预览和减小体积，不是安全边界。服务端仍会先限制字节数，再用 `sharp` 的像素上限解码、自动旋转并重新编码为无 EXIF/ICC/XMP 的 WebP。文件使用服务端 UUID 名称原子落盘到 `data/garment-assets`；资产根本身必须是普通目录，不能是符号链接或 Windows junction。替换图片只把旧资产置为 inactive，不删除旧文件。
 
 成功响应是更新后的 `Garment`，其 `imageUrl` 形如：
 
@@ -619,7 +619,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## GET /api/garment-assets/:id/content
 
-认证后按正整数 asset ID 读取当前 active 图片；不接收路径。响应为 `image/webp`，并设置 `Cache-Control: private, max-age=0, must-revalidate`、基于内容 SHA-256 的 `ETag` 和 `X-Content-Type-Options: nosniff`。不存在、inactive、损坏、越界或符号链接资产统一返回不泄露物理路径的 404。
+认证后按正整数 asset ID 读取当前 active 图片；不接收路径。响应为 `image/webp`，并设置 `Cache-Control: private, max-age=0, must-revalidate`、基于内容 SHA-256 的 `ETag` 和 `X-Content-Type-Options: nosniff`。不存在、inactive、损坏、越界、符号链接资产，或资产根本身为符号链接/junction 时，统一返回不泄露物理路径的 404。
 
 ## POST /api/garments/:id/archive
 
@@ -637,7 +637,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 { "status": "laundry" }
 ```
 
-状态枚举为 `available`、`laundry`、`repair`、`loaned`、`packed`，分别表示可用、待洗、维修中、借出和已装箱。成功时在同一事务中更新 `garments.availability_status` 并追加状态事件：
+状态枚举为 `available`、`laundry`、`repair`、`loaned`、`packed`，分别表示可用、待洗、维修中、借出和已装箱。服务端先取得 SQLite 写锁，再读取当前状态并判断是否幂等；需要变化时在同一事务中更新 `garments.availability_status` 并追加状态事件：
 
 ```json
 {
@@ -660,7 +660,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## GET /api/garments/:id/similar
 
-查找与指定衣物同类别且结构相似度达到 75% 的 active 衣物，按相似度降序、衣物 ID 升序返回 `GarmentSimilarityMatch[]`。不同类别永不返回；颜色、风格、材质、图案、品牌/规范化名称和可选本地视觉向量的权重分别为 25、20、15、15、15、10，任一字段缺失时只按可用证据重新归一化。
+查找与指定衣物同类别且结构相似度达到 75% 的 active 衣物，按相似度降序、衣物 ID 升序返回 `GarmentSimilarityMatch[]`。不同类别永不返回；颜色、风格、材质、图案、品牌/规范化名称和可选本地视觉向量的权重分别为 25、20、15、15、15、10，任一字段缺失时只按可用证据重新归一化。分类器的 `color=unknown` 表示颜色证据缺失，不会被当作“两件衣物颜色一致”计分。
 
 ```json
 [
@@ -762,7 +762,7 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/garments/thumbnails/refresh
 
-从 `source_order_items` 和 `output/taobao-captures` 中收集同一 `itemId` 的图片候选，按 URL 信号和轻量图片头校验选择商品图，低频下载到 `output/garment-thumbnails`，并把成功项的 `garments.image_url` 更新为 `/api/garment-thumbnails/<file>`。
+从 `source_order_items` 和 `output/taobao-captures` 中收集同一 `itemId` 的图片候选，按 URL 信号排序后低频下载。每个响应都受域名、逐跳重定向、超时、5 MB 字节数和 4000 万像素限制，并由 Sharp 完整解码、自动旋转、去除元数据后统一转为 WebP，才写入 `output/garment-thumbnails`；成功项的 `garments.image_url` 更新为 `/api/garment-thumbnails/<file>.webp`。
 
 请求体可省略。可选字段：
 
@@ -911,13 +911,13 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## POST /api/garments/:id/cutout
 
-对衣物本地缩略图执行本地去背景，并把透明背景 PNG 路径写入 `garments.cutout_image_url`。只接受 `/api/garment-thumbnails/...` 本地缩略图作为输入；没有缩略图时返回 `VISION_INPUT_NOT_FOUND`；未下载去背景模型时返回 HTTP 409，错误码 `VISION_MODEL_MISSING`。实际执行会把 `OUTFIT_REMBG_PROVIDER` 传给 `scripts/vision_rembg.py --provider`，默认 `cuda`。
+对衣物本地缩略图执行本地去背景，并把透明背景 PNG 路径写入 `garments.cutout_image_url`。只接受 `/api/garment-thumbnails/...` 本地缩略图作为输入；没有缩略图时返回 `VISION_INPUT_NOT_FOUND`；未下载去背景模型时返回 HTTP 409，错误码 `VISION_MODEL_MISSING`。实际执行会把 `OUTFIT_REMBG_PROVIDER` 传给 `scripts/vision_rembg.py --provider`，默认 `cuda`。每次输出使用独立 UUID 文件名；服务端在写数据库前要求结果为非符号链接普通文件、完整单页 PNG、总像素不超过 4000 万，并重新编码为规范 PNG。默认本地进程超时为 120 秒，stdout 与 stderr 合计上限为 1 MiB；超时或输出超限分别返回 `VISION_PROCESS_TIMEOUT`、`VISION_PROCESS_OUTPUT_LIMIT` 并终止进程树。
 
 响应：更新后的 `Garment`。
 
 ## POST /api/garments/:id/vision-tags
 
-使用本地 CLIP 模型生成分类、风格、图案和标签建议，并写入 `garments.vision_tags`。正式 `Xenova/clip-vit-base-patch32` 推理会同时返回 512 维图片 `image_embeds`；服务端校验所有维度有限且向量非零，单位归一化后以 Float32 小端字节幂等 upsert 到 `garment_embeddings`。标签建议与 embedding 在一个 `BEGIN IMMEDIATE` 事务中提交，任一校验或写入失败都不会留下部分结果。
+使用本地 CLIP 模型生成分类、风格、图案和标签建议，并写入 `garments.vision_tags`。正式 `Xenova/clip-vit-base-patch32` 推理会同时返回 512 维图片 `image_embeds`；服务端校验所有维度有限且向量非零，单位归一化后以 Float32 小端字节幂等 upsert 到 `garment_embeddings`。标签建议与 embedding 在一个 `BEGIN IMMEDIATE` 事务中提交，任一校验或写入失败都不会留下部分结果。默认本地进程同样受 120 秒超时和 1 MiB 合计输出上限保护。
 
 该接口是 embedding 的显式生产入口：只有用户主动运行图片分析才执行本地推理和刷新缓存；`GET /api/garments/:id/similar` 与购买前检查仍只读，绝不借查询自动推理、下载模型或联网。模型未安装时返回 HTTP 409 `VISION_MODEL_MISSING`，不运行推理也不写标签或缓存；无效向量返回 HTTP 500 `VISION_EMBEDDING_INVALID`。重复分析覆盖同一 `(model_id, garment_id)` 缓存行。
 
@@ -1065,11 +1065,11 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 
 ## PUT /api/wear-events/:id
 
-编辑穿着时间、时区、搭配、场合、天气、备注和/或完整衣物列表。请求至少包含一个允许字段；省略字段会保留原值，`outfitId: null` 会显式解除保存搭配关联，`notes: null` 会显式清空备注。`itemIds` 如提供会原子替换全部明细。若该事件来自计划的 mark-worn，纠正 `wornAt` 时会在同一事务同步计划行的实际时间。成功返回更新后的 `WearEvent`；不存在返回 404 `NOT_FOUND`。
+编辑穿着时间、时区、搭配、场合、天气、备注和/或完整衣物列表。请求至少包含一个允许字段；省略字段会保留原值，`outfitId: null` 会显式解除保存搭配关联，`notes: null` 会显式清空备注。`itemIds` 如提供会原子替换全部明细。若该事件来自计划的 mark-worn，纠正 `wornAt` 时会在同一事务同步计划行的实际时间。若事件是旅行 selection 的实际穿着凭据，仍可纠正时间、场合、天气和备注，但显式提交的 `itemIds` 必须与原旅行搭配完全一致，否则返回 HTTP 409 `TRIP_WEAR_EVENT_ITEMS_MISMATCH`。成功返回更新后的 `WearEvent`；不存在返回 404 `NOT_FOUND`。
 
 ## DELETE /api/wear-events/:id
 
-撤销误记并返回被删除的 `WearEvent`。删除与以下修正位于同一事务：关联计划恢复为 `planned`；关联推荐反馈撤销实际穿着事实，已经没有其他信号的空反馈被删除；衣物组合统计从剩余反馈重算。
+撤销误记并返回被删除的 `WearEvent`。删除与以下修正位于同一事务：关联计划恢复为 `planned`；关联推荐反馈撤销实际穿着事实，已经没有其他信号的空反馈被删除；衣物组合统计从剩余反馈重算；若事件来自旅行 selection，则解除其 `actualWearEventId`，并把仍为 `completed` 的旅行恢复为 `ready` 以允许重新确认（已归档旅行保持归档）。
 
 ## GET /api/outfit-plans
 
@@ -1239,10 +1239,11 @@ type CaptureJobStatus = "pending" | "running" | "succeeded" | "failed" | "cancel
 - `candidateId` 必须是已持久化候选的 UUID；不存在时返回 404 `RECOMMENDATION_CANDIDATE_NOT_FOUND`。
 - `verdict` 可为 `liked`、`disliked`、`skipped`；`rating` 可为整数 1–5，更新既有反馈时也可传 `null` 显式清空；`actuallyWorn` 为布尔值。
 - `reasonCodes` 是必填的不重复数组，可以为空；元素只允许 `too-warm`、`too-cold`、`too-formal`、`too-casual`、`color`、`fit`、`repeat`、`unavailable`、`other`。
-- `comment` 可省略，最多 2000 字符；省略表示保留旧值，空字符串表示显式清空。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与最终 `actuallyWorn=true` 同时提交。
+- `comment` 可省略，最多 2000 字符；省略表示保留旧值，空字符串表示显式清空。清空既有评论时可只提交空 `reasonCodes` 与 `comment:""`，服务端会与旧 verdict/rating/实穿信号合并；若原本不存在反馈且最终没有任何信号，仍返回 400。`woreInsteadOutfitId` 如提供必须是现有保存搭配的正整数 ID，并且不能与最终 `actuallyWorn=true` 同时提交。
 - 除 `candidateId` 和空 `reasonCodes` 外，至少还要提供一个有意义信号：verdict、非空 rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId`。清空标记会先与旧值合并；若最终仍完全无信号则返回 400，不创建空反馈。
 - 首次提交 `actuallyWorn=true` 时，反馈与当前候选对应的 WearEvent 在同一事务中写入，并以 `wearEventId` 关联；重放不会再建第二条事件。迁移前旧反馈可同时保留兼容 `wearLogId` 与回填的 `wearEventId`，新反馈只写 `wearEventId`。普通反馈更新不能用 `actuallyWorn=false` 静默撤销已经落地的实穿事实；用户显式删除对应日记事件时，关联反馈的实穿标记会在同一事务撤销并重算组合统计。
 - 未知字段、错误类型、越界评分或重复/未知原因返回 400 `VALIDATION_ERROR`。写接口继续要求有效本地 session，并经过 Origin/Sec-Fetch-Site 校验。
+- 读取既有反馈时会再次验证持久化 `reason_codes_json` 的枚举和值唯一性；损坏历史行返回 500 `CORRUPT_FEEDBACK`，不会把任意字符串伪装成共享 `FeedbackReason`。
 
 组合学习分采用固定、有界公式：
 
@@ -1576,7 +1577,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 
 - 前端在请求前会显示敏感备份确认；直接调用 API 不会触发这层 UI 确认，但仍要求有效本地 session。调用方必须自行确认备份的接收方和存放位置可信。
 - JSON 不内嵌图片二进制；`garmentAssets` 包含 active 与 inactive 资产的可移植元数据，但不含 `storage_key`、绝对路径或原始文件名。`savedOutfits` 包含 active、归档和派生搭配及保存时的衣物快照；即使来源衣物后来改名或归档，快照仍保持不变。
-- `recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`、`wearEvents`、`outfitPlanEntries`、`similarityFeedback` 与五类 Trip 关系数组都导出完整记录，不受 UI 列表限制；穿着备注、旅行目的地/活动/装箱状态、天气、时区、旧 context、计划和反馈属于敏感本地数据。所有表位于同一个 deferred SQLite 读快照，并使用确定性排序；Trip 同时包含 active 与 archived，selection 只携带 `garmentIds`，不重复嵌入 Garment。
+- `recommendationFeedback`、`outfitPairStats`、`garmentAvailabilityEvents`、`wearEvents`、`outfitPlanEntries`、`similarityFeedback` 与五类 Trip 关系数组都导出完整记录，不受 UI 列表限制；推荐反馈会保留可选的旧 `wearLogId` 与权威 `wearEventId` 链接，任一链接存在时 `actuallyWorn` 为真。穿着备注、旅行目的地/活动/装箱状态、天气、时区、旧 context、计划和反馈属于敏感本地数据。所有表位于同一个 deferred SQLite 读快照，并使用确定性排序；Trip 同时包含 active 与 archived，selection 只携带 `garmentIds`，不重复嵌入 Garment。
 - `wearLogs` 为旧 V1/V2 消费者继续保留；M4 的权威日记数据在 `wearEvents`，其中包含迁移得到的 `legacySnapshot`。`plannedDate` 直接按数据库日历键导出，不经过 `Date` 或 UTC 转换。
 - 成本/次、四分位和价值排行在读取时派生，不重复持久化或导出；`garment_embeddings` 是可重建的本地缓存，也不进入 JSON 或 ZIP。`decision-support` feature 只要求并携带稳定的 `similarityFeedback`。
 - 损坏的 `reason_codes_json`、`weather_snapshot`、`legacy_snapshot` 或不符合类型的 JsonValue 会让导出明确失败并带表/行/列上下文，不会静默漏行。
@@ -1614,7 +1615,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 - `manifest.json`
 - `assets/<numeric-asset-id>.webp`
 
-每个资产在写入前都会重新校验 UUID storage key、根目录边界、符号链接、字节数和 SHA-256。缺失、损坏或路径异常的资产不会中止其余备份，而是跳过并在 manifest 中仅按 asset ID 记录警告。ZIP 不含绝对路径、反斜杠、`..`、storage UUID 或临时 ZIP；生成过程不会删除源文件。非法 `format` 返回 400 `INVALID_EXPORT_FORMAT`。`schemaVersion` 是数据库迁移版本，不等同于导出 envelope 的 `version`。
+每个资产在写入前都会重新校验 UUID storage key、普通目录资产根、根目录边界、符号链接、字节数和 SHA-256。缺失、损坏、资产根为链接或其他路径异常的资产不会中止其余备份，而是跳过并在 manifest 中仅按 asset ID 记录警告。ZIP 不含绝对路径、反斜杠、`..`、storage UUID 或临时 ZIP；生成过程不会删除源文件。若数据库损坏使导出在任何 ZIP 字节写出前失败，响应会改为普通 JSON 错误，不保留 ZIP Content-Type 或下载文件名。非法 `format` 返回 400 `INVALID_EXPORT_FORMAT`。`schemaVersion` 是数据库迁移版本，不等同于导出 envelope 的 `version`。
 
 ## GET /api/insights
 
@@ -1734,7 +1735,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 
 ## GET /api/weather
 
-按经纬度获取天气快照。服务优先读取 30 分钟内缓存；Open-Meteo 请求失败时，若有过期缓存则返回过期缓存，否则返回本地估算天气。
+按经纬度获取天气快照。服务优先读取 30 分钟内缓存；Open-Meteo 请求失败时，若有过期缓存则返回过期缓存，否则返回本地估算天气。缓存读取会重新校验完整 `WeatherSnapshot`：字段缺失、多余字段、非有限数值、不存在的日历日期，以及不可解析或位于当前时间之后的拉取时间，都会被视为不可用缓存，而不会直接返回给客户端。
 
 查询参数：
 
@@ -1785,7 +1786,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 ]
 ```
 
-逐日温度和体感温度分别取 Open-Meteo 当日 max/min 的四舍五入均值；风速使用逐日最大值。服务使用独立的 `weather-forecast:<lat>:<lon>:<days>` 缓存键，默认有效期 30 分钟；Open-Meteo 失败时先返回同天数的过期缓存，没有可用缓存才生成等长本地估算。`days` 为 0、8、小数或其他非法值时返回 400 `VALIDATION_ERROR`。
+逐日温度和体感温度分别取 Open-Meteo 当日 max/min 的四舍五入均值；风速使用逐日最大值。服务使用独立的 `weather-forecast:<lat>:<lon>:<days>` 缓存键，默认有效期 30 分钟；Open-Meteo 失败时先返回同天数、拉取时间可解析且每项都满足完整 `WeatherSnapshot` 契约的过期缓存，没有可用缓存才生成等长本地估算。`days` 为 0、8、小数或其他非法值时返回 400 `VALIDATION_ERROR`。
 
 ## POST /api/recommendations
 
@@ -1821,6 +1822,7 @@ pairBonus = clamp(signal / max(1, totalFeedback), -1, 1) × 4 × confidence
 
 约束规则：
 
+- `weather.date` 必须是真实的 `YYYY-MM-DD` 日历日期；其余天气数值字段必须是有限 JSON number，不接受 `null`、布尔值或数字字符串的隐式转换。
 - `includeGarmentIds`、`excludeGarmentIds` 省略时不启用约束；一旦提供，必须是 1-24 个不重复的正安全整数，且同一 ID 不能同时出现于两者。
 - include 中不存在、不再拥有、已归档、未确认、已排除推荐或 `availabilityStatus` 非 `available` 的衣物会返回 HTTP 400；同类别锁定多件非配饰，或同时锁定连衣裙与上装/下装，也会被判定为不可满足。
 - exclude 引用同样必须指向当前可推荐衣物，避免客户端用失效 ID 误以为已生效。

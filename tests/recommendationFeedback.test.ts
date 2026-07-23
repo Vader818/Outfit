@@ -1,5 +1,6 @@
+import type { SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { createDatabase, getGarmentById, type AppDatabase } from "../server/db";
+import { getGarmentById, type AppDatabase } from "../server/db";
 import {
   clearRecommendationFeedback,
   getRecommendationFeedback,
@@ -12,6 +13,7 @@ import {
   listGarmentAvailabilityEvents,
   setGarmentAvailability
 } from "../server/services/garmentAvailability";
+import { createDatabase } from "./helpers/testDatabase";
 
 const FIRST_CANDIDATE = "11111111-1111-4111-8111-111111111111";
 const SECOND_CANDIDATE = "22222222-2222-4222-8222-222222222222";
@@ -224,6 +226,29 @@ describe("recommendation feedback service", () => {
 
     expect(getRecommendationFeedback(db, FIRST_CANDIDATE)).toBeNull();
     expect(listOutfitPairStats(db)).toEqual([]);
+  });
+
+  it.each([
+    ['["invented"]', "an unknown reason"],
+    ['["fit","fit"]', "a duplicate reason"]
+  ])("rejects persisted feedback containing %s", (reasonCodesJson) => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    db.prepare(`
+      INSERT INTO recommendation_feedback (
+        candidate_id, verdict, reason_codes_json, comment, created_at, updated_at
+      ) VALUES (?, 'disliked', ?, '', ?, ?)
+    `).run(
+      FIRST_CANDIDATE,
+      reasonCodesJson,
+      "2026-07-12T00:00:00.000Z",
+      "2026-07-12T00:00:00.000Z"
+    );
+
+    expect(() => getRecommendationFeedback(db, FIRST_CANDIDATE))
+      .toThrow(/reason_codes_json 无效/);
   });
 
   it("adds the actual-worn fact without erasing an earlier verdict or rejection reasons", () => {
@@ -454,6 +479,55 @@ describe("garment availability service", () => {
     expect(listGarmentAvailabilityEvents(db)).toEqual([
       expect.objectContaining({ garmentId, previousStatus: "available", status: "laundry" })
     ]);
+  });
+
+  it("takes the write lock before deciding that an availability request is already satisfied", () => {
+    const db = createDatabase(":memory:");
+    const garmentId = insertGarment(db, "并发状态上衣", "top");
+    let injectedConcurrentWrite = false;
+    const guardedDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (sql: string) => {
+            const statement = target.prepare(sql);
+            if (!sql.includes("SELECT garments.*") || !sql.includes("WHERE garments.id = ?")) {
+              return statement;
+            }
+            return new Proxy(statement, {
+              get(statementTarget, statementProperty) {
+                if (statementProperty === "get") {
+                  return (...args: SQLInputValue[]) => {
+                    const row = statementTarget.get(...args);
+                    if (!target.isTransaction && !injectedConcurrentWrite) {
+                      injectedConcurrentWrite = true;
+                      target.prepare(`
+                        UPDATE garments
+                        SET availability_status = 'repair'
+                        WHERE id = ?
+                      `).run(garmentId);
+                    }
+                    return row;
+                  };
+                }
+                const value = Reflect.get(statementTarget, statementProperty, statementTarget);
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              }
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    }) as AppDatabase;
+
+    const replayed = setGarmentAvailability(guardedDb, garmentId, "available");
+
+    expect(replayed).toMatchObject({
+      changed: false,
+      garment: { id: garmentId, availabilityStatus: "available" }
+    });
+    expect(getGarmentById(db, garmentId).availabilityStatus).toBe("available");
+    expect(listGarmentAvailabilityEvents(db)).toEqual([]);
   });
 
   it("rolls back garment status when history insertion fails", () => {

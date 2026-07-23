@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createDatabase } from "../server/db";
 import {
   attachCandidateIdentities,
   createOutfitSignature,
   persistRecommendationSnapshot
 } from "../server/services/recommendationCandidates";
 import type { Garment, RecommendationScoreBreakdown, WeatherSnapshot } from "../src/shared/types";
+import { createDatabase } from "./helpers/testDatabase";
 
 function garment(id: number, category: Garment["category"], name = `${category}-${id}`): Garment {
   return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { archiveGarment, createDatabase, type AppDatabase } from "../server/db";
+import { archiveGarment, type AppDatabase } from "../server/db";
 import { previewTaobaoImport } from "../server/services/importTaobao";
 import {
   checkTaobaoPurchaseCandidate,
@@ -12,6 +12,7 @@ import {
   createSavedOutfit
 } from "../server/services/savedOutfits";
 import type { Garment, TaobaoCapturedBatch } from "../src/shared/types";
+import { createDatabase } from "./helpers/testDatabase";
 
 describe("Taobao purchase candidate validation", () => {
   it("selects exactly one normalized non-refunded apparel candidate from a multi-item batch", () => {
@@ -166,6 +167,46 @@ describe("purchase check service", () => {
     expect(databaseCounts(db)).toEqual(countsBefore);
   });
 
+  it("does not treat an unknown candidate color as positive compatibility evidence", () => {
+    const db = createDatabase(":memory:");
+    ensureM5Tables(db);
+    const request = unknownColorPurchaseRequest();
+    const resolved = resolveTaobaoPurchaseCandidate(request);
+    expect(resolved.candidate).toMatchObject({
+      category: "top",
+      color: "unknown",
+      warmth: "medium",
+      seasons: ["spring", "autumn"],
+      formality: "smart-casual"
+    });
+    const oldTopId = insertGarment(db, garment({
+      name: "待替换上衣",
+      rawName: "待替换上衣"
+    }));
+    const bottomId = insertGarment(db, garment({
+      name: "无颜色证据运动下装",
+      rawName: "无颜色证据运动下装",
+      category: "bottom",
+      color: "unknown",
+      warmth: resolved.candidate.warmth,
+      seasons: resolved.candidate.seasons,
+      styles: ["deliberately-unrelated"],
+      formality: "sport"
+    }));
+    createSavedOutfit(db, {
+      name: "未知颜色不应制造兼容性",
+      items: [
+        { garmentId: oldTopId, slot: "top", position: 0 },
+        { garmentId: bottomId, slot: "bottom", position: 0 }
+      ]
+    });
+
+    const result = checkTaobaoPurchaseCandidate(db, request);
+
+    expect(result.worksWith).toEqual([]);
+    expect(result.coverageDelta.compatibleOutfitCount).toBe(0);
+  });
+
   it("uses the complete deterministic verdict matrix", () => {
     expect(decidePurchaseVerdict(true, true)).toBe("mixed");
     expect(decidePurchaseVerdict(true, false)).toBe("likely-duplicate");
@@ -193,6 +234,26 @@ function purchaseRequest(): { batch: TaobaoCapturedBatch; sourceItemKey: string 
   };
   const preview = previewTaobaoImport(batch);
   if (preview.candidates.length !== 1) throw new Error("purchase fixture did not classify as one garment");
+  return { batch, sourceItemKey: preview.candidates[0].sourceItemKey };
+}
+
+function unknownColorPurchaseRequest(): { batch: TaobaoCapturedBatch; sourceItemKey: string } {
+  const batch: TaobaoCapturedBatch = {
+    source: "taobao-bookmarklet",
+    pageType: "item-detail",
+    capturedAt: "2026-07-13T01:00:00.000Z",
+    pageUrl: "https://item.taobao.com/item.htm?id=30003",
+    items: [{
+      pageType: "item-detail",
+      itemId: "30003",
+      title: "商务正装衬衫男士长袖上衣",
+      itemUrl: "https://item.taobao.com/item.htm?id=30003",
+      detailTitle: "商务正装衬衫男士长袖上衣",
+      detailDescription: "会议通勤正式场合"
+    }]
+  };
+  const preview = previewTaobaoImport(batch);
+  if (preview.candidates.length !== 1) throw new Error("unknown-color fixture did not classify as one garment");
   return { batch, sourceItemKey: preview.candidates[0].sourceItemKey };
 }
 

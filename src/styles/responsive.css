@@ -121,6 +121,14 @@
     width: 100%;
   }
 
+  .recommendation-empty-stage .ui-empty {
+    grid-template-columns: 1fr;
+  }
+
+  .recommendation-empty-stage .ui-empty__action {
+    grid-column: auto;
+  }
+
   .page-skeleton__grid {
     grid-template-columns: 1fr;
   }

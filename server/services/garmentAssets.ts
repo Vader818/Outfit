@@ -288,11 +288,12 @@ async function landAssetFileAtomically(
   const root = resolve(assetRoot);
   await mkdir(root, { recursive: true });
 
+  await assertRegularAssetRoot(root, garmentAssetStorageConflictError);
   const realRoot = await realpath(root);
   const finalPath = resolveGarmentAssetPath(root, storageKey);
   const temporaryPath = resolveInternalTemporaryPath(root, `.${uuid.toLowerCase()}.tmp`);
-  if (!samePath(await realpath(root), realRoot)) {
-    throw new Error("Garment asset root changed while saving");
+  if (!await isSameRegularAssetRoot(root, realRoot)) {
+    throw garmentAssetStorageConflictError();
   }
   await assertPathDoesNotExist(finalPath);
 
@@ -305,13 +306,12 @@ async function landAssetFileAtomically(
   }
 
   const temporaryStat = await lstat(temporaryPath);
-  const temporaryRealParent = await realpath(root);
   if (
     !temporaryStat.isFile() ||
     temporaryStat.isSymbolicLink() ||
-    !samePath(temporaryRealParent, realRoot)
+    !await isSameRegularAssetRoot(root, realRoot)
   ) {
-    throw new Error("Garment asset temporary path is unsafe");
+    throw garmentAssetStorageConflictError();
   }
   await assertPathDoesNotExist(finalPath);
   await rename(temporaryPath, finalPath);
@@ -395,6 +395,7 @@ function persistPrimaryAsset(
 
 async function resolveExistingRegularAssetPath(assetRoot: string, storageKey: string): Promise<string> {
   const root = resolve(assetRoot);
+  await assertRegularAssetRoot(root, garmentAssetNotFoundError);
   const target = resolveGarmentAssetPath(root, storageKey);
   const rootRealPath = await realpath(root);
   const targetStat = await lstat(target);
@@ -403,6 +404,9 @@ async function resolveExistingRegularAssetPath(assetRoot: string, storageKey: st
   }
   const targetRealPath = await realpath(target);
   if (!isStrictDescendant(rootRealPath, targetRealPath)) {
+    throw garmentAssetNotFoundError();
+  }
+  if (!await isSameRegularAssetRoot(root, rootRealPath)) {
     throw garmentAssetNotFoundError();
   }
   return target;
@@ -427,7 +431,31 @@ async function assertPathDoesNotExist(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  throw new ApiError("GARMENT_ASSET_STORAGE_CONFLICT", "无法安全保存衣物图片", 409);
+  throw garmentAssetStorageConflictError();
+}
+
+async function assertRegularAssetRoot(
+  root: string,
+  errorFactory: () => Error
+): Promise<void> {
+  try {
+    const rootStat = await lstat(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw errorFactory();
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw errorFactory();
+  }
+}
+
+async function isSameRegularAssetRoot(root: string, expectedRealRoot: string): Promise<boolean> {
+  try {
+    await assertRegularAssetRoot(root, garmentAssetStorageConflictError);
+    return samePath(await realpath(root), expectedRealRoot);
+  } catch {
+    return false;
+  }
 }
 
 function assertGarmentExists(db: AppDatabase, garmentId: number): void {
@@ -509,6 +537,10 @@ function garmentNotFoundError(): ApiError {
 
 function garmentAssetNotFoundError(): ApiError {
   return new ApiError("GARMENT_ASSET_NOT_FOUND", "衣物图片不存在", 404);
+}
+
+function garmentAssetStorageConflictError(): ApiError {
+  return new ApiError("GARMENT_ASSET_STORAGE_CONFLICT", "无法安全保存衣物图片", 409);
 }
 
 function isStrictDescendant(root: string, target: string): boolean {

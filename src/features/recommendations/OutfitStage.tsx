@@ -19,6 +19,7 @@ function garmentName(item: Garment): string {
 export function OutfitStage({
   outfit,
   featured = false,
+  actionBusy = false,
   recordingOutfitId,
   savingOutfitId,
   wearLogFeedback,
@@ -34,6 +35,7 @@ export function OutfitStage({
 }: {
   outfit: OutfitRecommendation;
   featured?: boolean;
+  actionBusy?: boolean;
   recordingOutfitId: string | null;
   savingOutfitId?: string | null;
   wearLogFeedback: WearLogFeedback | null;
@@ -99,7 +101,7 @@ export function OutfitStage({
                   variant="ghost"
                   size="sm"
                   aria-label={`以${garmentName(item)}为核心推荐`}
-                  disabled={!isGarmentAvailable(item)}
+                  disabled={actionBusy || !isGarmentAvailable(item)}
                   title={!isGarmentAvailable(item)
                     ? `${GARMENT_AVAILABILITY_LABELS[garmentAvailabilityStatus(item)]}衣物不能作为推荐核心`
                     : undefined}
@@ -115,7 +117,8 @@ export function OutfitStage({
                   variant="ghost"
                   size="sm"
                   aria-label={`换${garmentName(item)}`}
-                  disabled={!outfit.replacements.some((suggestion) => suggestion.targetGarmentId === item.id)}
+                  disabled={actionBusy
+                    || !outfit.replacements.some((suggestion) => suggestion.targetGarmentId === item.id)}
                   onClick={() => onReplaceGarment(outfit, item)}
                 >
                   <RefreshCw aria-hidden="true" size={15} />
@@ -199,7 +202,7 @@ export function OutfitStage({
         {onSaveOutfit ? (
           <Button
             variant={featured ? "primary" : "secondary"}
-            disabled={saving}
+            disabled={actionBusy || saving}
             aria-busy={saving || undefined}
             onClick={() => onSaveOutfit(outfit)}
           >
@@ -210,7 +213,7 @@ export function OutfitStage({
         {onScheduleOutfit ? (
           <Button
             variant="secondary"
-            disabled={scheduling}
+            disabled={actionBusy || scheduling}
             aria-busy={scheduling || undefined}
             onClick={() => onScheduleOutfit(outfit)}
           >
@@ -227,7 +230,7 @@ export function OutfitStage({
             <Button
               variant="ghost"
               size="sm"
-              disabled={feedbackBusy}
+              disabled={actionBusy || feedbackBusy}
               onClick={() => onRecommendationFeedback(outfit, "liked")}
             >
               <ThumbsUp aria-hidden="true" size={16} />
@@ -236,7 +239,7 @@ export function OutfitStage({
             <Button
               variant="ghost"
               size="sm"
-              disabled={feedbackBusy}
+              disabled={actionBusy || feedbackBusy}
               onClick={() => onRecommendationFeedback(outfit, "disliked")}
             >
               <ThumbsDown aria-hidden="true" size={16} />
@@ -246,7 +249,7 @@ export function OutfitStage({
         ) : null}
         <Button
           variant="secondary"
-          disabled={recording}
+          disabled={actionBusy || recording}
           aria-busy={recording || undefined}
           onClick={() => onRecordWearLog(outfit)}
         >

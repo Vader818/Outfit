@@ -337,7 +337,7 @@ interface GarmentSimilarityFeedback {
 
 价值口径直接聚合完整 WearEvent 明细，只使用仍拥有、未归档、未退款的衣物。成本/次为 `purchasePriceCents / wearCount`；零穿着返回 `null`。最佳价值要求价格已知且至少穿着 3 次；低利用高成本要求购入满 90 天、穿着不超过 1 次并达到已知价格最高四分位阈值。有穿着记录的沉睡单品要求最近穿着距今至少 90 天；从未穿过的衣物在购入满 30 天后才提示。上述值与排行都是派生数据，不单独持久化。
 
-结构相似度要求类别完全一致，再按颜色 25、风格 20、材质 15、图案 15、品牌/规范化名称 15、可选本地视觉向量 10 加权；缺失成分不进入分母，现有权重重新归一化。`similarity` 是 0–100 的展示百分数；是否达到 75 使用未舍入的内部得分判定，避免 74.96 因展示舍入被误收录。现有衣物之间的查询可读取已有 embedding 缓存；淘宝候选未生成视觉向量时只使用其余结构字段。缓存只由用户显式调用 `POST /api/garments/:id/vision-tags` 的本地 CLIP 分析刷新，普通相似查询和购买检查不会触发推理、下载或联网。购买检查仅读现有衣橱、保存搭配与反馈；候选 `subjectKey` 由服务端对规范化商品身份与 SKU 做 SHA-256 生成，结构字段后续补全不会改变候选身份。客户端提交反馈时必须提供衣物 ID，或重新提供原 batch 与 `sourceItemKey`，不能直接伪造指纹。
+结构相似度要求类别完全一致，再按颜色 25、风格 20、材质 15、图案 15、品牌/规范化名称 15、可选本地视觉向量 10 加权；缺失成分不进入分母，现有权重重新归一化。分类器的 `color=unknown` 是缺失值而不是真实颜色，因此任一侧为 `unknown` 时颜色成分不参与计算；购买检查的保存搭配兼容评分同样把空颜色或 `unknown` 记为 0 分证据，不按中性色加分或冲突扣分。`similarity` 是 0–100 的展示百分数；是否达到 75 使用未舍入的内部得分判定，避免 74.96 因展示舍入被误收录。现有衣物之间的查询可读取已有 embedding 缓存；淘宝候选未生成视觉向量时只使用其余结构字段。缓存只由用户显式调用 `POST /api/garments/:id/vision-tags` 的本地 CLIP 分析刷新，普通相似查询和购买检查不会触发推理、下载或联网。购买检查仅读现有衣橱、保存搭配与反馈；候选 `subjectKey` 由服务端对规范化商品身份与 SKU 做 SHA-256 生成，结构字段后续补全不会改变候选身份。客户端提交反馈时必须提供衣物 ID，或重新提供原 batch 与 `sourceItemKey`，不能直接伪造指纹。
 
 ### 本地视觉模型类型
 
@@ -398,7 +398,7 @@ interface WeatherSnapshot {
 }
 ```
 
-逐日天气接口返回 `WeatherSnapshot[]`。逐日 `temperature` 和 `apparentTemperature` 分别是 Open-Meteo 当日 max/min 的四舍五入均值，`windSpeed` 使用当日最大值。
+逐日天气接口返回 `WeatherSnapshot[]`。`date` 是真实的 `YYYY-MM-DD` 日历日期，所有数值字段都是有限 JSON number，不通过字符串、布尔值或 `null` 隐式转换。逐日 `temperature` 和 `apparentTemperature` 分别是 Open-Meteo 当日 max/min 的四舍五入均值，`windSpeed` 使用当日最大值。
 
 ### WearEvent 与 OutfitPlanEntry
 
@@ -638,6 +638,7 @@ interface RecommendationFeedback extends RecommendationFeedbackInput {
   actuallyWorn: boolean;
   comment: string;
   wearLogId?: number;
+  wearEventId?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -696,7 +697,7 @@ interface GarmentAvailabilityChangeResult {
 }
 ```
 
-同一 `candidateId` 只保留一条反馈，后续提交更新而不是累加。输入必须至少包含 verdict、rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId` 中的一个有效信号。`totalFeedback` 计入该衣物对出现过的每一条候选反馈，包括 `skipped`、仅评分或没有 verdict 的反馈；`likes`、`dislikes`、`wornCount` 分别按 verdict 与 `actuallyWorn` 计数，同一反馈可同时贡献 verdict 与 worn。接受率使用满足 `verdict=liked` 或 `actuallyWorn=true` 的去重反馈数除以总反馈数。
+同一 `candidateId` 只保留一条反馈，后续提交更新而不是累加。新反馈必须至少包含 verdict、rating、`actuallyWorn=true`、非空原因/评论或 `woreInsteadOutfitId` 中的一个有效信号；更新既有反馈时允许以 `rating:null` 或 `comment:""` 作为显式清空标记，最终合并结果仍不得为空反馈。持久化 `reason_codes_json` 在读取时仍须全部属于 `FeedbackReason` 且不重复，否则按 `CORRUPT_FEEDBACK` 明确失败。`wearEventId` 是权威 WearEvent 链接，`wearLogId` 只为旧迁移兼容；任一链接存在时 DTO 与完整导出都把该反馈视为已实际穿着。`totalFeedback` 计入该衣物对出现过的每一条候选反馈，包括 `skipped`、仅评分或没有 verdict 的反馈；`likes`、`dislikes`、`wornCount` 分别按 verdict 与 `actuallyWorn` 计数，同一反馈可同时贡献 verdict 与 worn。接受率使用满足 `verdict=liked` 或 `actuallyWorn=true` 的去重反馈数除以总反馈数。
 
 反馈学习公式为：
 
@@ -1102,7 +1103,7 @@ interface TaobaoImportPreview {
 导入约定：
 
 - `items` 必须是数组。
-- `capturedAt` 缺省时不会混入服务端当前时间；同一规范化内容会得到稳定、与 items 顺序无关的 `batchId`。
+- `capturedAt` 缺省时不会混入服务端当前时间；同一规范化内容会得到稳定、与 items 顺序无关的 `batchId`。即使同一来源项在一次采集中重复出现且字段证据冲突，也会先按完整规范化内容稳定排序再合并，不以 DOM/数组先后决定结果。
 - `source` 缺省为 `taobao-bookmarklet`。
 - `pageType` 可由 `pageUrl` 或单个 `item.pageType` 推断。
 - `detailProps`、`detailImages` 会归一化、去重并保存为 JSON 字符串。
@@ -1257,6 +1258,7 @@ ON source_order_items(item_id);
 - 淘宝重复导入不会覆盖用户已经确认的状态。
 - 默认衣橱与洞察只使用 `owned=1 AND archived_at IS NULL` 的 active 衣物；推荐和替代单品再叠加 `confirmed=1 AND excluded=0 AND availability_status='available'`。非可用状态不等于归档或不再拥有。
 - `PUT /api/garments/:id` 会更新白名单展示字段和 `updated_at`；公共 JSON 路由禁止 `imageUrl`，图片只能经净化上传或受控缩略图选择路径修改。
+- 衣物读取和无关字段更新会严格验证 `seasons`、`styles`、`materials`、`patterns`、`tags` 的持久化 JSON 必须是字符串数组；语法合法但形状错误的历史值按空数组处理，并在后续更新时规范化回 `[]`，不会违反共享 DTO 类型。`vision_tags` 还必须满足可选合法类别、三个字符串数组和有限分数数组的完整结构，否则运行时按缺失缓存处理；完整导出仍会对底层损坏值明确失败。
 - 用户确认过的名称在迁移回填时会尽量保留，避免被自动清洗覆盖。
 - 手工创建在提供价格时写 `cost_source='manual'`；淘宝导入只在付款与数量都明确、未退款时写 `cost_source='taobao'`。可信重导入可更新淘宝成本，但永不覆盖 `manual` 成本。版本 6 会先把既有非空价格标记为 `manual`，再保守回填尚无价格的淘宝衣物。
 - archive 与弃用 DELETE 都只设置 `archived_at`；restore 清除它。两者都不删除衣物、来源记录、图片资产或采集文件。
@@ -1324,7 +1326,7 @@ CREATE UNIQUE INDEX idx_garment_assets_active_kind
 ON garment_assets(garment_id, kind) WHERE active = 1;
 ```
 
-同一衣物同一 kind 最多一条 active 资产。替换图片只把旧行置为 inactive，旧文件不自动删除；显式完整备份会同时列出 active 与 inactive 元数据，并只打包仍能通过路径、符号链接、大小和哈希校验的文件。
+同一衣物同一 kind 最多一条 active 资产。替换图片只把旧行置为 inactive，旧文件不自动删除；资产根必须是普通目录而不是符号链接或 Windows junction。显式完整备份会同时列出 active 与 inactive 元数据，并只打包仍能通过根目录、路径、符号链接、大小和哈希校验的文件。
 
 ### weather_cache
 
@@ -1343,7 +1345,8 @@ ON garment_assets(garment_id, kind) WHERE active = 1;
 - 默认有效期 30 分钟。
 - Open-Meteo 失败时可返回过期缓存。
 - 没有缓存时返回本地估算天气。
-- 逐日缓存把 `days` 纳入 key，并在读取时校验数组长度与每个快照形状，不会与旧单日 payload 混用。
+- 单日与逐日缓存每次读取都会重新校验真实日历日期、完整且无多余字段的快照形状、有限数值、非空摘要，以及可解析且不晚于当前时间的 `fetched_at`；损坏或旧格式 payload 不会返回给客户端。
+- 逐日缓存把 `days` 纳入 key，并在读取时校验数组长度，不会与旧单日 payload 混用。
 
 ### wear_logs
 
@@ -1375,7 +1378,7 @@ M0 遗留穿着表。版本 5 迁移后，权威日记数据改为 `wear_events`
 | `created_at` | TEXT | NOT NULL | 创建时间 |
 | `updated_at` | TEXT | NOT NULL | 更新时间 |
 
-索引：`idx_wear_events_worn_at(worn_at,id)`、`idx_wear_events_outfit_id(outfit_id)`。删除事件会级联删除 items；服务层在同一事务中把关联计划恢复为 `planned`，撤销反馈穿着事实并重算组合统计。
+索引：`idx_wear_events_worn_at(worn_at,id)`、`idx_wear_events_outfit_id(outfit_id)`。删除事件会级联删除 items；服务层在同一事务中把关联计划恢复为 `planned`，撤销反馈穿着事实并重算组合统计。若事件绑定旅行 selection，服务会先显式清空 `actual_wear_event_id` 并更新时间戳；仍为 `completed` 的旅行恢复为 `ready`，归档旅行保持归档。编辑这类事件时，衣物 ID 不得偏离 selection 的 `garment_ids_json`。
 
 ### wear_event_items
 
@@ -1570,7 +1573,7 @@ upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `commen
 | `status` | TEXT | NOT NULL，枚举 CHECK | 变更后 `GarmentAvailabilityStatus` |
 | `changed_at` | TEXT | NOT NULL | 变更时间 |
 
-`previous_status <> status` 由 CHECK 保证；重复提交当前状态不写事件。`garments.availability_status` 更新与事件插入位于同一事务。索引为 `(garment_id, changed_at, id)`，导出按 `changed_at,id` 确定排序并保留全部历史。
+`previous_status <> status` 由 CHECK 保证；服务层先以 `BEGIN IMMEDIATE` 取得写锁，再读取当前状态并判断重复提交，避免事务外陈旧读取把并发变化误报成幂等。重复提交当前状态不写事件；`garments.availability_status` 更新与事件插入位于同一事务。索引为 `(garment_id, changed_at, id)`，导出按 `changed_at,id` 确定排序并保留全部历史。
 
 ### trips
 
@@ -1618,7 +1621,7 @@ upsert 后从全部现存反馈重算组合统计。`rating=NULL` 与空 `commen
 | `reasons_json` | TEXT | JSON array | 选择理由 |
 | `activity_evaluations_json` | TEXT | JSON array | 各活动最低适配证据 |
 | `locked_garment_ids_json` | TEXT | 默认 `[]` | 用户锁定 ID |
-| `actual_wear_event_id` | INTEGER | 可空 UNIQUE，FK wear_events SET NULL | 完成旅行时的幂等实际穿着链接 |
+| `actual_wear_event_id` | INTEGER | 可空 UNIQUE，FK wear_events SET NULL | 完成旅行时的幂等实际穿着链接；日记删除会由服务显式解除并重新开放非归档旅行确认 |
 | `created_at` / `updated_at` | TEXT | NOT NULL | 时间戳 |
 
 另有 `(trip_day_id,id)` 唯一键供同日 activity 复合外键引用，索引按 `(trip_day_id,slot_index,id)`。生成/重算会在一个事务内替换受影响方案和衣物清单；无可行解时不持久化违规选择。
