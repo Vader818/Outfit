@@ -123,7 +123,7 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
         description={insights ? `${insights.totalGarments} 件衣物，${props.wearEventCount ?? props.wearLogs.length} 条穿着记录。` : "本地周计划、穿着日记、保存搭配和洞察。"}
         actions={(
           <>
-            <Button variant="secondary" disabled={refreshing} aria-busy={refreshing || undefined} onClick={props.onRefresh}>
+            <Button variant="secondary" disabled={props.busy} aria-busy={refreshing || undefined} onClick={props.onRefresh}>
               <RefreshCw aria-hidden="true" />
               {refreshing ? "刷新中" : "刷新"}
             </Button>
@@ -132,14 +132,14 @@ export function HistoryInsightsView(props: HistoryInsightsViewProps) {
                 管理反馈
               </Button>
             ) : null}
-            <Button variant="secondary" disabled={exporting || exportingComplete} aria-busy={exporting || undefined} onClick={props.onExport}>
+            <Button variant="secondary" disabled={props.busy} aria-busy={exporting || undefined} onClick={props.onExport}>
               <Download aria-hidden="true" />
               {exporting ? "导出中" : "导出 JSON"}
             </Button>
             {props.onExportComplete ? (
               <Button
                 variant="primary"
-                disabled={exporting || exportingComplete}
+                disabled={props.busy}
                 aria-busy={exportingComplete || undefined}
                 onClick={props.onExportComplete}
               >

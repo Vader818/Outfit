@@ -216,6 +216,15 @@ describe("App", () => {
     expect(updateOne).not.toContain("garmentUpdateQueues.current");
   });
 
+  it("缩略图保存只关闭或报错到发起保存的 picker 会话", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const saveThumbnailSelection = namedFunctionSource(source, "saveThumbnailSelection");
+
+    expect(saveThumbnailSelection).toContain("const pickerRequestId = thumbnailPickerRequestId.current;");
+    expect(saveThumbnailSelection.match(/thumbnailPickerRequestId\.current === pickerRequestId/g)).toHaveLength(2);
+    expect(saveThumbnailSelection).not.toContain("setThumbnailPicker(null)");
+  });
+
   it("保存搭配刷新只提交最新读取，成功写入会失效旧快照", () => {
     const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
     const refreshSavedOutfits = namedFunctionSource(source, "refreshSavedOutfits");
@@ -271,6 +280,73 @@ describe("App", () => {
       .toContain("profileRequestGate.invalidate()");
     expect(namedFunctionSource(source, "saveSettings"))
       .toContain("profileRequestGate.invalidate()");
+  });
+
+  it("所有全局动作通过同步独占锁进入，并且只匹配释放自身", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const actions = [
+      ["runImport", "import"],
+      ["startOrdersCapture", "capture-orders"],
+      ["startItemCapture", "capture-item"],
+      ["readLatestCapture", "read-capture"],
+      ["previewImport", "preview-import"],
+      ["bulkConfirm", "bulk-confirm"],
+      ["bulkUpdate", "bulk-update"],
+      ["bulkAvailability", "bulk-availability"],
+      ["refreshThumbnails", "refresh-thumbnails"],
+      ["downloadLocalVisionModel", "download-vision-model"],
+      ["verifyLocalVisionModel", "verify-vision-model"],
+      ["locate", "locate"],
+      ["fetchForecast", "weather"],
+      ["saveSettings", "save-settings"],
+      ["refreshHistory", "history"],
+      ["exportBackup", "export"],
+      ["exportCompleteBackup", "export-complete"]
+    ] as const;
+
+    expect(source).toContain("createExclusiveActionLock<BusyAction>()");
+    for (const [functionName, action] of actions) {
+      const actionSource = namedFunctionSource(source, functionName);
+      expect(actionSource, functionName).toContain(`tryStartBusyAction("${action}")`);
+      expect(actionSource, functionName).toContain(`finishBusyAction("${action}")`);
+      expect(actionSource, functionName).not.toContain("setBusyAction(");
+    }
+
+    const recommendationStart = source.indexOf("async function requestRecommendations");
+    const recommendationEnd = source.indexOf("\n  function useGarmentAsCore", recommendationStart);
+    expect(recommendationStart).toBeGreaterThanOrEqual(0);
+    expect(recommendationEnd).toBeGreaterThan(recommendationStart);
+    const recommendationSource = source.slice(recommendationStart, recommendationEnd);
+    expect(recommendationSource).toContain('tryStartBusyAction("recommend")');
+    expect(recommendationSource).toContain('finishBusyAction("recommend")');
+    expect(recommendationSource).not.toContain("setBusyAction(");
+
+    const readCaptureSource = namedFunctionSource(source, "readLatestCapture");
+    expect(readCaptureSource.indexOf("invalidateImportPreviewRequest()"))
+      .toBeLessThan(readCaptureSource.indexOf('tryStartBusyAction("read-capture")'));
+
+    expect(namedFunctionSource(source, "invalidateImportPreviewRequest"))
+      .toContain('finishBusyAction("preview-import")');
+    expect(namedFunctionSource(source, "invalidateRecommendationRequest"))
+      .toContain('finishBusyAction("weather")');
+    expect(namedFunctionSource(source, "invalidateRecommendationRequest"))
+      .toContain('finishBusyAction("recommend")');
+    expect(namedFunctionSource(source, "invalidateLocationRequest"))
+      .toContain('finishBusyAction("locate")');
+  });
+
+  it("页面中的全局异步入口统一尊重全局 busy", () => {
+    const importSource = readFileSync(new URL("../src/features/import/ImportView.tsx", import.meta.url), "utf8");
+    const wardrobeSource = readFileSync(new URL("../src/features/wardrobe/WardrobeView.tsx", import.meta.url), "utf8");
+    const settingsSource = readFileSync(new URL("../src/features/settings/SettingsView.tsx", import.meta.url), "utf8");
+
+    expect(importSource).toContain('disabled={props.busy && props.busyAction !== "preview-import"}');
+    expect(wardrobeSource).toMatch(/disabled=\{props\.busy\}\s+onClick=\{props\.onRefreshThumbnails\}/);
+    expect(wardrobeSource).toMatch(/disabled=\{props\.busy\}\s+onClick=\{props\.onBulkConfirm\}/);
+    expect(wardrobeSource).toContain("disabled={props.busy}\n              onSeasons={props.onBulkSeasons}");
+    expect(settingsSource).toContain("<Button disabled={props.busy} onClick={props.onRefreshVisionModels}>");
+    expect(settingsSource).toContain("disabled={props.busy || model.installed || running}");
+    expect(settingsSource).toContain("disabled={props.busy || !model.installed || running}");
   });
 
   it("导入预览只允许当前输入对应的请求提交结果、错误和加载收尾", () => {
@@ -2066,6 +2142,26 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
   });
 
+  it("历史页任一全局动作进行时统一禁用刷新、反馈和两种导出", () => {
+    for (const busyAction of ["history", "export", "export-complete", "recommend"] as const) {
+      const markup = renderToStaticMarkup(
+        <HistoryInsightsView
+          insights={null}
+          wearLogs={[]}
+          recommendationRuns={[]}
+          busy
+          busyAction={busyAction}
+          onRefresh={vi.fn()}
+          onManageFeedback={vi.fn()}
+          onExport={vi.fn()}
+          onExportComplete={vi.fn()}
+        />
+      );
+
+      expect(markup.match(/<button[^>]*disabled=""/g), busyAction).toHaveLength(4);
+    }
+  });
+
   it("asks for explicit confirmation before archiving a garment", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -2792,6 +2888,12 @@ describe("App", () => {
     expect(cssRule(styles, ".recommendation-layout")).toMatch(/align-items:\s*start;/);
     expect(cssRule(styles, ".insight-section")).toMatch(/border-top:\s*1px solid var\(--color-line\);/);
     expect(cssRule(styles, ".vision-models")).toMatch(/display:\s*grid;/);
+  });
+
+  it("reserves stable history title space while action labels change", () => {
+    const styles = readAppStyles();
+
+    expect(cssRule(styles, ".history-insights-view .page-intro__copy")).toMatch(/min-width:\s*12rem;/);
   });
 
   it("keeps garment identity and actions resilient beside long brand names", () => {

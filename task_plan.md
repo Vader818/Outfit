@@ -682,8 +682,8 @@
 - **阶段关口：** 本阶段全部修复后标准 `npm test` 为 47/47 文件、609/609 测试通过；`npm run typecheck` 与 `git diff --check` 通过。
 
 ### 阶段 81：前端、状态一致性与可用性深审
-- **状态：** in_progress
-- [ ] 审查 App 全局状态、请求竞态、错误恢复、缓存/迟到响应、跨实体编辑、只读状态和前后端 DTO 一致性。
+- **状态：** complete
+- [x] 审查 App 全局状态、请求竞态、错误恢复、缓存/迟到响应、跨实体编辑、只读状态和前后端 DTO 一致性。
   - [x] 已确认“历史刷新慢响应覆盖新周”的真实竞态：新周数据先显示，随后被旧周结果静默清空。
   - [x] 为历史公共数据和周计划数据增加独立最新请求门；自动回归 83/83、类型检查与同一真实浏览器场景均通过。
   - [x] 已确认并发保存两张推荐卡会由晚响应切换 OutfitBuilder 实体并丢失先打开表单的未保存输入。
@@ -696,7 +696,7 @@
   - [x] 将完整草稿初始化限制为对话框新打开或编辑目标 ID 变化；同目标衣物刷新只更新派生可用信息，9 秒真实场景保留草稿。
   - [x] 已确认衣物设为“排除推荐”后当前推荐不会失效：返回今日推荐仍显示含该衣物的旧卡片。
   - [x] 统一衣物事实变更的推荐失效入口，阻止当前缓存及在途旧响应复活，并完成自动与真实浏览器回归。
-- [ ] 审查组件可访问性、键盘/触控、响应式、长文本、空/错/加载态、危险操作确认及隐私披露。
+- [x] 审查组件可访问性、键盘/触控、响应式、长文本、空/错/加载态、危险操作确认及隐私披露。
   - [x] 已修复桌面推荐分栏中空态正文被长按钮挤成竖列；1440px/390px 真实布局测量、截图和控制台复验全绿。
   - [x] 已确认迟到衣橱刷新会覆盖更晚且已保存的单件编辑；真实浏览器中权威 `excluded=true` 被旧 GET 静默显示为 false。
   - [x] 为 active/archived 衣橱刷新增加最新请求门，并让所有衣橱写操作主动失效旧读取，完成自动与真实浏览器回归。
@@ -722,15 +722,17 @@
   - [x] 将 availability busy 改为按衣物 ID 集合跟踪；自动、类型、差异与真实浏览器回归全绿。
   - [x] 已确认全局 BusyAction 入口可重叠，较早任务收尾会提前清空仍 pending 的后续任务。
   - [x] 断点恢复已核对实际工作树、三份规划记录与运行状态：既有修复均在磁盘，隔离 QA 服务仍监听 5174/8788，未执行删除、重置或覆盖。
-  - [ ] 为全局 BusyAction 增加同步互斥与动作匹配收尾，并让相关页面控件统一尊重全局 busy。
-  - **暂停断点（2026-07-16）：** 已完成所有 `busyAction` 写入口与 History/导出控件禁用条件的只读盘点，尚未修改业务代码或新增该缺陷的回归测试；隔离 QA 的 5174/8788 服务已确认关闭。恢复后先重启隔离服务，再从设计同步动作锁 helper 与补红灯测试开始。
-- [ ] 使用隔离数据库和真实浏览器复验高风险主流程，并记录控制台、网络来源与布局证据。
+  - [x] 为全局 BusyAction 增加同步互斥与动作匹配收尾，并让相关页面控件统一尊重全局 busy；目标回归 102/102、相邻前端 129/129、类型检查与差异检查均通过。
+  - [x] 使用隔离数据库完成全局 BusyAction 的真实浏览器绿色复验：刷新 pending 时导出请求为 0，导出 pending 时刷新请求为 0；两阶段四个操作均统一禁用并在匹配收尾后恢复，控制台清洁。
+  - [x] 修复 History 页头 busy 布局跳变：1037px 下 idle/refresh/export 标题行数由 2/2/1 稳定为 1/1/1，PageIntro 高度统一 79.99px；App 102/102、真实浏览器量化与控制台全绿。
+  - [x] 修复缩略图 picker 保存会话 ABA：成功关闭和失败报错均要求原 picker token；App 103/103，真实浏览器中旧保存后新“详情图”会话仍在、控制台清洁且数据库零写入。
+- [x] 使用隔离数据库和真实浏览器复验高风险主流程，并记录控制台、网络来源与布局证据。
 
 ### 阶段 82：确认缺陷的 TDD 修复与相邻回归
-- **状态：** pending
-- [ ] 每个候选问题先建立静态证据或最小可复现失败测试，排除误报后再修改产品代码。
-- [ ] 采用最小、完整、向后兼容修复；同步共享类型、测试、API/schema/README 等受影响文档。
-- [ ] 每批修复运行目标测试、相邻回归、类型检查和差异检查，持续更新 findings/progress。
+- **状态：** complete
+- [x] 每个候选问题先建立静态证据或最小可复现失败测试，排除误报后再修改产品代码。
+- [x] 采用最小、完整、向后兼容修复；同步共享类型、测试、API/schema/README 等受影响文档。
+- [x] 每批修复运行目标测试、相邻回归、类型检查和差异检查，持续更新 findings/progress。
 - **已提前完成的修复批次：**
   - 远程缩略图截断/像素炸弹缺陷已按先红后绿修复；新下载统一为净化 WebP，旧本地缩略图保持可读，专项与相邻 API 验证全绿。
   - Open-Meteo 超时已覆盖响应正文读取与 JSON 解析，流式挂起回归、weather 专项和类型检查全绿。
@@ -766,16 +768,61 @@
   - 衣物视觉 busy 现按 garment ID 与动作独立跟踪，旧任务收尾不能清除其他衣物任务，也不再借用全局页面 busy。App 96/96、相邻前端 166/166、类型/差异检查及真实 Chrome 双任务释放复验全绿。
   - availability busy 现按 garment ID 集合跟踪，多个并行请求均保持自己的禁用与 `aria-busy`；App 98/98、相邻前端 168/168、类型/差异检查及真实 Chrome 双请求复验全绿。
 
+  - 推荐反馈在创建实际穿着事实前会拒绝损坏的 recommendation run `input_json`，不再静默伪装为 casual；合法 `{}`/无效业务字段容错保持兼容。目标 18/18、相邻 73/73、全仓 641/641、类型与差异检查全绿。
+
+  - 视觉标签推理结果现按 runtime schema 验证对象、分类、字符串数组与 scores，CLI 坏 JSON 和错误结构统一为 `VISION_TAG_OUTPUT_INVALID`，不再持久化垃圾标签或抛裸 TypeError。目标 6/6、相邻 90/90、全仓 643/643、类型与差异检查全绿。
+
+  - 生产与开发依赖实时 audit 从 12 项生产漏洞 + 1 项 dev high 降到双 0：升级 archiver 8、sharp 0.35.3，并 override body-parser 2.3.0、tar 7.5.22、protobufjs 7.6.5、postcss 8.5.23；Archiver 8 改用 ZipArchive ESM 类。相邻 127/127、全仓 643/643、Sharp smoke、模型状态、生产构建、类型与差异检查全绿。
+
+  - Python/辅助脚本门禁已补齐：3 个测试文件共 38/38 通过；`models:verify` 对现有 rembg u2netp 与 CLIP 执行真实推理并通过。测试/验证只创建并清理已提前告知的系统临时目录，未删除项目文件或证据。
+
+  - 模型管理链已修复三项确认缺陷：Web/API download/verify job 采用独立 30 分钟超时、单次结算和进程树终止；模型文件按普通文件/必要非空语义判定并通过同目录 `.part` 原子提交；可信模型根以 lstat/realpath 拒绝 root/子目录 junction 穿透。目标 6/6、单 worker 相邻 117/117、全仓 649/649、类型、真实 models status/verify 与差异检查全绿。
+
+  - 淘宝采集 job 增加独立两小时默认超时与单次结算：无产物挂起会 failed/kill/释放锁，有完整 JSON 则保留 succeeded artifact；取消、clear 与迟到 exit 均不会泄漏 timer 或覆盖结果。目标 2/2、相邻 139/139、类型与差异检查全绿。
+
+  - Windows/Node 24 下 Vitest 默认 forks 两次出现 worker 意外退出；项目现显式使用 threads/4。单 worker 651/651、参数化 threads/4 连续两次 651/651，配置后裸 `npm test` 连续两次 651/651，类型与差异检查全绿。
+
+  - 模型 CLI 的 GitHub/Hugging Face 请求现有统一 30 分钟单请求截止器，覆盖连接和 JSON/arrayBuffer 正文；即使自定义 fetch 忽略 abort 也会稳定拒绝。目标 2/2、模型脚本 13/13、全仓 653/653、真实 models status/verify、类型与差异检查全绿。
+
+  - CLIP 下载现严格校验 Hugging Face metadata schema，并在返回成功前复用可信根 `clipModelReady`；缺项 metadata 不再让 Web job 误报模型准备好。目标 2/2、模型脚本 15/15、全仓 655/655、真实 models status/verify、类型与差异检查全绿。
+
+  - CLIP 可信根内的多级目录创建现逐级先校验普通目录/realpath，再以非递归 mkdir 创建单层；intermediate junction 不再先在根外创建目录后才失败。目标 1/1、模型脚本/文件 16/16、真实 models status/verify、类型与差异检查全绿。
+
 ### 阶段 83：全量复验、残余风险与最终签收
-- **状态：** pending
-- [ ] 重跑全部质量门禁、依赖审计、非破坏性生产构建与真实浏览器验收。
-- [ ] 复核 Git 差异，区分本轮修改、既有证据文件和未解决但非缺陷的残余风险。
-- [ ] 只有在所有可确认错误均已修复并有直接验证证据后，更新三份规划记录并完成 active goal。
+- **状态：** complete
+- [x] 重跑全部质量门禁、依赖审计、非破坏性生产构建与真实浏览器验收。
+- [x] 复核 Git 差异，区分本轮修改、既有证据文件和未解决但非缺陷的残余风险。
+- [x] 只有在所有可确认错误均已修复并有直接验证证据后，更新三份规划记录并完成 active goal。
+- **最终门禁：** Node 51 文件 656/656（threads/1 及默认 threads/4 连续复验）、Python 38/38、lint/typecheck、双 audit 0、真实 models status/verify、Vite production build、`git diff --check` 全绿。
+- **真实浏览器：** 新隔离数据库完成注册、五项导航、主要空态/禁用语义、模型状态、1280×720 与 390×844 布局；两种视口无横向溢出，远程 HTTP 图片 0，控制台 error/warn 0。
+- **Git 边界：** 22 个预期跟踪修改；67 个未跟踪项精确为 65 个既有 Playwright 证据及独占锁源码/测试。dist 与 final-audit 证据均按既有规则忽略，未提交或暂存。
+- **残余说明：** 首次阶段 83 裸测试曾无诊断 exit 1，但随后单 worker 656/656、默认 threads/4 连续两次 656/656；外部 code-review CLI 不可用已在阶段 79 记录，不构成当前代码缺陷。既有 LF→CRLF 提示不影响 diff check。
+- **删除记录：** 除提前明确告知并由工具自动重建的忽略目录 `dist`、以及 models/pytest 自身系统临时目录清理外，未删除任何项目、数据、模型或证据文件。
+
+### 2026-07-26 暂停恢复检查点
+- 用户要求立即暂停；不再运行审查、测试或构建。active goal 保持未完成，阶段 81 仍为 `in_progress`，阶段 82/83 不提前标记完成。
+- 最近已收口三项工作：损坏 recommendation run JSON 拒绝写入权威穿着记录；视觉推理输出严格 runtime schema 校验；生产/开发依赖漏洞降至双 0，并完成 Archiver 8 ESM 迁移。
+- 最新联合门禁：全仓 51 文件 643/643、目标/相邻测试 18/18、73/73、6/6、90/90、127/127，TypeScript、`git diff --check`、Sharp 内存 smoke、`models:status`、Vite production build 均通过；full/prod audit 均为 0 漏洞。
+- 当前 Git 边界：16 个跟踪文件有预期差异，另有既有 Playwright 证据及 `src/lib/exclusiveAction.ts`、`tests/exclusiveAction.test.ts` 未跟踪；未提交、未回退、未清理或删除任何文件。
+- 尚未完成：Python/辅助脚本质量门禁、下一批服务端或脚本层缺陷审查，以及阶段 83 最终全量签收。
+- 下次恢复第一步：读取三份规划文件和 active goal，核对 Git/5174/8788；然后只读枚举 `tests/*.py` 并检查 `python -m pytest --version`，优先运行 `tests/test_vision_rembg.py`。执行 `models:verify` 前先审查脚本副作用；不得运行会删除文件的 `privacy:clean`。
 
 ### 本轮新增错误
 | 错误 | 尝试次数 | 解决方案 |
 |------|---------:|---------|
-| 两条只读盘点命令把 PowerShell `foreach` 结果直接接入管道，解析器报 `EmptyPipeElement`，对应整条命令未执行 | 2 | 已确认无文件或进程变化；今后所有循环输出先写入 `$rows` 数组，再单独 `Format-Table`，不再使用循环后直接管道 |
+| 采集 job 超时首轮实现把 Node Timeout 句柄留在 InternalCaptureJob，`publicJob` 未剥离它，Express JSON 序列化循环结构后返回 500 | 1 | 将 timeout 与 child/logFd 一并视为私有字段剥离，并在目标测试显式断言启动响应 200；再验证真正 timeout/kill/锁释放路径 |
+| 默认 forks worker 先在模型链接 7 文件相邻中意外退出，后在采集超时后的全仓运行再次退出；第二次 50/51 文件、570/651，恰缺完整 API 文件 81 项 | 2 | 不再重复默认命令；先用单 worker threads 全仓证明断言，再检查 Vitest 配置、API 资源收敛与 Windows fork 并发，修复默认 `npm test` 稳定性后才收口 |
+| 模型文件首轮相邻回归把 CLIP 的 `merges.txt` 也强制为非空，导致 5 个既有合法空 merges 夹具失败；并行类型/状态输出因 Promise 首项失败未回传 | 1 | 保留 JSON/ONNX/rembg 非空约束，仅允许 `merges.txt` 为空但必须是普通文件；修复后独立重跑相邻、类型与状态，不采用未回传结果 |
+| 模型文件红灯组合命令的 `-t "empty model files|partial temporary"` 未匹配中间含 `local vision` 的 API 测试名，导致该文件整组跳过 | 1 | 脚本两项红灯已有效；API 改用完整唯一片段 `does not report empty local vision model files` 单独运行，不重复原过滤器 |
+| 恢复时把阶段 78—83、findings/progress 尾部、Git 状态组合到一次输出，443 行结果超过回传上限并被截断 | 1 | 关键的阶段 81—83、暂停断点、最新门禁和 Git 汇总均已返回；后续按单一文件/小区块读取，不再组合回传大段历史记录 |
+| 前端异步总表与组件 busy 宽扫并行返回 608 行、超过输出上限，局部组件结果被截断 | 1 | 只读扫描无修改；已保留完整 App 函数清单，不重复宽搜，后续按单一候选函数和组件精确读取小区块 |
+| 绿色脚本进入刷新挂起后，以精确名称“刷新”创建的 locator 因 busy 文案变为“刷新中”而在 `isEnabled()` 等待超时 | 1 | 产品互斥已触发但证据不完整；关闭含未决路由的污染会话，改用按钮内部 SVG/稳定容器 locator，并在全新会话完整重跑 |
+| 绿色 Playwright 脚本首次用页面 `atob` 直接还原 UTF-8 源码，中文“历史洞察”变成乱码并在首个 click 等待 30 秒超时 | 1 | 尚未安装路由或产生受控请求；runner 改为 `atob` 后用 `Uint8Array + TextDecoder('utf-8')` 还原源码，不修改产品或证据脚本逻辑 |
+| Playwright 认证页引用在重渲染/只读 eval 后失效：首轮短引用、同快照密码引用和第三次用户名引用均无效；CLI 错误仍返回退出码 0 | 3 | 页面与数据库未提交；停止逐字段引用方案，改由当前浏览器上下文调用本地注册 API、保留会话 cookie，再重载快照确认登录 |
+| `playwright-cli --help` 已完整输出命令语法，但 Windows 退出阶段触发 libuv `UV_HANDLE_CLOSING` 断言并返回 1，使并行认证源码结果未回传 | 1 | 未启动浏览器、无产品文件变化；保留已获得的 CLI 会话语法，不重复 help，认证标签改为独立只读命令 |
+| 浏览器账号线索扫描同时检索全部 Playwright YAML/Markdown，命中超长淘宝 bookmarklet 并使输出截断 | 1 | 只读命令无修改；不再宽搜旧证据，改用本缺陷目录中的全新隔离数据库并注册专用 QA 账号，避免依赖未知旧凭据 |
+| 续跑恢复的外层工具编排把只读命令结果保存为 `result`，却调用了不存在的变量 `r`，导致首轮结果未回传 | 1 | 内层只读命令无文件或进程变更；第二次使用一致变量名成功恢复，后续工具脚本在发送前核对声明与输出变量 |
+| 只读盘点命令把 PowerShell `foreach` 结果直接接入管道，解析器报 `EmptyPipeElement`，对应整条命令未执行 | 3 | 本次组件扫描重犯同一语法错误；确认无文件或进程变化，后续循环输出固定先写入 `$rows` 数组，再单独 `Format-Table` |
 | 阶段状态补丁和两次阶段 79 进度补丁因上下文过宽或顺序假设错误而未应用 | 3 | 三次均无部分写入；后续只按单一区块的精确相邻行修改，不再跨区块组合 |
 | code-review `check` 仅按路径把 OpenAI provider 判为 ok；直接版本命令及真实 review 均被 WindowsApps 拒绝访问 | 2 | 已完成一次真实验证并确认 `WinError 5`；其他 provider 不存在，停止重试并由主 Agent完成交叉审查 |
 | 单 worker 全量 Vitest 在 43/44 文件、508/572 测试后发生 fork worker 意外退出，未给出具体文件 | 1 | 不重复原命令；改用诊断 reporter、文件清单/分片和不同 pool 定位是测试隔离、Node/Vitest 环境还是项目资源泄漏 |
@@ -821,3 +868,31 @@
 | 视觉 busy 红灯的三文档组合补丁引用了一行措辞漂移的旧错误记录，整批校验失败 | 1 | 无部分写入；拆成证据/findings/progress 与 task_plan 两个精确补丁后完成记录 |
 | availability 修复后的只读检索尝试给当前 PowerShell `Select-String` 传 `-Recurse` | 1 | 参数解析失败、命令未执行；改用 `Get-ChildItem -Recurse -File | Select-String`，确认旧单例名称仅作为新复数名称子串出现 |
 | 历史/导出浏览器脚本先后因动态“刷新中”名称、遗留拦截路由和原生确认弹窗中断结构化结果 | 3 | 三次均未修改数据库；改用稳定图标定位、先清路由再重载，并在测试页临时将 `window.confirm` 替换为返回 true，最终稳定得到双请求红灯 |
+| 全局 busy 首轮实现后目标测试剩 2 项：对象参数类型使 `namedFunctionSource` 截断；读取新产物被错误一律禁用 | 1 | 对推荐函数改用明确边界提取；保留“读取产物取消预览”的既有能力，并以同步释放 preview 锁后再取得 read 锁实现安全交接 |
+| 续跑首次并行恢复使用技能示例中的 `$HOME/.claude/.../session-catchup.py`，本机实际技能安装在 `.agents`，缺失路径令整组只读命令返回 1 | 1 | 工作树和端口结果已返回、无写入副作用；改用已读取 SKILL.md 的实际目录 `C:/Users/Vader/.agents/skills/planning-with-files-zh/scripts/session-catchup.py`，其余规划文件分开读取 |
+| 旅行组件扫描用 `Get-ChildItem -LiteralPath ... -Recurse -Include '*Trip*'`，该路径形式下 Include 未限制结果，返回 421 行全 features 命中并截断 | 1 | 只读命令无文件变化；停止依赖 `-Include` 过滤，后续先用 `Where-Object Name -like '*Trip*'` 定位准确文件，再对单文件精确读取 |
+| 依赖补丁探针猜测存在 `glob@10.5.1`，registry 返回 E404；组合命令因后续 echo 仍以 0 退出 | 1 | 未修改依赖或锁文件；确认 10.5.0 后无同主补丁，不再尝试虚构版本，改由 archiver 8 的新依赖链移除旧 glob/minimatch/brace 链 |
+| Archiver 8 安装后首次相邻测试有 3 个 ZIP 用例失败：ESM default 导入不再可调用，返回 `TypeError: default is not a function` | 1 | 其余 124 项通过、失败集中；不退回有漏洞的 v7，读取 v8 本地入口/官方 API 后迁移到正式 named create，并保留 export/API 专项复验 |
+| 读取 Archiver 8 源码已知无 default 后，运行时形状探针仍尝试 `import default, * as namespace`，Node 在实例化时报“不提供 default export” | 1 | 探针未执行且无文件变化；不再引用 default，改为 namespace-only 检查 `ZipArchive`，类型声明独立读取避免 Promise 结果丢失 |
+| Archiver 8 适配首个组合补丁猜测 export.ts 存在 `ApiError` import 上下文，校验失败而整批未应用 | 1 | 无部分写入；已读取真实文件头，后续只按 archiver import 行和 archive 构造行两个精确上下文修改，构造器桥接放在完整 imports 之后 |
+| 模型脚本 intermediate junction 红灯确认安全检查发生过晚，根外 `Xenova` 已被递归 mkdir 创建 | 1 | 测试仅使用隔离系统临时目录且不访问网络；不做失败后删除，改为逐级先校验再单层创建，从源头阻止根外写入 |
+| 阶段 83 首次裸 `npm test` 只打印 `RUN` 后 exit 1，无断言、文件或 worker 诊断 | 1 | 不重复无信息命令；先用 threads/1 verbose 获取稳定可定位证据，再回到标准 threads/4 命令复验 |
+| 最终浏览器首次导航被连接层外部遥测超时中断，未得到页面 snapshot | 1 | 错误未报告断连；按 browser troubleshooting 保留当前 binding，改为检查现有标签并使用 fresh tab，不切换自动化后端 |
+| 最终浏览器注册首次用 exact `getByLabel("用户名/密码")` 得到 0 个元素 | 1 | 计数检查发生在填值前、数据库零写入；fresh snapshot 显示帮助文本属于可访问名称，改用 snapshot 中完整名称 |
+
+### 2026-07-25 暂停检查点
+- 用户要求暂停，阶段 81 保持 `in_progress`，阶段 83 不得提前开始或把 active goal 标记完成。
+- 已完成并留证：全局 BusyAction 双向互斥、History 动态文案布局稳定、缩略图保存关闭/重开同衣物的 ABA 会话隔离；最新完整 App 回归为 103/103。
+- 当前未提交产品/测试/文档差异全部保留；未删除、回退或清理任何证据文件。
+- 暂停收尾已关闭 `outfit-globalbusy-fixed-2` 浏览器会话及本轮隔离 API/Vite；5174/8788 均无监听。
+- 恢复后的第一步：核对工作树与端口，补跑缩略图批次相邻 5 文件、`npm run typecheck`、`git diff --check`；通过后继续逐个审查反馈/替换/购买检查等异步入口。
+- 恢复后上述门禁已完成：相邻 5 文件 131/131、类型检查与差异检查通过；当前续作入口更新为反馈/替换/购买检查等异步会话的精确审查。
+
+### 2026-07-26 01:32 暂停检查点
+- 用户明确要求暂停并保存进度；当前 goal 保持 `active`，不标记 `complete` 或 `blocked`，本轮不再继续阶段 81/82/83 审查。
+- 本轮新增并已验证的修复：视觉模型后台任务超时与迟到退出隔离、模型零字节/部分写入与 junction 越界防护、淘宝采集任务超时、Vitest 固定 threads/4 稳定配置、模型 CLI 请求级超时、CLIP metadata schema 与下载完成性门禁。
+- 最新关键门禁：Python 38/38；模型脚本/文件 15/15；真实 `models:status` 与 `models:verify` 通过；裸 `npm test` 51 文件 655/655；`npm run typecheck` 与 `git diff --check` 通过。
+- 当前工作树完整保留：22 个跟踪修改、67 个未跟踪文件；未提交、未暂存、未删除、未回退或清理任何项目/证据文件。
+- 当前 5174/8788 均无监听，无需额外关闭服务；`dist` 未进入 Git 状态。
+- 恢复入口：先读取 `task_plan.md`、`findings.md`、`progress.md` 本检查点并核对 Git/端口；随后进入完成性审计，逐项对齐阶段 81/82 未勾选项，再执行阶段 83 的最终测试、双 audit、生产构建、浏览器证据与 Git 边界验收。
+- 暂停核对中的一次只读统计误差：PowerShell `-like '??*'` 将问号解释为通配符，错误显示 0/89；完整 `git status --short` 清单与既有边界确认实际仍为 22/67，未产生写入副作用。

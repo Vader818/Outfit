@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase, type AppDatabase } from "../server/db";
 import { DEFAULT_CLIP_MODEL_ID } from "../server/services/garmentSimilarity";
-import { createGarmentVisionTags } from "../server/services/vision";
+import { createGarmentVisionTags, type VisionTagInferenceResult } from "../server/services/vision";
 
 describe("本地视觉 embedding 缓存", () => {
   const databases: AppDatabase[] = [];
@@ -125,6 +125,42 @@ describe("本地视觉 embedding 缓存", () => {
     expect(fixture.db.prepare("SELECT vision_tags FROM garments WHERE id = ?").get(fixture.garmentId)).toEqual({
       vision_tags: null
     });
+  });
+
+  it.each([
+    ["非法分类和对象标签", {
+      category: "hat",
+      styles: [{ name: "formal" }],
+      patterns: [],
+      tags: [],
+      scores: []
+    }],
+    ["空 score 项", {
+      styles: [],
+      patterns: [],
+      tags: [],
+      scores: [null]
+    }]
+  ])("拒绝视觉推理返回的%s且不写入标签或缓存", async (_label, inference) => {
+    const fixture = createVisionFixture(databases);
+
+    const rejection = await createGarmentVisionTags(fixture.db, fixture.garmentId, {
+      modelRoot: fixture.modelRoot,
+      thumbnailOutputDir: fixture.thumbnailOutputDir,
+      inferVisionTags: async () => inference as unknown as VisionTagInferenceResult
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect.soft(rejection).toMatchObject({
+      code: "VISION_TAG_OUTPUT_INVALID",
+      status: 500
+    });
+    expect.soft(fixture.db.prepare("SELECT vision_tags FROM garments WHERE id = ?").get(fixture.garmentId)).toEqual({
+      vision_tags: null
+    });
+    expect.soft(fixture.db.prepare("SELECT COUNT(*) AS count FROM garment_embeddings").get()).toEqual({ count: 0 });
   });
 });
 

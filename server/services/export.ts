@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import { finished } from "node:stream/promises";
-import archiver, { type Archiver } from "archiver";
+import * as archiverRuntime from "archiver";
+import type { Archiver, ArchiverOptions } from "archiver";
 import type {
   FeedbackReason,
   FeedbackVerdict,
@@ -37,6 +38,10 @@ import {
 } from "./garmentAssets";
 import { listSavedOutfits } from "./savedOutfits";
 import { listTrips } from "./tripPlanner";
+
+const ZipArchive = (archiverRuntime as unknown as {
+  ZipArchive: new (options?: ArchiverOptions) => Archiver;
+}).ZipArchive;
 
 export const OUTFIT_EXPORT_V2_FEATURES = [
   "versioned-migrations",
@@ -405,7 +410,7 @@ export async function writeOutfitExportZip(
   const exported = buildOutfitExportV2(db, options);
   const assetRoot = options.assetRoot ?? DEFAULT_GARMENT_ASSET_ROOT;
   const archiveDate = validArchiveDate(exported.exportedAt);
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const streamFailure = archiveFailure(archive, destination);
   archive.pipe(destination);
   const destinationFinished = finished(destination, { readable: false });

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -697,6 +697,110 @@ describe("API routes", () => {
     expect(blockedResponse.status).toBe(409);
     expect(blockedBody).toMatchObject({ error: { code: "CAPTURE_JOB_RUNNING" } });
     expect(restartedResponse.status).toBe(200);
+  });
+
+  it("times out a hung capture job, preserves the timeout after exit, and releases the lock", async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (...args: unknown[]) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { taobaoCaptureJobTimeoutMs: 20 });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; status: string };
+    const originalExitListener = listeners.get("exit");
+    expect(startResponse.status).toBe(200);
+    expect(job.status).toBe("running");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const timedOutResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    const timedOutJob = await timedOutResponse.json() as { status: string; error?: string };
+
+    expect(timedOutJob).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+
+    originalExitListener?.(1, null);
+    const lateExitResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    expect(await lateExitResponse.json()).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+
+    const nextResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const nextJob = await nextResponse.json() as { id?: string };
+    if (nextResponse.status === 200 && nextJob.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${nextJob.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+    expect(nextResponse.status).toBe(200);
+  });
+
+  it("keeps a completed capture artifact when terminating a hung job after timeout", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { taobaoCaptureJobTimeoutMs: 20 });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; outputDir: string };
+    expect(startResponse.status).toBe(200);
+    writeFileSync(path.join(job.outputDir, "capture.json"), JSON.stringify({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: []
+    }), "utf8");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const statusResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    const finishedJob = await statusResponse.json() as {
+      status: string;
+      artifactPath?: string;
+      message: string;
+      error?: string;
+    };
+
+    expect(finishedJob).toMatchObject({
+      status: "succeeded",
+      artifactPath: path.join(job.outputDir, "capture.json"),
+      message: expect.stringContaining("超时")
+    });
+    expect(finishedJob.error).toBeUndefined();
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
   });
 
   it("starts item-detail capture jobs with Selenium by default", async () => {
@@ -3058,6 +3162,94 @@ describe("API routes", () => {
     expect(clearedStatus.jobs).toEqual([]);
   });
 
+  it("does not report empty local vision model files as installed", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    const clipDir = path.join(modelRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), Buffer.alloc(0));
+    for (const file of [
+      "config.json",
+      "preprocessor_config.json",
+      "special_tokens_map.json",
+      "tokenizer.json",
+      "tokenizer_config.json",
+      "vocab.json",
+      "merges.txt"
+    ]) {
+      writeFileSync(path.join(clipDir, file), Buffer.alloc(0));
+    }
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), Buffer.alloc(0));
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json() as { models: Array<{ id: string; installed: boolean }> };
+
+    expect(response.status).toBe(200);
+    expect(body.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rembg-isnet", installed: false }),
+      expect.objectContaining({ id: "clip-vit-base-patch32", installed: false })
+    ]));
+  });
+
+  it("does not report models through a linked model root as installed", async (context) => {
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-outside-test-"));
+    const linkedRootParent = mkdtempSync(path.join(tmpdir(), "outfit-models-link-parent-test-"));
+    const linkedRoot = path.join(linkedRootParent, "linked-model-root");
+    const rembgDir = path.join(outsideRoot, "rembg");
+    const clipDir = path.join(outsideRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-rembg", "utf8");
+    for (const file of [
+      "config.json",
+      "preprocessor_config.json",
+      "special_tokens_map.json",
+      "tokenizer.json",
+      "tokenizer_config.json",
+      "vocab.json"
+    ]) {
+      writeFileSync(path.join(clipDir, file), "{}", "utf8");
+    }
+    writeFileSync(path.join(clipDir, "merges.txt"), "", "utf8");
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), "fake-clip", "utf8");
+    try {
+      symlinkSync(outsideRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code || "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: linkedRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json() as { models: Array<{ id: string; installed: boolean }> };
+
+    expect(response.status).toBe(200);
+    expect(body.models.every((model) => model.installed === false)).toBe(true);
+  });
+
   it("defaults web-triggered vision verification jobs to explicit local GPU backends", async () => {
     const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
     const listeners = new Map<string, (code?: number) => void>();
@@ -3092,6 +3284,62 @@ describe("API routes", () => {
       })
     );
     listeners.get("close")?.(0);
+  });
+
+  it("times out hung vision model jobs and preserves the timeout after a late close", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const listeners = new Map<string, (value?: number | Error) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (value?: number | Error) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, {
+      visionModelRoot: modelRoot,
+      visionModelJobTimeoutMs: 20
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/download`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const startedJob = await response.json() as { id: string; status: string };
+    expect(startedJob.status).toBe("running");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const timedOutResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const timedOutStatus = await timedOutResponse.json() as {
+      models: Array<{ id: string; job?: { id: string; status: string; error?: string } }>;
+    };
+    const timedOutJob = timedOutStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job;
+
+    expect(timedOutJob).toMatchObject({
+      id: startedJob.id,
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+
+    listeners.get("close")?.(1);
+    const lateCloseResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const lateCloseStatus = await lateCloseResponse.json() as {
+      models: Array<{ id: string; job?: { id: string; status: string; error?: string } }>;
+    };
+    expect(lateCloseStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job).toMatchObject({
+      id: startedJob.id,
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
   });
 
   it("reuses running vision jobs and reports succeeded or failed jobs in model status", async () => {

@@ -111,7 +111,7 @@ export function WardrobeView(props: WardrobeViewProps) {
             {props.onRefreshThumbnails ? (
               <Button
                 variant="secondary"
-                disabled={props.busyAction === "refresh-thumbnails"}
+                disabled={props.busy}
                 onClick={props.onRefreshThumbnails}
               >
                 <Images aria-hidden="true" size={18} />
@@ -208,7 +208,7 @@ export function WardrobeView(props: WardrobeViewProps) {
             <Button
               variant="primary"
               size="sm"
-              disabled={props.busyAction === "bulk-confirm"}
+              disabled={props.busy}
               onClick={props.onBulkConfirm}
             >
               <Check aria-hidden="true" size={16} />
@@ -217,7 +217,7 @@ export function WardrobeView(props: WardrobeViewProps) {
           </div>
           {props.onBulkSeasons || props.onBulkTags || props.onBulkExcluded || props.onBulkAvailability ? (
             <WardrobeBatchControls
-              disabled={props.busyAction === "bulk-update" || props.busyAction === "bulk-availability"}
+              disabled={props.busy}
               onSeasons={props.onBulkSeasons}
               onTags={props.onBulkTags}
               onExcluded={props.onBulkExcluded}

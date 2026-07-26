@@ -456,7 +456,11 @@ function parseCandidateWearContext(candidate: CandidateRow): {
   try {
     parsed = JSON.parse(candidate.input_json);
   } catch {
-    return { occasion: "casual" };
+    throw new ApiError(
+      "CORRUPT_RECOMMENDATION_CANDIDATE",
+      `推荐候选 ${candidate.candidate_id} 的 input_json 损坏`,
+      500
+    );
   }
   if (!isRecord(parsed)) return { occasion: "casual" };
   const occasion = isOutfitOccasion(parsed.occasion) ? parsed.occasion : "casual";

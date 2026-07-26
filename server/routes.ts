@@ -31,9 +31,11 @@ export interface ApiAppOptions {
   thumbnailMaxDownloadsPerGarment?: number;
   thumbnailDelayMs?: number;
   garmentAssetRoot?: string;
+  taobaoCaptureJobTimeoutMs?: number;
   visionModelRoot?: string;
   visionDevice?: VisionServiceOptions["visionDevice"];
   rembgProvider?: VisionServiceOptions["rembgProvider"];
+  visionModelJobTimeoutMs?: VisionServiceOptions["visionModelJobTimeoutMs"];
   visionProcessTimeoutMs?: VisionServiceOptions["visionProcessTimeoutMs"];
   visionProcessMaxOutputBytes?: VisionServiceOptions["visionProcessMaxOutputBytes"];
   runRembg?: VisionServiceOptions["runRembg"];
@@ -148,7 +150,10 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.post("/api/capture/jobs", (request, response) => {
-    handle(response, () => startTaobaoCaptureJob(validateCaptureJobRequest(request.body)));
+    handle(response, () => startTaobaoCaptureJob(
+      validateCaptureJobRequest(request.body),
+      { timeoutMs: options.taobaoCaptureJobTimeoutMs }
+    ));
   });
 
   app.get("/api/capture/jobs/:id", (request, response) => {
@@ -582,6 +587,7 @@ function visionOptions(options: ApiAppOptions): VisionServiceOptions {
     thumbnailMaxDownloadsPerGarment: options.thumbnailMaxDownloadsPerGarment,
     visionDevice: options.visionDevice,
     rembgProvider: options.rembgProvider,
+    visionModelJobTimeoutMs: options.visionModelJobTimeoutMs,
     visionProcessTimeoutMs: options.visionProcessTimeoutMs,
     visionProcessMaxOutputBytes: options.visionProcessMaxOutputBytes,
     runRembg: options.runRembg,

@@ -49,9 +49,14 @@ export interface ReadLatestTaobaoCaptureOptions {
   wardrobeOnly?: boolean;
 }
 
+export interface TaobaoCaptureJobOptions {
+  timeoutMs?: number;
+}
+
 const OUTPUT_DIR = "output/taobao-captures";
 const DEFAULT_ORDER_MAX_PAGES = 3;
 const DEFAULT_LOGIN_WAIT_SECONDS = 60;
+const DEFAULT_CAPTURE_JOB_TIMEOUT_MS = 2 * 60 * 60_000;
 const MAX_CAPTURE_SCAN_DEPTH = 2;
 const MAX_CAPTURE_ARTIFACT_BYTES = 20 * 1024 * 1024;
 
@@ -62,6 +67,7 @@ interface InternalCaptureJob extends CaptureJob {
     on?: (event: string, callback: (...args: unknown[]) => void) => unknown;
   };
   logFd?: number;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 const captureJobs = new Map<string, InternalCaptureJob>();
@@ -101,7 +107,7 @@ export function startTaobaoCaptureJob(input: {
   loginWait?: number;
   url?: string;
   engine?: CaptureEngine;
-}): CaptureJob {
+}, options: TaobaoCaptureJobOptions = {}): CaptureJob {
   const activeJob = findActiveCaptureJob();
   if (activeJob) {
     throw new ApiError("CAPTURE_JOB_RUNNING", "已有采集任务正在运行，请等待完成或取消后再启动。", 409);
@@ -137,35 +143,47 @@ export function startTaobaoCaptureJob(input: {
     logFd
   };
   let completed = false;
-
-  captureJobs.set(id, job);
-  child.on?.("exit", (code, signal) => {
+  const finish = (outcome: "exit" | "error" | "timeout", code?: unknown, signal?: unknown): void => {
     if (completed || job.status === "cancelled") return;
     completed = true;
+    clearCaptureJobTimeout(job);
+    if (outcome === "timeout") {
+      terminateCaptureProcess(job);
+    }
     const artifact = findLatestJsonArtifact(job.outputDir);
     if (artifact) {
       job.status = "succeeded";
       job.artifactPath = artifact.filePath;
-      job.message = "采集完成，产物已生成。";
+      job.message = outcome === "timeout"
+        ? "采集产物已生成；挂起的采集进程已在超时后终止。"
+        : "采集完成，产物已生成。";
     } else {
       job.status = "failed";
-      job.error = code === 0 ? "采集进程结束，但没有生成 JSON 产物。" : `采集进程退出：code=${code ?? "null"} signal=${signal ?? "null"}`;
+      job.error = outcome === "timeout"
+        ? "采集任务超时，已终止挂起的采集进程。"
+        : outcome === "error"
+          ? (code instanceof Error ? code.message : String(code))
+          : code === 0
+            ? "采集进程结束，但没有生成 JSON 产物。"
+            : `采集进程退出：code=${code ?? "null"} signal=${signal ?? "null"}`;
       job.message = job.error;
     }
     job.updatedAt = new Date().toISOString();
     closeJobLog(job);
     delete job.child;
+  };
+
+  captureJobs.set(id, job);
+  job.timeout = setTimeout(
+    () => finish("timeout"),
+    configuredCaptureJobTimeout(options.timeoutMs)
+  );
+  job.timeout.unref?.();
+  child.on?.("exit", (code, signal) => {
+    finish("exit", code, signal);
   });
   child.on?.("error", (error) => {
-    if (completed || job.status === "cancelled") return;
-    completed = true;
-    const message = error instanceof Error ? error.message : String(error);
-    job.status = "failed";
-    job.error = message;
-    job.message = message;
-    job.updatedAt = new Date().toISOString();
-    closeJobLog(job);
-    delete job.child;
+    finish("error", error);
   });
 
   return publicJob(job);
@@ -186,6 +204,7 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
     throw new ApiError("NOT_FOUND", "采集任务不存在", 404);
   }
   if (job.status === "running" || job.status === "pending") {
+    clearCaptureJobTimeout(job);
     terminateCaptureProcess(job);
     job.status = "cancelled";
     job.message = "采集任务已取消。";
@@ -198,7 +217,9 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
 
 export function clearTaobaoCaptureJobs(): void {
   for (const job of captureJobs.values()) {
+    clearCaptureJobTimeout(job);
     if (job.child) {
+      job.status = "cancelled";
       terminateCaptureProcess(job);
     }
     closeJobLog(job);
@@ -374,7 +395,7 @@ function createCaptureJobId(): string {
 }
 
 function publicJob(job: InternalCaptureJob): CaptureJob {
-  const { child: _child, logFd: _logFd, ...rest } = job;
+  const { child: _child, logFd: _logFd, timeout: _timeout, ...rest } = job;
   return { ...rest };
 }
 
@@ -509,6 +530,18 @@ function terminateCaptureProcess(job: InternalCaptureJob): void {
       // The child may already be gone.
     }
   }
+}
+
+function configuredCaptureJobTimeout(value: number | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0
+    ? Math.floor(Number(value))
+    : DEFAULT_CAPTURE_JOB_TIMEOUT_MS;
+}
+
+function clearCaptureJobTimeout(job: InternalCaptureJob): void {
+  if (!job.timeout) return;
+  clearTimeout(job.timeout);
+  delete job.timeout;
 }
 
 function closeJobLog(job: InternalCaptureJob): void {

@@ -114,6 +114,7 @@ import {
   omitGarmentIds
 } from "../lib/garments";
 import { createKeyedSerialQueue } from "../lib/keyedSerialQueue";
+import { createExclusiveActionLock } from "../lib/exclusiveAction";
 import { createLatestRequestGate } from "../lib/latestRequest";
 import { settleMutations } from "../lib/settledMutations";
 import {
@@ -627,6 +628,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   const [occasion, setOccasion] = useState<Formality>("casual");
   const [latitude, setLatitude] = useState(() => readLocalStorageValue("outfit.latitude", DEFAULT_LATITUDE));
   const [longitude, setLongitude] = useState(() => readLocalStorageValue("outfit.longitude", DEFAULT_LONGITUDE));
+  const [busyActionLock] = useState(() => createExclusiveActionLock<BusyAction>());
   const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
   const settingsSaveInProgress = useRef(false);
   const [error, setError] = useState("");
@@ -655,6 +657,17 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     .map((id) => garments.find((garment) => garment.id === id))
     .filter((garment): garment is Garment => Boolean(garment));
   const canLogout = Boolean(props.user && props.onLogout);
+
+  function tryStartBusyAction(action: BusyAction): boolean {
+    if (!busyActionLock.tryAcquire(action)) return false;
+    setBusyAction(action);
+    return true;
+  }
+
+  function finishBusyAction(action: BusyAction): void {
+    if (!busyActionLock.release(action)) return;
+    setBusyAction((current) => current === action ? null : current);
+  }
 
   function navigateTo(nextTab: AppTab) {
     setTab(nextTab);
@@ -908,9 +921,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError("请先预览并逐项确认导入内容");
       return;
     }
+    if (!tryStartBusyAction("import")) return;
     invalidateImportPreviewRequest();
     invalidateWardrobeRecommendations();
-    setBusyAction("import");
     setError("");
     try {
       const result = await commitTaobaoImport({
@@ -934,7 +947,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入失败");
     } finally {
-      setBusyAction((current) => current === "import" ? null : current);
+      finishBusyAction("import");
     }
   }
 
@@ -954,7 +967,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function startOrdersCapture() {
-    setBusyAction("capture-orders");
+    if (!tryStartBusyAction("capture-orders")) return;
     setError("");
     setCaptureResult(null);
     try {
@@ -964,12 +977,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "启动采集失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("capture-orders");
     }
   }
 
   async function startItemCapture() {
-    setBusyAction("capture-item");
+    if (!tryStartBusyAction("capture-item")) return;
     setError("");
     setCaptureResult(null);
     try {
@@ -979,18 +992,18 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "启动采集失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("capture-item");
     }
   }
 
   function invalidateImportPreviewRequest() {
     importPreviewRequestGate.invalidate();
-    setBusyAction((current) => current === "preview-import" ? null : current);
+    finishBusyAction("preview-import");
   }
 
   async function readLatestCapture() {
     invalidateImportPreviewRequest();
-    setBusyAction("read-capture");
+    if (!tryStartBusyAction("read-capture")) return;
     setError("");
     try {
       const latest = captureJob
@@ -1006,7 +1019,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (captureError) {
       setError(captureError instanceof Error ? captureError.message : "读取采集产物失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("read-capture");
     }
   }
 
@@ -1020,9 +1033,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function previewImport() {
+    if (!tryStartBusyAction("preview-import")) return;
     const previewRequest = importPreviewRequestGate.begin();
     resetPurchaseCheck();
-    setBusyAction("preview-import");
     setError("");
     try {
       const preview = await previewTaobaoImport(JSON.parse(importText));
@@ -1047,7 +1060,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(previewError instanceof Error ? previewError.message : "预览失败");
     } finally {
       if (previewRequest.isCurrent()) {
-        setBusyAction((current) => current === "preview-import" ? null : current);
+        finishBusyAction("preview-import");
       }
     }
   }
@@ -1289,8 +1302,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   async function bulkConfirm() {
     const ids = [...selectedIds];
+    if (!ids.length || !tryStartBusyAction("bulk-confirm")) return;
     invalidateWardrobeRecommendations();
-    setBusyAction("bulk-confirm");
     setError("");
     try {
       const {
@@ -1323,7 +1336,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       await refreshGarments();
       setError(bulkError instanceof Error ? bulkError.message : "批量确认失败");
     } finally {
-      setBusyAction((current) => current === "bulk-confirm" ? null : current);
+      finishBusyAction("bulk-confirm");
     }
   }
 
@@ -1331,8 +1344,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     label: string,
     buildUpdate: (garment: Garment) => Partial<Garment>
   ) {
+    if (!selectedIds.length || !tryStartBusyAction("bulk-update")) return;
     invalidateWardrobeRecommendations();
-    setBusyAction("bulk-update");
     setError("");
     try {
       const selected = garments.filter((garment) => selectedIds.includes(garment.id));
@@ -1375,7 +1388,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       await refreshGarments();
       setError(bulkError instanceof Error ? bulkError.message : "批量更新失败");
     } finally {
-      setBusyAction((current) => current === "bulk-update" ? null : current);
+      finishBusyAction("bulk-update");
     }
   }
 
@@ -1437,9 +1450,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function bulkAvailability(status: GarmentAvailabilityStatus) {
-    if (!selectedIds.length) return;
+    if (!selectedIds.length || !tryStartBusyAction("bulk-availability")) return;
     invalidateWardrobeRecommendations();
-    setBusyAction("bulk-availability");
     setError("");
     const ids = [...selectedIds];
     try {
@@ -1463,7 +1475,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         setError(`${failedIds.length} 件衣物更新失败，已保留选择以便重试`);
       }
     } finally {
-      setBusyAction(null);
+      finishBusyAction("bulk-availability");
     }
   }
 
@@ -1522,7 +1534,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function refreshThumbnails() {
-    setBusyAction("refresh-thumbnails");
+    if (!tryStartBusyAction("refresh-thumbnails")) return;
     setError("");
     setThumbnailRefreshMessage("");
     try {
@@ -1533,7 +1545,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (thumbnailError) {
       setError(thumbnailError instanceof Error ? thumbnailError.message : "缩略图刷新失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("refresh-thumbnails");
     }
   }
 
@@ -1577,6 +1589,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   async function saveThumbnailSelection() {
     if (!thumbnailPicker?.selectedUrl) return;
     const { garment, selectedUrl } = thumbnailPicker;
+    const pickerRequestId = thumbnailPickerRequestId.current;
     const version = beginGarmentMutation(garment.id);
     setThumbnailPicker((current) => current ? { ...current, saving: true, error: "" } : current);
     try {
@@ -1586,15 +1599,19 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       );
       invalidateWardrobeRecommendations();
       commitCurrentGarmentMutation(garment.id, version, updated);
-      setThumbnailPicker(null);
+      if (thumbnailPickerRequestId.current === pickerRequestId) {
+        setThumbnailPicker((current) => current && current.garment.id === garment.id ? null : current);
+      }
       setStatusMessage("主图已更新");
     } catch (pickerError) {
       await recoverCurrentGarmentMutation(garment.id, version);
-      setThumbnailPicker((current) => current && current.garment.id === garment.id ? {
-        ...current,
-        saving: false,
-        error: pickerError instanceof Error ? pickerError.message : "缩略图保存失败"
-      } : current);
+      if (thumbnailPickerRequestId.current === pickerRequestId) {
+        setThumbnailPicker((current) => current && current.garment.id === garment.id ? {
+          ...current,
+          saving: false,
+          error: pickerError instanceof Error ? pickerError.message : "缩略图保存失败"
+        } : current);
+      }
     }
   }
 
@@ -1651,7 +1668,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
   }
 
   async function downloadLocalVisionModel(id: VisionModelId) {
-    setBusyAction("download-vision-model");
+    if (!tryStartBusyAction("download-vision-model")) return;
     setError("");
     try {
       await downloadVisionModel(id);
@@ -1659,12 +1676,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (visionError) {
       setError(visionError instanceof Error ? visionError.message : "模型下载启动失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("download-vision-model");
     }
   }
 
   async function verifyLocalVisionModel(id: VisionModelId) {
-    setBusyAction("verify-vision-model");
+    if (!tryStartBusyAction("verify-vision-model")) return;
     setError("");
     try {
       await verifyVisionModel(id);
@@ -1672,7 +1689,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (visionError) {
       setError(visionError instanceof Error ? visionError.message : "模型验证启动失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("verify-vision-model");
     }
   }
 
@@ -1715,8 +1732,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     recommendationRequestGate.invalidate();
     setRecommendations(null);
     setWearLogFeedback(null);
-    setBusyAction((current) =>
-      current === "weather" || current === "recommend" ? null : current);
+    finishBusyAction("weather");
+    finishBusyAction("recommend");
   }
 
   function invalidateWardrobeRecommendations(
@@ -1736,13 +1753,13 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
 
   function invalidateLocationRequest() {
     locationRequestGate.invalidate();
-    setBusyAction((current) => current === "locate" ? null : current);
+    finishBusyAction("locate");
   }
 
   async function locate() {
     if (!navigator.geolocation) return;
+    if (!tryStartBusyAction("locate")) return;
     const locationRequest = locationRequestGate.begin();
-    setBusyAction("locate");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         if (!locationRequest.isCurrent()) return;
@@ -1756,12 +1773,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
         writeLocalStorageValue("outfit.latitude", lat);
         writeLocalStorageValue("outfit.longitude", lon);
         setStatusMessage("位置已更新");
-        setBusyAction((current) => current === "locate" ? null : current);
+        finishBusyAction("locate");
       },
       () => {
         if (!locationRequest.isCurrent()) return;
         setError("无法获取当前位置，请检查浏览器权限或手动输入坐标");
-        setBusyAction((current) => current === "locate" ? null : current);
+        finishBusyAction("locate");
       }
     );
   }
@@ -1773,8 +1790,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       navigateTo("settings");
       return;
     }
+    if (!tryStartBusyAction("weather")) return;
     const request = recommendationRequestGate.begin();
-    setBusyAction("weather");
     setError("");
     try {
       const snapshot = await getWeather(coordinates.latitude, coordinates.longitude);
@@ -1787,7 +1804,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(weatherError instanceof Error ? weatherError.message : "天气获取失败");
     } finally {
       if (request.isCurrent()) {
-        setBusyAction((current) => current === "weather" ? null : current);
+        finishBusyAction("weather");
       }
     }
   }
@@ -1813,8 +1830,8 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       navigateTo("settings");
       return;
     }
+    if (!tryStartBusyAction("recommend")) return;
     const request = recommendationRequestGate.begin();
-    setBusyAction("recommend");
     setError("");
     try {
       const snapshot = weather ?? await getWeather(coordinates.latitude, coordinates.longitude);
@@ -1838,7 +1855,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(recommendError instanceof Error ? recommendError.message : "推荐失败");
     } finally {
       if (request.isCurrent()) {
-        setBusyAction((current) => current === "recommend" ? null : current);
+        finishBusyAction("recommend");
       }
     }
   }
@@ -2646,9 +2663,9 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError("位置需要同时填写有效的纬度和经度");
       return;
     }
+    if (!tryStartBusyAction("save-settings")) return;
     settingsSaveInProgress.current = true;
     profileRequestGate.invalidate();
-    setBusyAction("save-settings");
     setError("");
     try {
       const latitudeSaved = writeLocalStorageValue("outfit.latitude", latitude);
@@ -2662,21 +2679,21 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
       setError(settingsError instanceof Error ? settingsError.message : "设置保存失败");
     } finally {
       settingsSaveInProgress.current = false;
-      setBusyAction((current) => current === "save-settings" ? null : current);
+      finishBusyAction("save-settings");
     }
   }
 
   async function refreshHistory() {
-    setBusyAction("history");
+    if (!tryStartBusyAction("history")) return;
     try {
       await Promise.all([refreshHistoryData(), refreshSavedOutfits(), refreshTrips()]);
     } finally {
-      setBusyAction(null);
+      finishBusyAction("history");
     }
   }
 
   async function exportBackup() {
-    setBusyAction("export");
+    if (!tryStartBusyAction("export")) return;
     setError("");
     try {
       const exported = await exportBackupWithConfirmation(
@@ -2688,12 +2705,12 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "导出失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("export");
     }
   }
 
   async function exportCompleteBackup() {
-    setBusyAction("export-complete");
+    if (!tryStartBusyAction("export-complete")) return;
     setError("");
     try {
       const exported = await exportCompleteBackupWithConfirmation(
@@ -2706,7 +2723,7 @@ export function MainApp(props: { user?: AuthUser | null; onLogout?: () => void }
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "完整备份导出失败");
     } finally {
-      setBusyAction(null);
+      finishBusyAction("export-complete");
     }
   }
 

@@ -25,14 +25,14 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "archiver": "7.0.1",
+    "archiver": "8.0.0",
     "express": "^5.1.0",
     "helmet": "^8.2.0",
     "lucide-react": "^0.468.0",
     "playwright": "^1.61.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sharp": "0.34.5"
+    "sharp": "0.35.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
@@ -49,7 +49,13 @@
     "vitest": "^4.1.8"
   },
   "overrides": {
+    "@huggingface/transformers": {
+      "sharp": "$sharp"
+    },
+    "body-parser": "2.3.0",
     "esbuild": "0.28.1",
-    "glob": "10.5.0"
+    "postcss": "8.5.23",
+    "protobufjs": "7.6.5",
+    "tar": "7.5.22"
   }
 }

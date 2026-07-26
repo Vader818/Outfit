@@ -299,6 +299,30 @@ describe("recommendation feedback service", () => {
     `).get()).toEqual({ occasion: "casual", weather_snapshot: null });
   });
 
+  it("rejects malformed recommendation run JSON before recording actual wear", () => {
+    const db = createDatabase(":memory:");
+    const top = insertGarment(db, "上衣", "top");
+    const bottom = insertGarment(db, "下装", "bottom");
+    insertCandidate(db, FIRST_CANDIDATE, [top, bottom]);
+    db.prepare(`
+      UPDATE recommendation_runs
+      SET input_json = ?
+      WHERE id = (
+        SELECT run_id FROM recommendation_candidates WHERE candidate_id = ?
+      )
+    `).run("{broken", FIRST_CANDIDATE);
+
+    expect(() => upsertRecommendationFeedback(db, {
+      candidateId: FIRST_CANDIDATE,
+      actuallyWorn: true,
+      reasonCodes: []
+    })).toThrow(/推荐候选 .* input_json 损坏/);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM recommendation_feedback").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM wear_event_items").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM outfit_pair_stats").get()).toEqual({ count: 0 });
+  });
+
   it("keeps migrated wear_log links readable without creating a second event", () => {
     const db = createDatabase(":memory:");
     const top = insertGarment(db, "上衣", "top");

@@ -241,7 +241,7 @@ export function SettingsView(props: SettingsViewProps) {
               <span><strong>启用本地视觉</strong><small>用于去背景和衣物标签建议。</small></span>
             </label>
             {props.onRefreshVisionModels ? (
-              <Button onClick={props.onRefreshVisionModels}>
+              <Button disabled={props.busy} onClick={props.onRefreshVisionModels}>
                 <RefreshCw aria-hidden="true" size={18} />
                 刷新模型
               </Button>
@@ -290,7 +290,7 @@ export function SettingsView(props: SettingsViewProps) {
                     <div className="vision-model-actions">
                       {props.onDownloadVisionModel ? (
                         <Button
-                          disabled={model.installed || running || props.busyAction === "download-vision-model"}
+                          disabled={props.busy || model.installed || running}
                           onClick={() => props.onDownloadVisionModel?.(model.id)}
                           size="sm"
                         >
@@ -300,7 +300,7 @@ export function SettingsView(props: SettingsViewProps) {
                       ) : null}
                       {props.onVerifyVisionModel ? (
                         <Button
-                          disabled={!model.installed || running || props.busyAction === "verify-vision-model"}
+                          disabled={props.busy || !model.installed || running}
                           onClick={() => props.onVerifyVisionModel?.(model.id)}
                           size="sm"
                         >
