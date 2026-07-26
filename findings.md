@@ -1027,3 +1027,1229 @@
 - Trip 初始读取有独立 `tripLoading`，10 秒全局骨架超时后若 Trip GET 仍未完成会显示真实加载态，而不是错误空态。
 - Migration 7 专项现明确断言五表 `STRICT`、显式索引、packing 唯一部分索引、CASCADE/RESTRICT FK、`foreign_key_check=[]`、孤儿 day 拒绝，并独立覆盖合法日期形状下的反向范围；`tripPlanner` 13/13。
 - API/schema/README 已同步原子 update+days、`laundryDay:null`、派生失效、独立上限、guaranteed relaxation、完整 packing coverage 和局部重算确认语义。
+
+## 会话：2026-07-16（全项目独立深度审查）
+
+### 恢复与资产保护基线
+- 系统中已有 active goal，目标文本与用户本次“深入审查整个项目、发现错误即修复、持续写文档”请求一致；重复创建被拒绝后已通过 `get_goal` 确认并沿用。
+- 已完整读取文件化规划与多 provider 代码审查技能。旧阶段 1–77 和旧签收结论只作为历史线索，本轮会独立重建证据，不以“过去通过”替代当前审查。
+- `session-catchup.py` 本次无输出，未发现需要补同步的会话片段。
+- 当前分支为 `codex/outfit-m0-foundation`；跟踪文件没有未提交差异，只有 `.playwright-cli` 下 25 个 2026-07-15 的既有日志/页面快照未跟踪。它们是用户工作区资产，本轮保留且不清理。
+- 项目仅发现根目录一个 `AGENTS.md`；其要求所有回答使用中文。用户级约束另外要求优先 PowerShell 原生命令、PowerShell UTF-8、删除文件前确保用户知晓，以及有独立并行任务时主动使用最多 6 个子 Agent。
+- 当前工具集中没有可直接创建子 Agent 的接口；本轮会使用代码审查技能提供的独立 provider（若本机可用）作为交叉审查，并由主 Agent继续完成所有静态、动态和修复工作。
+- 根目录已有大型持久化记录：`task_plan.md` 约 6.4 万字节、`findings.md` 约 15.9 万字节、`progress.md` 约 10.6 万字节。已新增阶段 78–83，后续任何重要发现、错误、修复和测试结果继续写入这三份文件。
+
+### 初始工作树事实
+- `git status --short --branch` 未显示已跟踪源码修改；因此后续新增的产品代码差异可较清楚地归因于本轮，但仍需保留 25 个未跟踪 Playwright 证据。
+- 根目录主要区域包括 `src`、`server`、`tests`、`scripts`、`docs`、`public`、`data`、`output`、`dist`；还存在 Node 与 Python 依赖文件，表明本轮需要同时覆盖 TypeScript/React/Express/SQLite 与 Python 辅助链路。
+- 旧记录显示项目此前已有 572 项 Vitest、38 项 Pytest 及 M1–M6 多轮浏览器验收，但这些数字需要在当前提交上重新运行确认。
+
+### 本轮错误记录
+- 一条只读盘点命令把 PowerShell `foreach` 直接接入管道，解析阶段报 `EmptyPipeElement`；因此该命令中的 package/提交/行数读取均未执行，也没有产生任何项目状态变化。后续改用 `$rows` 数组再格式化，避免重复既知失败。
+
+### 项目规模、技术栈与高风险文件
+- 当前统计的代码规模为：`src` 61 个文件/20,299 行，`server` 33 个文件/19,105 行，`tests` 44 个代码测试文件/24,886 行，`scripts` 3 个主要代码文件/1,429 行；合计约 65,719 行，产品源码约 39,404 行。
+- 技术栈为 React 18 + TypeScript 5.7 + Vite 8，Express 5 + SQLite/Node 内置数据库接口，本地图片用 Sharp，备份用 Archiver，可选视觉能力使用 Transformers/rembg/onnxruntime，浏览器采集同时存在 Playwright 与 Selenium 路径。
+- `tsconfig.json` 开启 `strict`、`isolatedModules`、`forceConsistentCasingInFileNames`，但启用 `skipLibCheck`；`lint` 脚本目前只是再次运行 typecheck，没有独立 ESLint、格式化或覆盖率阈值。
+- Node 引擎声明为 `>=24.14 <27`。依赖包含 `express@^5.1.0`、`helmet@^8.2.0`、`vite@^8.0.16`、`vitest@^4.1.8`，并对 `esbuild=0.28.1`、`glob=10.5.0` 做精确 override。
+- Python 的日常安装入口是范围依赖 `requirements.txt`，验证/供应链基线另有精确 `requirements.lock.txt`；需检查文档与脚本是否始终明确使用 lock 做可复现验证。
+- Vite `/api` 代理显式 `changeOrigin:false`，与旧记录中的严格 Origin/Host:port 安全修复一致；这需要在后续动态门禁中重新验证。
+- 最近提交显示 M0–M6 与文档均已提交到当前分支，HEAD 为 `a1b938a docs: add visual project guide`，前一功能提交为 `f52b919 feat: complete decision support and trip planning`。
+- 最大产品文件为 `server/db.ts` 3,402 行、`src/app/App.tsx` 2,779 行、`server/services/export.ts` 1,995 行、`server/services/tripPlanner.ts` 1,786 行、`src/shared/types.ts` 1,147 行、`server/services/tripOptimizer.ts` 1,062 行。这些文件承担多领域不变量，是静态深审优先级最高区域。
+- 最大测试文件为 `tests/api.test.ts` 4,086 行、`tests/app.test.tsx` 2,884 行、`tests/export.test.ts` 1,674 行等；测试量很大，但超大集成文件也可能掩盖共享状态、顺序依赖或覆盖盲点，需要检查隔离与重复运行稳定性。
+- README 已覆盖运行、能力、安全/网络、隐私清理、测试、架构和已知边界；`docs/api.md`、`docs/schema.md` 体量较大，并有 M1–M6 六份开发计划。后续会以代码为事实源，抽查文档契约漂移。
+
+### Provider 探测状态
+- 首次 provider 可执行文件探测仍因同类 `foreach | Format-Table` 写法在解析阶段失败，未实际执行，也不能据此判断 provider 是否可用。
+- 这是本轮第二次命中已知 PowerShell 语法陷阱；后续所有循环输出必须先收集到 `$rows`，再在循环结束后单独格式化。
+
+### 架构与审计矩阵
+| 模块 | 主要实现 | 核心不变量/风险 | 主要现有测试 | 本轮审计方法 |
+|------|----------|---------------|-------------|-------------|
+| 认证与 HTTP 安全 | `server/auth.ts`、`server/routes.ts`、`server/validation.ts` | 首个账号创建、会话 TTL/cookie、登录限流、Origin/Host/Sec-Fetch-Site、认证边界、错误脱敏 | `api.test.ts`、`garmentUpdateSecurity.test.ts`、`viteProxyOrigin.test.ts` | 路由顺序与中间件静审、恶意请求矩阵、代理真实复验 |
+| 数据库与迁移 | `server/db.ts`、`server/db/migrations.ts` | 迁移原子性、STRICT/FK/index、幂等、历史库升级、事务嵌套、软归档 | `dbMigrations`、`dbMigrationRehearsal`、`dbImport` | schema/pragma 检查、旧 fixture 演练、失败回滚与约束测试 |
+| 可信导入与资产 | `importTaobao`、`garmentAssets`、`thumbnails`、`taobaoCapture`、`vision` | 服务端重算身份、退款/非服饰过滤、路径穿越、SSRF、图片净化、子进程与临时产物、网络知情 | import/assets/thumbnail/capture/vision 系列 | 污染输入、路径/URL、超时/取消、并发与隐私边界 |
+| 推荐、保存搭配与反馈 | `recommend*`、`savedOutfits`、`garmentAvailability`、`recommendationFeedback` | active/confirmed/available 一致、include/exclude、稳定候选、反馈幂等、有界学习、历史 snapshot | recommendation/savedOutfits/feedback 系列 | 组合不变量、跨用户/归档、重复提交、边界分值与排序稳定性 |
+| 日记、周计划与天气 | `wearEvents`、`outfitPlanner`、`weather`、planner routes/UI | 时区/DST、计划—实际穿着一致、重复窗口、天气冻结、更新事务、分页 | planner/weather/insightsM4 系列 | 多时区与 DST、事务回滚、并发更新、旧兼容适配器 |
+| 价值与购买前检查 | `wardrobeValue`、`purchaseCheck`、`garmentSimilarity`、decisionSupport routes/UI | 只读保证、价格事实来源、稳定指纹、候选资格、显式反馈与缓存隔离 | decisionSupport/purchaseCheck/similarity 系列 | DB 前后计数、竞态、错误边界、缓存/业务数据隔离 |
+| 旅行胶囊 | `tripPlanner`、`tripOptimizer`、trip routes/UI | 日期/活动原子更新、硬约束、prefix 重算、放宽保证、完成事实绑定、只读完成态 | tripPlanner/tripOptimizer/tripPlannerUi | 极端/不可行组合、局部重算身份、状态机、幂等完成 |
+| 导出、备份与隐私清理 | `export.ts`、`privacy-clean.mjs` | 单事务快照、shape 兼容、ZIP 白名单/路径、缺失资产、默认不含二进制、清理范围 | export/privacyClean | 恶意路径、并发快照、旧 V2、资产缺失、dry-run/边界 |
+| 前端编排与 API | `src/app/App.tsx`、`src/api.ts`、各 feature | 请求竞态、跨实体状态、认证失效、错误恢复、只读/危险操作、DTO 漂移 | app/frontendApi/各 UI 测试 | 状态机静审、迟到响应、真实浏览器桌面/移动/键盘 |
+
+### 结构扫描结果
+- 前端 feature 文件没有检测到 `../../features/...` 形式的横向直接依赖；跨域编排主要集中在 2,779 行的 `src/app/App.tsx`，有利于定位全局竞态，但该文件本身是高耦合风险。
+- 后端入口只绑定 `127.0.0.1`；统一 `helmet`、5 MB JSON 限制、变更请求来源校验与认证中间件在分域路由注册前生效。
+- 未发现 TODO/FIXME/HACK/XXX，也未发现 `.only` 或显式固定跳过；`tests/garmentAssets.test.ts` 有一处运行时 `context.skip()`，需检查它是否只针对不支持符号链接/权限的环境，以及 CI 是否仍覆盖对应安全测试。
+- `src/main.tsx` 对 Service Worker 注册/注销错误使用 `.catch(() => undefined)` 静默忽略；这可能是合理的非关键渐进增强，但会在前端深审时检查是否会留下开发态旧缓存且无诊断。
+- 简单忽略错误扫描被单行超长 bookmarklet 放大，不能据此得出其它空 catch 结论；后续要限定模式和文件，避免噪声。
+
+### Provider 可用性
+- PowerShell `Get-Command` 结果：`python` 可用；`codex` 可见于 Codex Windows 应用目录；`gh`、`copilot`、`claude`、`gemini` 均不可用。
+- 旧审计记录曾显示 code-review OpenAI provider 从 WindowsApps 路径启动时出现 `WinError 5`。本轮将先用 `codex --version` 与技能 `check --provider openai` 做一次当前环境验证；若仍失败，不重复尝试，也不阻塞主审查。
+
+### 新增执行错误
+- 阶段状态组合补丁因使用了无法唯一匹配的宽泛 `- **状态：** in_progress` 上下文而验证失败；`apply_patch` 没有产生部分写入。随后通过 `Select-String` 精确定位阶段 78/79 行并成功定点更新。
+
+### 阶段 79：首批动态门禁
+- 当前运行时为 Node `v24.15.0`、npm `11.12.1`、Python `3.13.9`，Node 满足 package 声明的 `>=24.14 <27`。
+- `npm run typecheck` 成功；`python -m pytest -q` 为 38/38 通过。
+- `git diff --check` 没有内容错误；仅提示三份 Markdown 在 Git 下未来可能从 LF 转为 CRLF，这是 Windows 行尾提示，不是当前内容失败。
+- `tests/garmentAssets.test.ts` 的唯一 `context.skip()` 只在系统创建 symlink/junction 返回 `EPERM`、`EACCES` 或 `ENOTSUP` 时触发；它用于避免环境能力缺失导致假失败。当前 Windows 路径使用 junction，后续完整 Vitest 输出需确认该测试实际执行且没有 skipped。
+- code-review 技能的 `check --provider openai` 仅根据文件存在性返回 `status:"ok"`；同一命令中直接执行 `codex --version` 明确报 `Access is denied`。因此 provider check 是可启动性假阳性，真实 review 很可能仍会命中既有 WindowsApps 权限问题。
+- 将按技能工作流创建一份只读全项目审查请求并尝试一次实际 OpenAI provider 调用；若失败，记录后停止，不将外部 provider 缺失误判为项目缺陷。
+
+### 阶段 79：完整动态门禁结果
+- `npm test`：44/44 个测试文件、572/572 项通过，Vitest 输出没有 skipped、todo 或未处理异常；这也证明当前 Windows 环境实际执行了 symlink/junction 安全用例。
+- 非破坏性生产构建写入全新目录 `output/build-project-audit-20260716-1807`，没有清空或删除现有 `dist`/output/Playwright 证据。Vite 8.0.16 成功转换 1,606 个模块。
+- 构建产物：`index.html` 0.68 kB，CSS 118.77 kB（gzip 18.78 kB），JS 403.03 kB（gzip 119.13 kB）。构建仅提示 `@tailwindcss/vite:generate:build` 占用较多时间，无 chunk size 或失败告警。
+- `npm audit --omit=dev --audit-level=high` 与全依赖 `npm audit --audit-level=high` 均为 0 漏洞。
+- `python -m pip_audit -r requirements.lock.txt` 为 0 已知漏洞；`python -m pip check` 报告无破损依赖。
+- 截至当前，自动化门禁没有直接暴露功能错误；后续重点转向“测试可能未覆盖的跨层不变量、静态边界和真实交互”。
+
+### 外部代码审查技能最终状态
+- 已按 code-review 技能创建只读请求 `output/code-review-project-audit-20260716.md`，未使用会创建并清理临时副本的 `--workspace`，因此没有隐式文件删除。
+- 实际执行 `review --provider openai --add-dir D:\JavaWork\Outfit --reasoning high --raw` 在创建 Codex 子进程时稳定失败：`PermissionError: [WinError 5] 拒绝访问`。
+- GitHub Copilot、Claude、Gemini CLI 均不存在；OpenAI CLI 又不可由子进程启动，因此本机没有可用的外部 provider。按三次失败/不重复失败原则，本轮不再尝试外部 provider。
+- 该失败属于本机工具权限，不是 Outfit 项目缺陷。后续交叉验证改为：主 Agent分模块独立静审、串行/乱序动态测试、针对性回归与真实浏览器证据。
+
+### 测试稳定性与副作用扫描
+- 当前 Vitest 4.1.8 支持 `--sequence.shuffle`、文件/测试分别乱序以及固定 `--sequence.seed`；可用于暴露测试顺序依赖。
+- 生产代码中的 `Math.random()` 只出现在视觉任务的非安全展示 ID；认证 session/password salt 使用 `randomBytes`，资产与候选 ID 使用 `randomUUID`。后续仍需确认视觉任务 ID 碰撞是否仅影响内存任务表且有额外随机/时间熵。
+- 测试中的环境变量写入集中在 `tests/api.test.ts`，其全局 `afterEach` 会删除 `OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE`；需用乱序/单 worker 动态验证清理是否充分。
+- fake timers 集中在导入和天气测试；后续检查每处是否在 `finally/afterEach` 恢复真实计时器，避免影响同文件后续用例。
+- 子进程调用集中在淘宝采集、视觉、开发脚本和模型脚本，均使用 `spawn`/`execFileSync` 而不是 shell 拼接；深审重点是参数来源、取消/超时、环境继承和任务状态收敛。
+- 直接网络调用集中在 Open-Meteo、Hugging Face/GitHub 模型下载及受限淘宝资源路径。深审重点是 URL 白名单、重定向、响应体上限、超时和是否只在用户显式动作后联网。
+- `scripts/models.mjs` 会删除它自己创建的临时验证目录；这是产品脚本的正常自清理，但根据用户“删除前知晓”约束，本轮不会在未额外说明时运行 `models:verify`。
+- 简单文本扫描被单行 bookmarklet 产生大量噪声；后续静审将排除该生成字符串并直接读取具体服务函数。
+
+### 单 worker 稳定性缺口候选
+- `npx vitest run --maxWorkers=1` 未完成：43/44 文件、508/572 测试通过后，Vitest 报 `[vitest-pool]: Worker forks emitted error` / `Worker exited unexpectedly`。
+- 没有普通 assertion failure，也没有标明缺失文件；默认并发完整套件刚刚 572/572 通过，因此当前证据可能指向单 worker 模式下的资源/进程隔离、Node 24/Vitest fork 兼容或某测试导致 worker 进程异常退出。
+- 下一步不重复同一命令，而是使用 verbose/JSON 诊断、测试文件计数与分片定位缺失文件，并尝试 threads pool 区分项目问题和 fork 运行时问题。
+- 在定位前，不把该现象归类为产品缺陷，也不把 572/572 默认并发结果视为足以消除稳定性风险。
+
+### 已确认：采集任务测试存在顺序依赖
+- `npx vitest run --maxWorkers=1 --pool=threads` 为 572/572 通过，说明单执行线程本身可行，异常特定于 forks 生命周期/状态组合。
+- 默认 forks 下用 `--sequence.shuffle --sequence.seed=20260716` 稳定出现两个 `tests/api.test.ts` 失败：
+  - “客户端请求 Playwright 采集”预期 200，实际 409；
+  - “非法 item-detail engine”预期先做输入校验返回 400，实际因已有活动任务先返回 409。
+- 两个 409 共同证明某个前序测试启动的模块级采集任务没有在测试结束时复位；默认顺序只是偶然让相关用例通过。
+- `api.test.ts` 的 `afterEach` 会关闭 server、恢复 mocks/globals、清环境变量，但没有关闭每个内存数据库，也没有清理 `taobaoCapture` 服务的全局任务/活动任务状态。
+- 单独运行 `api.test.ts` 66/66 通过；`--detectAsyncLeaks` 报 130 个 Promise，主要是已 await 的 Node fetch 调用，暂不作为泄漏证据。更直接的缺陷是乱序下可观察的 409 状态污染。
+- 下一步审查 `server/services/taobaoCapture.ts` 的模块级状态和任务完成/取消路径，设计不暴露给生产客户端的显式测试/进程关闭清理边界；同时跟踪并关闭测试创建的数据库，验证 forks 单 worker 与乱序都转绿。
+
+### 已确认：采集产物可过早释放单任务锁
+- `readTaobaoCaptureJobArtifact()` 在只要读到 JSON 时就无条件把 `job.status` 改为 `succeeded`；`refreshJobFromArtifact()` 也有同样行为。
+- 两个函数都不会终止子进程，也不会删除 `job.child`。真正的 `exit/error` handler 才会关闭并删除 child。
+- `findActiveCaptureJob()` 先调用 artifact refresh，随后只检查 `status` 是否为 running/pending；因此“脚本已写出 JSON、但浏览器/采集进程尚未退出”的窗口中，第二个采集任务可绕过全局单任务约束并与第一个并发运行。
+- 正确语义应是：产物可以提前读取并记录 `artifactPath`，但只要 child 仍存在，任务就保持 running；只有 exit/error/cancel 才进入终态并释放并发锁。
+- 还需要一个统一生命周期清理函数，在 API 进程关闭或测试结束时终止仍运行的 child、关闭日志句柄并清空内存任务表，避免孤儿进程和测试污染。
+- `tests/api.test.ts` 另创建约 65 个 `:memory:` SQLite 数据库且没有任何 `close()`；将通过局部 wrapper 自动登记并在 server 关闭后统一 close，作为 forks 单 worker 稳定性修复。
+
+### 已确认：全测试库普遍泄漏 SQLite 实例
+- 修复 API 文件自身的 67 个数据库关闭后，固定乱序 forks 已 573/573 通过，但默认顺序 forks 单 worker仍在 43/44 文件、507/573 后退出；差值 66 表明重型 API 文件刚开始时 worker 已处于资源压力状态。
+- 全仓统计显示 20 个测试文件约调用 `createDatabase()` 199 次，只找到 4 次显式 close。高占用文件包括 `dbImport` 24、`export` 22、`recommendationFeedback` 14、`planner` 13、`tripPlanner` 13、`garmentAssets` 10、`savedOutfits` 9 等。
+- 默认并发测试能通过，是因为多个 worker 分摊并在进程退出时回收原生 SQLite 资源；单 fork worker按默认历史顺序累积全部未关闭实例，最终在 API 文件阶段异常退出。
+- 这是测试基础设施的真实资源生命周期错误。计划新增共享 `tests/helpers/testDatabase.ts`：包装生产 `createDatabase`、按测试文件登记实例、在 `afterEach` 中仅关闭仍 `isOpen` 的数据库；所有测试文件改为从 helper 导入 createDatabase，其余数据库函数仍从生产模块导入。
+- `devScript.test.mjs` 只读取脚本文本，不执行进程终止逻辑；目前没有证据表明 worker 退出由该测试触发。
+
+### 阶段 79 修复结果
+- 新增回归“产物已存在但 child 未退出时仍保持采集锁”，旧实现稳定失败于 `succeeded !== running`；修复后该回归通过。
+- `readTaobaoCaptureJobArtifact()` 与后台 artifact refresh 现在只记录产物路径；只要 child 仍存在，任务保持 running 并提示等待进程结束。exit/error/cancel 才释放单任务锁。
+- 新增内部 `clearTaobaoCaptureJobs()`：终止仍挂载的 child、关闭日志句柄并清空内存任务表；API 测试在每例后调用，且不删除任何采集产物。
+- 修正两个 API 测试自身的任务生命周期：读取产物后显式取消仍运行任务；“取消后允许新任务”用例也取消它启动的第二个任务。
+- 新增 `tests/helpers/testDatabase.ts`，同时跟踪生产 `createDatabase()` 和受跟踪的 `TestDatabaseSync`；每个测试文件 `afterAll` 关闭所有仍 `isOpen` 的实例。
+- 17 个此前泄漏数据库的测试文件迁移到 helper；API 文件保留更严格的 afterEach 本地 wrapper，迁移演练与视觉缓存文件保留其已有显式 close。
+- 修复验证：
+  - API 专项 67/67；
+  - 原始默认 forks 单 worker 44/44、573/573；
+  - 固定种子 `20260716` 乱序 forks 单 worker 44/44、573/573；
+  - 项目标准 `npm test` 44/44、573/573；
+  - typecheck 与 `git diff --check` 通过。
+- `clearTaobaoCaptureJobs()` 当前用于测试隔离；是否还应接入正式 API 进程的 SIGINT/SIGTERM 优雅关闭，将在阶段 80 的进程/子进程边界审查中决定。
+
+### 新增工具错误
+- 读取 `tests/api.test.ts` 500–940 行的首次 PowerShell 命令把单个范围错误构造成嵌套对象，`Math.Min` 报参数类型不匹配；命令未修改文件。随后改用直接整数循环成功读取。
+- 阶段 80 首次把 `server/auth.ts`、`server/routes.ts` 后半段、`server/validation.ts` 两段和全路由声明并行读取，四路返回均因总输出过大被截断，未形成可依赖的审查证据，也没有修改文件。后续改为先用 `Select-String` 定位安全关键函数，再逐个读取不超过约 180 行的小区块。
+- 随后的全测试目录认证关键词扫描因为 `cookie`、`origin` 等词过于常见，返回尾部再次截断；前段认证测试行号仍可用，但不把缺失部分当作已审。测试证据改为按已定位的 `tests/api.test.ts:127-380` 分块读取。
+- 检索“本机唯一账号”时漏排除 `dist`，压缩 bundle 造成一次超大输出截断。截断前的 README、API/schema 文档已明确产品承诺是“本机唯一账号”；后续所有递归源码检索都显式排除构建产物。
+
+### 阶段 80：认证、会话与进程边界
+- `server/index.ts` 只监听 `127.0.0.1`；Vite 代理保持浏览器侧 Host，严格同源校验会同时比较协议可解析性与完整 `host:port`。跨站和同站不同端口均有 API 回归，当前未发现 Host/Origin 绕过。
+- session token 使用 32 字节 CSPRNG，数据库只保存 SHA-256；密码使用随机 16 字节 salt + scrypt，并以 `timingSafeEqual` 比较。Cookie 为 HttpOnly、SameSite=Lax、Path=/；由于正式启动仍是本机 HTTP，未设置 Secure 是当前运行模型下的兼容取舍。
+- `/api` 认证中间件注册在 `/api/garment-thumbnails` 静态服务之前，因此旧淘宝缩略图同样需要有效 session；本地净化资产另经认证的 `/api/garment-assets/:id/content` 读取。最初怀疑的“静态图片绕过认证”已排除。
+- 高置信缺陷候选：`createFirstUser()` 用“先查账号数、再做 scrypt、再 INSERT”的非事务检查实现“本机唯一账号”。README、API 和 schema 都明确承诺唯一账号，但两个同时连接同一 SQLite 文件的 API 进程可以在窗口内各自看到 0，随后插入不同用户名；`users` 只有 `username_normalized` 唯一约束，无法阻止第二个不同用户名。需用可控竞态回归先红，再以 `BEGIN IMMEDIATE` 内二次检查修复。
+- 低风险资源缺口：登录限流 Map 只在再次访问同一个 key 时删除过期项，持续尝试不同合法用户名会让已过期 key 常驻进程；需在阶段 82 决定采用全表过期清扫和容量上限，避免把单机本地攻击面夸大为远程漏洞。
+- 高置信生命周期缺口：`server/index.ts` 未保存 HTTP server，也没有 SIGINT/SIGTERM 清理；正式采集任务是非 detached 子进程，但在 Windows/强制终止场景仍可能留下浏览器进程树，数据库也未显式关闭。阶段 79 已有 `clearTaobaoCaptureJobs()`，应通过可测试的幂等 shutdown 路径接入 server 与 DB。
+- 数据库 schema 探针前两种 `-e` 传参方式被 Windows 参数解析移除脚本内引号，首次还将 SQL 的 `COUNT(*)` 中 `*` 误当成命令；三次失败均未写文件。最终改用 here-string 经标准输入传给 `node --import tsx --input-type=module -` 后成功。
+
+### 阶段 80：数据库、迁移与事务
+- 新建内存库共有 26 张业务/迁移表；`PRAGMA foreign_keys=1`、`integrity_check=ok`、`foreign_key_check=[]`。版本化新增表均为 STRICT，旧 baseline 表为兼容历史数据库继续保持非 STRICT。
+- migration runner 在 baseline 和每个编号迁移上都使用 `BEGIN IMMEDIATE`，拿到写锁后重读版本前缀，并在失败时尽力回滚且保留原始错误；并发迁移、重复版本、未来版本、改名、baseline 与迁移回滚均有专项测试。
+- 所有检测到的动态 SQL 插值来源都为代码内固定片段：scope 三选一、布尔 active 条件、受控清空谓词、按数组长度生成的 `?` 占位符、固定迁移列名或兼容列存在性表达式；用户数据仍通过绑定参数传入，未发现 SQL 注入路径。
+- 多表业务写入（可信导入、图片资产元数据、推荐候选/反馈、可用状态、保存搭配、周计划、穿着事件、Trip）均可定位到 `BEGIN IMMEDIATE` 事务与原错优先回滚；新建内存库及现有回归没有外键破坏。
+- 五组外键没有以自身列作为索引首列：`outfit_pair_stats.garment_b_id`、`recommendation_feedback.wore_instead_outfit_id`、`saved_outfit_items.garment_id`、Trip activity 的复合选择外键、`trip_packing_items.garment_id`。当前都是本地小数据、软归档为主，且关键常用查询另有索引，因此先归类为删除/外键检查的性能余量，不是正确性缺陷。
+- migration 6/7 没有在 `dbMigrations.test.ts` 尾部各自独立成完整 schema 用例，但成本回填在该文件前部覆盖，实际迁移演练与 decision-support/Trip 专项测试会创建并使用相关表、索引和外键。属于测试组织缺口，不是当前迁移失败证据。
+- 缩略图专项测试首次按猜测文件名 `tests/thumbnails.test.ts` 读取失败；该路径不存在，命令没有写入。后续先定位真实文件名。
+
+### 已确认并修复：远程缩略图只验图片头，可接受损坏文件和像素炸弹
+- 旧实现下载后只调用 `readImageInfo()` 读取 JPEG/PNG/WebP 头部尺寸，随后直接把原始字节写盘。新增回归用一个只有 33 字节、缺少 PNG IDAT/IEND 的伪图片；旧实现稳定返回成功并写出 `.png`，证明完整图片从未解码。
+- 同一缺口允许极小响应头声明 `100000 × 100000` 像素；旧逻辑只检查最小边长和宽高比，没有最大像素限制。淘宝 CDN 承载商家内容，不能把域名白名单等同于图片本体可信。
+- 修复后每个候选仍先经过协议、淘宝 CDN 域名、逐跳手动重定向、超时、Content-Length 和流式 5 MB 上限；随后由 Sharp 在 4000 万像素上限下完整解码、拒绝多页/非 JPEG-PNG-WebP、自动旋转、移除元数据并统一重编码为 WebP。净化后的输出再次检查类别尺寸比例和 5 MB 上限后才写盘。
+- 对 HTTP 错误、非图片 Content-Type 和过大 Content-Length 的早退路径现在会主动取消响应体，避免未消费 body 长时间占用连接/资源。
+- 兼容性：已有 `.png/.jpg/.webp` 本地缩略图 URL 仍可由静态路由读取；只有新下载结果统一使用 `.webp`。视觉去背景继续接受通用 `/api/garment-thumbnails/<file>`，其输出仍为 `-cutout.png`。
+- 验证：新增的截断图片回归先红后绿；像素炸弹回归通过；thumbnail 专项 9/9、三个相关 API 流程 3/3、typecheck 和 `git diff --check` 均通过。
+
+### 已确认并修复：天气超时只覆盖响应头，不覆盖正文
+- `requestOpenMeteo()` 原先在 `await fetch()` 返回后立即进入 `finally` 清除计时器，再调用 `response.json()`；如果 Open-Meteo 只发送响应头或正文流中途停住，请求会无限等待。
+- 新增可控流回归：fetch 立即返回 200 和未结束 JSON 流，旧实现推进 10 ms 后 `AbortSignal.aborted` 仍为 false，稳定失败。
+- 修复将状态检查与正文 JSON 读取都放在同一 `try` 内，计时器只在完整读取/解析结束后清除；正文读取因 AbortError 或 signal 已终止时统一映射为“Open-Meteo 请求超时”。非 2xx 早退也会取消响应体。
+- 首次修复后 13 个断言均通过但测试晚订阅 rejection，Vitest 报一次异步已处理拒绝；调整测试订阅时序后 weather 13/13、typecheck 全绿且无未处理错误。
+
+### 已确认并修复：视觉去背景只检查输出路径存在，可持久化损坏或陈旧文件
+- `createGarmentCutout()` 原先在本地 `rembg` 返回后只检查固定 `*-cutout.png` 路径是否存在，随后立即把 URL 写入数据库。既有成功用例甚至只写入 4 字节 PNG 签名仍得到 200，证明输出从未完整解码。
+- 固定输出名还允许本次模型进程没有真正写文件时误接纳上一次遗留的同名结果；直接覆盖同名文件也会让已有 URL 在后台悄然指向不同内容。
+- 修复后每次运行使用随机 UUID 生成独立 `*-cutout-<uuid>.png`，因此不会把陈旧文件误判为本次结果，也不会覆盖历史 URL。旧版去背景文件继续可读，本轮未删除任何文件。
+- 在持久化 URL 前，服务会通过 `lstat` 拒绝符号链接和非普通文件，再由 Sharp 验证完整单页 PNG、宽高和 4000 万像素上限，执行完整解码、补齐 alpha 并重新编码为规范 PNG；任一步失败都返回 `VISION_OUTPUT_INVALID`，且数据库保持原状。
+- 新增损坏 PNG 回归，并把三个既有成功 fixture 改为真实可解码 PNG。验证结果：5 个视觉 API 用例通过，`npm run typecheck` 与 `git diff --check` 通过。
+
+### 已确认并修复：唯一账号创建存在检查—写入竞态
+- `createFirstUser()` 原先先在事务外读取 `COUNT(*)`，随后执行同步 scrypt，最后直接插入。两个连接可同时读到 0，再以不同用户名各插入一行；用户名唯一索引无法维护“整库只能有一行用户”的产品承诺。
+- 新增可控陈旧读取回归：首次账号计数返回旧的 0 后，模拟另一个进程抢先创建账号；旧实现没有抛错并继续插入第二行，稳定证明 TOCTOU。
+- 修复保留快速前置检查和耗时密码派生在事务外，随后使用 `BEGIN IMMEDIATE` 取得写锁，在锁内再次检查账号数并执行插入；若竞争者已创建账号则回滚并返回原有 `ACCOUNT_EXISTS` 409。
+- 验证结果：认证竞态专项 1/1、首次注册/登录 API 1/1、`npm run typecheck` 通过。
+- 测试装配期间曾因无参数 `createDatabase()` 只读打开真实项目数据库；既有账号使函数在写入前立即拒绝，未发生真实数据修改。测试已固定为 `:memory:`。
+
+### 已确认并修复：正式 API 进程没有统一关闭后台任务、HTTP 与数据库
+- `server/index.ts` 原先丢弃 `app.listen()` 返回的 server，未注册 SIGINT/SIGTERM，也未显式关闭 SQLite。阶段 79 新增的采集任务清理仅用于测试；视觉模型下载任务还只保存公开状态和 PID，没有保存可终止的 child 引用。
+- 视觉模型下载/验证脚本还会继续派生 Python/Node 子进程。仅依赖父进程自然退出，在 Windows 或连接长期挂起时可能留下浏览器/模型进程树，并让数据库依赖进程强制回收。
+- 新增 `createServerShutdown()`：第一次调用立即停止 HTTP 接入并关闭空闲连接，依次执行后台清理；等待中的连接超过 5 秒会调用 `closeAllConnections()`，随后才关闭仍打开的数据库。重复信号共享同一个 Promise，所有清理只执行一次；各阶段错误会在尽量完成其余清理后汇总抛出。
+- 视觉服务现跟踪模型任务及请求内 rembg/标签推理的全部 child；error/close 会移除句柄，统一 `clearVisionJobs()` 会终止仍运行的进程树并清空内存任务，不删除任何模型、缩略图或采集产物。
+- `server/index.ts` 现在保存 HTTP server，并在 SIGINT/SIGTERM 上调用统一关闭入口；失败只设置非零 `exitCode`，不会在资源清理完成前直接 `process.exit()`。
+- 验证结果：生命周期专项 2/2、视觉模型任务 API 3/3、`npm run typecheck` 通过。
+
+### 已确认并修复：请求内视觉模型进程可无限运行并无限累积输出
+- 默认 rembg 与 CLIP 包装器原先没有超时；只要 Python/Node 模型进程不退出，对应 HTTP 请求、child handle 和内存状态就会无限挂起。
+- `runProcess()` 还会把 stdout/stderr 无上限拼接为 JavaScript 字符串。异常模型、依赖日志风暴或被破坏的本地运行环境可以持续扩大服务内存；非零退出时还会把原始 stderr 作为 API 错误消息返回。
+- 新增两个 API 回归：输出 24 字节但配置上限 8 字节时，旧实现继续运行并最终报 `VISION_OUTPUT_MISSING`；不触发 close/error 时，旧实现 75 ms 后请求仍为 pending。两者均稳定红灯。
+- 修复为默认 120 秒超时、stdout+stderr 合计 1 MiB 上限；测试和嵌入调用可通过内部 options 收紧。超时返回 504 `VISION_PROCESS_TIMEOUT`，输出超限返回 500 `VISION_PROCESS_OUTPUT_LIMIT`，两者都会终止进程树并从统一跟踪集合移除 child。
+- spawn 失败和非零退出现在返回稳定、去除原始 stderr 的 `VISION_PROCESS_FAILED`，避免把本机路径或依赖内部日志直接暴露给 API 客户端。
+- 验证结果：默认 rembg、默认 CLIP、输出超限、执行超时共 4/4 API 回归通过，`npm run typecheck` 通过。
+
+### 已确认并修复：登录失败限流 Map 可被不同用户名无界增长
+- 原实现只在再次查询同一个 `username|remoteAddress` 时删除该键的过期记录。持续提交不同的合法用户名会让所有旧键常驻当前 API 进程；虽然服务只绑定本机，这仍是可避免的资源生命周期错误。
+- 限流逻辑现抽为独立可测试模块：每次检查、记录或统计都会清扫窗口外记录；不同失败键默认最多 1024 个，新增时若已满则淘汰 `firstFailureAt` 最早的记录。
+- 原有安全语义保持不变：同一规范化用户名和远端地址在 15 分钟内失败 5 次后返回 429 `LOGIN_RATE_LIMITED`，成功登录会重置该键。
+- 验证结果：限流专项 2/2、既有重复失败登录 API 1/1、`npm run typecheck` 通过。
+
+### 已确认并修复：采集产物扫描会跟随符号链接读取根目录外 JSON
+- `collectJsonArtifacts()` 原先对每个条目使用 `statSync`。在 POSIX 符号链接和 Windows junction 上，`statSync` 返回目标类型，因此链接到外部目录会被递归，链接到外部 JSON 也会被当作普通文件。
+- 真实文件系统回归把采集目录下的 `linked` junction 指向另一个临时目录；旧实现选择并返回外部 `secret.json`，而不是根内 `safe.json`。把整个采集根设为 junction 时旧实现同样直接读取外部文件。
+- `CaptureFileSystem` 现支持可选 `lstatSync`；真实 fs 扫描首先拒绝自身为符号链接/junction 或非目录的根，再对每个子项使用 `lstat` 并跳过所有链接。测试替身仍可保留原 stat 语义。
+- 后台采集进程退出时若根目录被替换为不安全链接，会把它视为没有可信产物并令任务失败，而不会让事件回调抛出未处理异常。读取接口返回结构化 `CAPTURE_ARTIFACT_UNSAFE`。
+- 验证结果：采集专项 8/8、job 产物与锁相邻 API 2/2、`npm run typecheck`、`git diff --check` 通过。
+
+### 已确认并修复：删除或改写旅行穿着日记会破坏完成态一致性
+- `completeTrip()` 会把新 `WearEvent` 的 ID 保存到 `trip_outfit_selections.actual_wear_event_id`，并要求确认时 `itemIds` 与 selection 的 `garment_ids_json` 完全一致；但通用 `updateWearEvent()` 原先允许之后把该事件的衣物改成任意现存衣物。
+- 通用 `deleteWearEvent()` 原先只恢复关联周计划、撤销推荐反馈并删除事件。数据库外键随后把 `actual_wear_event_id` 自动设为 NULL，但 `trips.status` 仍保持 `completed`，形成“已完成旅行却有未确认 selection”的可达状态。
+- 两个最小回归在旧实现上稳定红灯：旅行绑定事件改成方案外衣物不会抛错；删除唯一旅行事件后读取旅行仍返回 `completed`。
+- 修复后，穿着事件更新会查询旅行绑定；只有显式修改 `itemIds` 时才要求与原 selection 数组完全一致，时间、时区、场合、天气和备注仍可正常纠正。偏离时返回 409 `TRIP_WEAR_EVENT_ITEMS_MISMATCH`。
+- 删除绑定事件时，事务会显式清空 selection 链接并更新其时间戳；若旅行仍为 `completed`，同时恢复为 `ready`，从而允许用户重新确认。归档旅行保持归档，不会因日记删除而静默解归档。
+- 验证结果：旅行与日记联合专项 2 文件、32/32 通过，`npm run typecheck` 与 `git diff --check` 通过。
+
+### 行程优化器与保存搭配/反馈审查结论
+- `completeTrip()` 的 selection 总数与剩余未确认数判断正确；空 selection 不会被误标完成。`storedSelectionAsOptimizerPrefix()` 的 `limitingActivityId` 兜底 0 在正常路径不可达，因为优化 slot 必须至少有一项活动，导出校验也要求非空正整数活动数组。
+- 优化器对共享活动取最低分、同日独立时段分别计穿着、洗衣日前清零、重复规则优先级、Top 12/beam/search budget 和不可变前缀均有直接测试；本轮未确认新的优化错误。
+- 保存搭配的推荐快照 ID 顺序与 `canonicalizeOutfitSlots()` 一致，候选损坏会事务回滚；反馈实际穿着不可逆、删除日记后的统计回退和清空范围均有专项覆盖。本批除旅行—日记链接外未确认新的数据错误。
+
+### 已确认并修复：未知颜色被当作相同颜色，制造 75% 重复误报
+- 淘宝分类器与手工录入都明确使用 `color=unknown` 表示没有颜色证据；相似度规范又要求缺失成分不进入分母。但旧实现只检查颜色字符串非空，因此两个 `unknown` 会获得完整 25 权重的“颜色一致”。
+- 分类器还会给服饰附加常见 `casual` 风格。构造两件同类别、名称完全不相似、颜色均未知、风格均为 casual 的衣物时，旧实现得到 `(颜色25 + 风格20) / (颜色25 + 风格20 + 名称15) = 75%`，刚好被标记为可能重复。
+- 新回归在旧实现上稳定得到 `similarity=75`、`availableWeight=60` 和“颜色一致：unknown”；修复后任一侧颜色为 `unknown` 时整个颜色成分按缺失处理，结果降为 57.1%，不再越过重复阈值。
+- 验证结果：相似度、购买检查和决策支持 API 相邻测试共 3 文件 16/16，`npm run typecheck`、`git diff --check` 通过；API/schema 文档已明确占位值语义。
+
+### 已确认并修复：推荐天气校验会把非数字隐式转换并接受不存在日期
+- `validateWeather()` 原先通过 `Number(value)` 验证数值，所以 JSON `null`、布尔值、空字符串和数字字符串会分别被转换为 0、1 或对应数字，违反 `WeatherSnapshot` 的 number 契约；日期只检查是字符串，`2026-02-30` 也会进入推荐评分并在季节判断中产生错误语义。
+- 新增表驱动回归后，旧实现对 `temperature=null`、`apparentTemperature="29"`、`precipitationProbability=true`、`windSpeed=""` 均不抛错；不存在日期同样被接受，稳定证明问题。
+- 修复将天气数值改为严格“原值必须是有限 number”，并复用真实 `YYYY-MM-DD` 日历日期校验。没有扩大到未约定的物理范围限制，保持现有合法客户端兼容。
+- 验证结果：推荐约束、推荐算法及 API 相关筛选测试共 3 文件 59 项通过（其余 62 项因 `-t recommend` 正常跳过），`npm run typecheck`、`git diff --check` 通过；API/schema 文档已同步。
+
+### 已确认并修复：损坏天气缓存可绕过响应契约，错误时间戳可在降级分支复活
+- 单日 `getCachedWeather()` 原先只对 `payload` 做 `JSON.parse` 等价操作并以 TypeScript 类型断言返回；数据库中合法 JSON `{}` 会直接作为 HTTP 200 天气响应，既不访问 Open-Meteo，也不生成估算值。
+- 逐日缓存虽有浅层类型检查，但只确认 `date` 是字符串、其他字段是 number；`2026-02-30` 仍会作为有效预报返回，也不拒绝多余字段、非有限数值或空摘要。
+- 逐日过期缓存分支在 `maxAgeMs=Infinity` 时把“时间戳是否合法”和“是否过期”一起跳过，因此 `fetched_at="not-a-timestamp"` 的行会在 Open-Meteo 失败后被重新启用。
+- 两条相邻 TTL 回归还确认：单日和逐日都把未来 `fetched_at` 产生的负年龄当成“未超过 30 分钟”，例如 2099 年缓存会一直覆盖当前天气，直到系统时钟追上。
+- 五条 API 红灯分别稳定返回 `{}`、三项 `2026-02-30`、摘要“不应复活”以及两类“未来缓存”。修复后复用数据库迁移已有的严格 `WeatherSnapshot` 守卫：真实日期、精确字段集、有限数值和非空摘要必须全部成立；缓存时间先无条件验证可解析性和非负年龄，再按有限 TTL 判断新鲜度。
+- 验证结果：天气相关 API 筛选 7/7（其中新增缓存回归 5 条）、既有 weather 专项 13/13、`npm run typecheck` 与 `git diff --check` 通过；API/schema 已明确损坏与未来缓存会被忽略。
+
+### 已确认并修复：衣物资产根为 junction 时可读写配置目录外文件
+- 资产文件名本身已有 UUID 白名单，读取也会拒绝链接文件并验证真实目标位于 `realpath(assetRoot)` 下；但资产根只调用 `realpath`，没有要求根路径本身是普通目录。
+- 当配置的 `assetRoot` 是指向外部目录的 Windows junction/POSIX 目录链接时，旧实现会把链接目标当成合法根：认证内容读取可返回外部 WebP，完整 ZIP 备份也会走同一路径；上传则会在外部目录新建 WebP、写入资产行并更新衣物 URL。
+- 两个真实文件系统回归均稳定红灯：通过 linked root 读取成功返回 Buffer，通过 linked root 写入成功生成外部文件和数据库资产。
+- 修复后写入在建目录后、打开临时文件前检查根为非链接普通目录，并在关键落盘阶段复核根的真实路径未变化；不安全根返回 409 `GARMENT_ASSET_STORAGE_CONFLICT`。读取/备份在解析目标前执行同一根检查，并继续折叠为不泄露物理路径的 404/备份警告。
+- 验证结果：garment asset 专项 14/14、ZIP/资产相邻导出 4/4、`npm run typecheck` 通过；未删除任何外部或本地资产文件。
+
+### 已确认并修复：ZIP 预流失败仍把 JSON 错误标成下载归档
+- `/api/export?format=zip` 在调用流式服务前就设置 `Content-Type: application/zip` 和 `.zip` 的 `Content-Disposition`。若 `buildOutfitExportV2()` 因损坏 JSON 在写出第一个 ZIP entry 前失败，catch 会调用通用 `sendError()`，但 Express 不会覆盖已显式设置的内容类型。
+- 最小 API 回归插入 `seasons='not-json'` 后请求 ZIP：旧实现虽返回 500 和 JSON body，响应仍为 `application/zip; charset=utf-8` 且携带下载文件名，浏览器会把错误说明保存成看似有效的备份。
+- 修复只作用于 `headersSent=false` 的预流失败：先移除 Content-Disposition、Content-Type 和可能的 Content-Length，再交给统一 JSON 错误边界。已经开始传输的 ZIP 仍销毁连接，避免拼接 JSON 污染归档。
+- 验证结果：JSON/ZIP 正常导出、非法格式和预流失败筛选 3/3、`npm run typecheck`、`git diff --check` 通过。
+
+### 已确认并修复：重复淘宝来源证据的合并与 batchId 依赖数组顺序
+- 文档与既有测试承诺缺省 `capturedAt` 时，同一规范化批次的 `batchId` 不依赖 `items` 顺序。但旧实现对相同 `externalKey` 的重复项边遍历边合并；数量、付款、状态等字段在双方都显式提供时由先出现者获胜。
+- 构造同一订单、商品、SKU 的两条重复记录，分别携带数量 1/2、付款 99/198 和不同状态；仅反转数组后，旧实现生成两个不同 SHA-256 batchId，归一化 source item 也不同。DOM 抓取顺序变化因此会破坏预览—提交身份与幂等重放。
+- 修复先按 `externalKey`/独立详情 itemId 分组，再在每组内按完整、固定字段顺序的规范化 JSON 稳定排序，最后沿用既有字段优先规则合并。不同来源项的展示顺序仍保持首次出现顺序；只消除组内冲突的偶然先后差异。
+- 验证结果：新增顺序反转回归先红后绿；`importTaobao` 48/48、`dbImport` 27/27、`npm run typecheck` 通过。
+
+### 已确认并修复：购买检查把未知颜色当作中性色，虚构保存搭配兼容性
+- 分类器以 `color=unknown` 表示没有颜色证据；但购买检查的 `NEUTRALS` 包含 `unknown`，所以一侧未知会获得 `+2`，两侧未知会获得 `+4` 的中性色兼容奖励。这与相似度已明确采用的“未知即缺失”语义冲突。
+- 最小集成回归构造一个未知颜色、`smart-casual` 的上装候选，以及未知颜色、无风格重合、正式程度相差 2 级的运动下装。除颜色外证据总分为 `-3`，旧实现因未知颜色额外 `+4` 得到 `+1`，错误返回该保存搭配为 `worksWith`。
+- 修复新增明确的缺失颜色集合：规范化后的空字符串或 `unknown` 任一侧出现时，颜色配对得分固定为 0；真实黑、白、灰、米、棕、蓝等中性色奖励和真实撞色惩罚保持不变。
+- 验证结果：新增回归先红后绿；购买检查 6/6、决策支持 API 3/3、`npm run typecheck` 通过，API/schema 文档已同步。
+
+### 已确认并修复：推荐反馈校验阻止按契约单独清空评论
+- API 文档明确约定省略 `comment` 表示保留，空字符串表示显式清空；清空标记应先与既有反馈合并，只有最终完全无信号才拒绝。
+- 服务层已经正确实现该合并规则，但路由校验用 `Boolean(input.comment)` 判断更新是否有意义。因此 `{ candidateId, reasonCodes: [], comment: "" }` 即使已有 verdict、rating 或实穿事实，也会在读取旧反馈前直接返回 400。
+- 新增认证 API 回归：先建立含 verdict/rating/实穿/评论的反馈，再只提交空原因和空评论；旧实现稳定返回 400。修复改为按“comment 字段是否出现”识别更新意图，服务层负责最终状态校验。全新候选提交同样的空标记仍返回 400，不会创建空行。
+- 验证结果：推荐反馈服务/API 2 文件 15/15、原严格请求校验筛选 1/1、`npm run typecheck` 通过；API/schema 文档已同步。
+
+### 已确认并修复：衣物可用状态在事务外判断幂等，可返回与数据库事实相反的成功结果
+- `setGarmentAvailability()` 原先先读取当前衣物，再在发现目标状态相同时直接返回；只有需要改变时才启动 `BEGIN IMMEDIATE`。因此另一写入可在读取与返回之间把状态改走，本请求仍返回 `changed:false` 和陈旧衣物，违反“把状态设置为目标值”的接口语义。
+- 可控回归在 `getGarmentById()` 返回 `available` 后、服务尚未进入事务时注入一次 `repair` 写入；旧实现返回“已是 available”，但随后数据库实际为 `repair`，稳定证明 no-op 路径存在 TOCTOU。
+- 修复把事务存在性检查和 `BEGIN IMMEDIATE` 移到首次读取之前；取得写锁后才判断目标是否已满足。真正幂等时提交空事务且不写历史，变更时继续把状态更新与事件插入原子提交。
+- 验证结果：推荐反馈/可用状态专项 15/15、`npm run typecheck`、`git diff --check` 通过。
+
+### 已确认并修复：完整导出丢失推荐反馈的权威 WearEvent 链接
+- 版本 5 已在 `recommendation_feedback` 增加 `wear_event_id`，运行时 `RecommendationFeedback` DTO 也公开 `wearEventId`；但 `listRecommendationFeedbackForExport()` 的 SELECT、行类型和映射仍停留在旧 `wear_log_id`，所以 JSON/ZIP 完整备份静默丢失新链接。
+- 同一导出 shape 校验器也没有检查可选 `wearEventId`，因此 `wearEventId:0` 会被接受为合法 V2。更隐蔽的是，导出只读取 `actually_worn` 标志，没有像运行时 DTO 那样把现存 wear link 视为权威实穿事实。
+- 回归新增一条带真实 WearEvent 和候选衣物明细的反馈，并把旧布尔标志故意保持为 0；旧导出同时漏掉链接并返回 `actuallyWorn:false`。另一个校验回归证明非法 0 未被拒绝。
+- 修复后查询、映射和校验均包含可选正整数 `wearEventId`；`wear_event_id`、兼容 `wear_log_id` 或布尔标志任一成立都会导出 `actuallyWorn:true`。字段仍为可选，旧 V2 不受影响。
+- 验证结果：导出专项 22/22、导出 API 相邻筛选 3/3、`npm run typecheck` 通过；API/schema 文档已同步。
+
+### 已确认并修复：语法合法但形状错误的衣物 JSON 可突破共享 DTO
+- `rowToGarment()` 与 `updateGarment()` 使用泛型 `safeJson<T>`；它只在 `JSON.parse` 抛错时回退，却把任何语法合法结果直接断言成目标类型。于是 `seasons='{}'`、`styles='[1]'`、`materials='"cotton"'`、`patterns='null'`、`tags='[true]'` 会分别作为对象、数字数组、字符串、null 和布尔数组返回给声明为字符串数组的字段；`vision_tags='{}'` 也会被当成完整 `VisionTagSuggestion`。
+- 这不仅使 `/api/garments` 违反共享类型，后续推荐代码调用 `.includes()` 等数组方法时也可能崩溃；一次只改备注的更新还会把错误形状重新序列化回库，而不是恢复契约。
+- 新回归先直接读取五种错误数组形状和空视觉对象，再执行无关字段更新并检查底层列。旧实现稳定返回错误运行时类型且原样写回。修复增加严格字符串数组守卫；季节额外只允许四个 `Season` 枚举，视觉建议要求可选合法类别、三个字符串数组以及 label/有限 score 数组。异常数组读取为 `[]`，无效视觉缓存读取为缺失，后续更新写回规范数组；完整导出仍会对原始损坏数据明确失败，不掩盖备份审计。
+- 首次守卫返回通用 `string[]` 导致类型检查指出不能赋给 `Season[]`；改为可选枚举白名单的泛型后解决。
+- 验证结果：衣物更新/价格、数据库导入与价值洞察相邻 3 文件 42/42；视觉缓存与导出追加联合回归 3 文件 32/32；`npm run typecheck`、`git diff --check` 通过，API/schema 文档已同步。
+
+### 已确认并修复：持久化推荐原因只验字符串，可返回非法 FeedbackReason
+- `recommendation_feedback.reason_codes_json` 的表约束只保证是 JSON 数组。请求写入会验证九个枚举和去重，但运行时 `parseReasonCodes()` 只确认每个元素是字符串，随后直接断言为 `FeedbackReason[]`。
+- 因此合法 JSON `["invented"]` 或 `["fit","fit"]` 会从读取 API、反馈洞察和统计重算路径流出，分别违反枚举与不重复契约；完整导出已经更严格，运行时语义不一致。
+- 两条持久化层回归在旧实现上均不抛错。修复复用公开 `FEEDBACK_REASONS` 建立集合，同时要求所有值受支持且数组无重复；损坏行返回稳定 500 `CORRUPT_FEEDBACK`。
+- 验证结果：推荐反馈服务/API 18/18、导出 22/22、`npm run typecheck` 通过；API/schema 文档已同步。
+
+### 已确认并修复：历史刷新慢响应可覆盖用户已切换到的新周
+- `refreshHistoryData()` 与 `refreshPlannerWeek()` 都会写入 `outfitPlans`/`plannerForecasts`，但二者没有共享请求版本。顶部“刷新”只设置 `busyAction="history"`，不会设置 `plannerBusy`，所以刷新未完成时“下一周”仍可点击。
+- 使用独立数据库、真实 Chrome 和 Playwright 路由构造“当前周刷新延迟 1800 ms、下一周请求立即返回”：切到 7 月 20–26 日后，250 ms 时界面正确显示新周的 `搭配 #222`；旧周响应到达后，周标题仍是 7 月 20–26 日，但 `搭配 #222` 消失并恢复为空周。
+- 旧响应中的 `搭配 #111` 因日期属于上一周而被 WeekGrid 过滤，所以最终表现不是直接显示旧卡片，而是把已经成功加载的新周数据静默清空。
+- 新增通用 `createLatestRequestGate()`；历史公共数据与周计划数据使用独立 gate，`refreshHistoryData()` 将两组并发读取分开 settle，因此一组失败不会再阻止另一组当前结果落地。历史刷新与显式周加载共享周计划 gate，只有最新 token 能提交 plans、forecast 或 planner error。
+- `plannerBusy` 另用只覆盖显式周加载的版本号收尾：历史刷新可以使旧周数据 token 失效，但不会导致旧显式请求无法清除 busy；多个显式周请求重叠时也只有最后一个能清除。
+- 自动回归先红于缺少 gate 模块，修复后 `latestRequest + app` 共 83/83、`npm run typecheck` 和定向 `git diff --check` 通过。
+- 全新 Chrome 会话重复相同 1800 ms 场景：中间态和旧响应到达后的最终态都保持 7 月 20–26 日与 `搭配 #222`，控制台 0 error/0 warning。截图、隔离数据库、日志和复现脚本保存在 `output/playwright/planner-race-20260716/`。
+
+### 已确认并修复：并发保存两张推荐卡会让晚响应劫持已打开的搭配编辑器
+- `saveRecommendationOutfit()` 只用单个 `savingOutfitId` 标记当前卡片；`OutfitStage` 也只禁用 ID 相等的按钮，所以 A 保存未完成时 B 的“保存搭配”仍可点击。两个请求都会在完成后无条件 `setOutfitBuilderOutfit(saved)`。
+- 真实 Chrome 通过两张模拟推荐卡和 3 秒/5.5 秒保存响应稳定复现：A 点击 80 ms 后 B 按钮仍为 enabled；A 返回时编辑器名称为“已保存 A”，用户改成“用户正在编辑 A”；B 晚到后同一输入框变成“已保存 B”，`userEditPreserved=false`。
+- 这不只影响视觉 busy：两个保存都已提交，晚响应会切换编辑目标并触发 `OutfitBuilder` 初始化 effect，静默丢弃用户对先返回实体的未保存修改。保存与“安排日期”“实际穿了”还使用相互独立的单 ID 状态，理论上也可形成不同动作的重叠。
+- 修复将保存、安排和实穿统一收敛为单个 `RecommendationCardAction`，并用同步 ref 在 React 重渲染前就拒绝第二次进入；完成时只允许持有同一 action token 的请求释放状态。
+- `RecommendationView` 把生成/天气 busy 与卡片动作 busy 合并成 `interactionBusy`，传给所有 `OutfitStage`；所有候选卡的保存、安排、反馈、实穿、设为核心、替换，以及场合/天气/重新生成/清除核心入口都会同步禁用。App 处理函数另有 ref guard，避免脚本或陈旧 DOM 绕过 UI。
+- 自动回归先在旧实现上得到两张卡 `actionBusy=[undefined, undefined]`，修复后目标测试 1/1、`tests/app.test.tsx + tests/latestRequest.test.ts` 相邻回归、`npm run typecheck` 与定向差异检查通过。
+- 全新 Chrome 重放同一 3 秒/5.5 秒场景：A 保存后 80 ms，B 的保存按钮 `secondEnabled=false`；A 返回后用户输入“用户正在编辑 A”，等待所有延迟响应后仍保持该值，`userEditPreserved=true`、仅一个对话框，控制台 0 error/0 warning。脚本与修复前后截图保存在 `output/playwright/recommend-action-race-20260716/`。
+
+### 已确认并修复：设置输入变化后旧推荐响应会复活已失效结果
+- `requestRecommendations()` 没有请求版本或输入快照校验。推荐进行中时主导航仍可进入设置；`SettingsView` 的纬度、经度和保存按钮只针对自身动作局部禁用，用户可以修改推荐输入。
+- 坐标输入会立即执行 `setWeather(null)` 与 `setRecommendations(null)`，但不会使在途推荐失效。旧请求先取得旧位置天气，再等待推荐响应；输入变更清空天气后，迟到的推荐结果仍会无条件写回。
+- 真实 Chrome 将推荐响应延迟 3 秒：点击生成后进入设置，把坐标改为 `10.0000, 20.0000`；返回推荐页时 `staleReasonVisible=true`，界面同时显示“天气尚未获取”和“旧坐标推荐仍被写回”，形成内部自相矛盾状态。
+- `createLatestRequestGate()` 新增显式 `invalidate()`；天气与推荐共享 gate。坐标、场合、画像、核心约束、availability 和反馈清空会使旧 token 失效，旧响应/错误均不能提交。
+- 每个天气/推荐请求只在自身 token 仍为最新时提交状态，并以函数式更新仅清除与自己相同的 `busyAction`；输入变化可以立即取消界面 busy，而旧请求收尾不会把后续保存或定位动作误设为空闲。
+- 设置页的定位和保存按钮在任一全局动作期间禁用，避免无输入变化时启动第二个互相覆盖 `busyAction` 的操作；文本输入仍可用于主动改变输入并使旧推荐失效。
+- 红灯脚本、隔离会话和截图保存在 `output/playwright/recommend-input-race-20260716/`。同一 3 秒场景绿色复验得到 `staleReasonVisible=false`，页面保持“天气尚未获取 / 还没有推荐”；控制台 0 error/0 warning。
+
+### 已确认并修复：迟到定位回调会覆盖定位期间的手工坐标
+- `locate()` 调用 `navigator.geolocation.getCurrentPosition()` 后只禁用“定位”按钮，两个坐标输入仍可编辑；成功回调不检查用户是否在等待期间改变过输入。
+- 真实 Chrome 将定位成功延迟 2 秒：定位后立即输入 `10.0000, 20.0000`，回调到达后字段被静默改为 `39.1234, 116.5678`，`manualInputPreserved=false`，并显示“位置已更新”。
+- 定位使用独立 gate；任一手工坐标变化都会显式使当前定位 token 失效并只清除 `locate` busy。成功/失败回调提交前都检查 token，成功时也只清除自己的 busy。
+- 同一 2 秒场景在整页重载后的干净实例中得到最终坐标 `10.0000, 20.0000`、`manualInputPreserved=true`；旧回调未写字段、本地存储或成功提示，控制台无 warning/error。
+- 通用 gate 红测先失败于 `invalidate is not a function`，设置页全局动作红测先确认定位按钮仍 enabled；修复后相邻前端 4 文件 108/108、`npm run typecheck` 与定向差异检查通过。
+
+### 已确认并修复：后台衣物更新会重置已打开的搭配编辑器草稿
+- `OutfitBuilder` 的初始化 effect 依赖 `[activeGarments, props.garments, props.open, props.outfit]`。父组件任何衣物数组更新都会重新执行 `createBuilderDraft()`，覆盖名称、备注、收藏、slot、配饰、编辑模式、dirty 状态和校验。
+- 这不是仅在切换编辑实体时发生：衣物状态、普通字段保存、刷新或启动阶段迟到读取都可能生成新数组。对话框仍打开、编辑目标 ID 未变时，用户草稿也会被当成“重新初始化”。
+- 真实 Chrome 先发起 9 秒延迟的衣物 availability 更新，再保存推荐 A 打开编辑器并输入“用户正在编辑，等待衣物响应”；后台响应到达后名称恢复为“已保存 A”，`draftPreserved=false`、对话框仍为 1 个，控制台 0 error/0 warning。
+- 新增纯函数 `outfitBuilderDraftIdentity()`，身份仅由对话框打开状态与 `SavedOutfit.id` 决定：关闭为 `null`、手工新建为 `new`、保存搭配为 `saved:<id>`。同 ID 即使对象或衣物数组换新也仍是同一编辑会话。
+- 完整初始化 effect 用 ref 记录已初始化身份，只在首次打开、关闭后重开、手工/保存模式切换或目标 ID 变化时重建草稿；衣物数组更新仍可通过独立 effect 刷新未解决的不可用项，但不会覆盖名称、备注、收藏、slot 或 dirty。
+- 身份 helper 红测先失败于函数不存在；修复后 `savedOutfitsUi + app` 96/96、`npm run typecheck` 与差异检查通过。
+- 同一真实 Chrome 9 秒 availability 场景绿色复验：响应前后输入都保持“用户正在编辑，等待衣物响应”，`draftPreserved=true`、单一对话框，控制台 0 error/0 warning。证据脚本与修复前后截图保存在 `output/playwright/outfit-builder-reset-20260716/`。
+
+### 已确认并修复：衣物事实变化后旧推荐仍继续显示
+- `updateOne()`、`archiveOne()`、`restoreOne()`、`bulkConfirm()` 与 `bulkUpdate()` 会改变推荐的权威衣物集合或展示事实，但它们既不使在途推荐请求失效，也不清空当前 `recommendations`。
+- 真实 Chrome 先生成含“白衬衫”的“推荐 A”，再到衣服库点击该衣物的“排除推荐”，返回今日推荐后旧卡片仍显示且仍包含“白衬衫”：`staleRecommendationVisible=true`、`excludedGarmentVisible=true`。
+- 缺陷不仅影响 `excluded`：归档、恢复、确认、季节、标签、名称、分类、颜色、保暖度、风格、正式度等通用更新都可能让当前推荐与权威衣橱冲突；迟到的在途推荐还可能在清空后重新写回。
+- 推荐请求失效入口现同时取消最新请求 token、清空当前结果与实穿反馈；衣物事实变更统一复用该入口。导入会清空全部核心/排除约束，单件和批量的资格/类别变更只移除受影响衣物 ID，名称与标签等不影响约束合法性的编辑不会误删核心选择。
+- 覆盖入口包括导入、通用编辑、归档/恢复、批量确认/更新、单件/批量可用状态、手工建档、缩略图刷新/选择和去背景；更新失败不会把未成功的资格变更当作已提交。
+- 自动回归先红于 `garmentPatchAffectsRecommendationConstraints is not a function`，修复后 `tests/app.test.tsx` 84/84、`npm run typecheck` 与定向差异检查通过。
+- 真实 Chrome 绿色复验覆盖两条路径：已显示的“推荐 A”在排除“白衬衫”后立即清空；推荐响应延迟 1.8 秒时，排除动作使迟到结果无法复活。两者都显示“还没有推荐”，控制台 0 error/0 warning。红绿脚本与截图保存在 `output/playwright/wardrobe-recommendation-stale-20260716/`。
+
+### 已确认并修复：桌面分栏把推荐空态正文挤成竖列
+- 通用 `.ui-empty` 使用“图标 / `minmax(0,1fr)` 正文 / 操作”三列。推荐页进入 38%/62% 分栏后，右侧空态还要同时容纳长按钮，正文轨道可被压到约百余像素；真实桌面截图中标题断成“还没有推 / 荐”，说明几乎每 4 个汉字换行。
+- 推荐空态现局部改为“图标 + 正文”两列，操作按钮放到正文下方第二行；不改变衣橱等其他通用空态。
+- 640px 以下显式恢复单列，并沿用通用规则让操作区和按钮占满可用宽度，避免更高优先级的推荐页选择器覆盖移动端响应式。
+- CSS 回归先红于推荐空态没有 `grid-template-columns`；修复后 App 85/85、类型检查与差异检查通过。
+- 真实 Chrome 在 1440px 下测得正文宽 489.9px、操作位于正文下方；390px 下为单列，正文/操作/按钮宽均 278.3px。桌面与移动截图均无异常换行，控制台 0 error/0 warning，证据保存在 `output/playwright/wardrobe-recommendation-stale-20260716/fixed-empty-layout-*.png`。
+
+### 已确认并修复：迟到的衣橱刷新会覆盖更晚且已保存的单件编辑
+- `refreshGarments()` 对 active/archived 两个 GET 没有请求版本；`updateOne()` 虽然对同一衣物的 PUT 串行并用版本保护响应，却不会使已经在途的衣橱 GET 失效。
+- “刷新衣橱”按钮也不会在单件更新期间禁用，因此用户可先启动刷新，再点击确认/拥有/排除或编辑字段。
+- 真实 Chrome 将刷新 GET 固定在编辑前的 `excluded=false` 快照，随后 PUT 成功且权威状态为 `true`；乐观 UI 先显示“已排除推荐”，释放旧 GET 后又回到“排除推荐”：`optimisticExcluded=true`、`finalExcluded=false`、`staleRefreshWon=true`，而 mock 权威值仍为 `true`。
+- 增加独立 `garmentRequestGate`：每次 active/archived 成对读取取得同一 token，只有最新请求能同时提交两组列表或读取错误，避免新旧 active/archived 混合。
+- 统一衣橱变更入口现在也使旧读取 token 失效，因此单件编辑、归档/恢复、导入、批量更新、可用状态、建档和图片变更都不会被先前刷新覆盖。
+- 自动回归先红于 `invalidateWardrobeRecommendations()` 未调用 `garmentRequestGate.invalidate()`；修复后 App 85/85、类型检查与差异检查通过。
+- 同一真实 Chrome 控制释放顺序后，旧 GET 到达时 UI 仍保持“已排除推荐”：`finalExcluded=true`、`staleRefreshWon=false`、权威值为 true，控制台 0 error/0 warning。红灯结构化结果、复现脚本和绿色截图保存在 `output/playwright/garment-refresh-race-20260716/`。
+
+### 已确认并修复：启动阶段的旧价值洞察会覆盖更晚刷新结果
+- `refreshHistoryData()` 以 `void refreshValueInsights()` 启动价值洞察，因此外层历史刷新和启动 bootstrap 不等待它；`refreshValueInsights()` 自身也没有请求 token，任意响应、错误和 finally 都会直接提交。
+- 开发环境 StrictMode 下启动 effect 可产生多个价值洞察请求；即使不考虑 StrictMode，启动请求未被 bootstrap 等待也允许用户在它完成前手动刷新。
+- 真实 Chrome 挂起启动阶段旧响应（`knownPriceCount=1`），随后刷新显示新响应（`knownPriceCount=2`）；释放旧请求后界面退回 1 件：`staleValueVisible=true`、`newerStillVisible=false`，控制台无 warning/error。
+- 新增独立 `valueInsightsRequestGate`；成功结果、错误和 finally 都先检查 token，旧请求不能改写数据、错误或 loading。价值洞察仍保持独立 loading，不阻塞其余历史和启动数据可用。
+- 自动回归先红于 `refreshValueInsights()` 未调用 gate；修复后 App 86/86、类型检查与差异检查通过。
+- 同一真实 Chrome 释放启动旧响应后仍显示“价格已知 2 件”，`staleValueVisible=false`、`newerStillVisible=true`；旧请求挂起时和最终 `aria-busy` 都为 null，控制台 0 error/0 warning。红绿结构化结果与截图保存在 `output/playwright/value-insights-race-20260716/`。
+
+### 已确认并修复：保存设置的迟到响应会覆盖保存期间的新画像输入
+- `saveSettings()` 把当前画像发往 `PUT /api/profile`，响应完成后无条件 `setProfile()`；但设置页仅禁用定位和保存按钮，纬度、经度及 9 个画像字段仍可编辑。
+- 真实 Chrome 将画像保存响应挂起：请求快照为身高 176，等待期间把仍启用的身高输入改为 180，释放响应后字段回退到 176，同时页面仍显示“设置已保存在本机”。结果为 `inputEnabledDuringSave=true`、`userEditPreserved=false`，控制台无 warning/error。
+- 这会同时造成两种误导：画像新输入被静默丢失；坐标虽然不会被响应覆盖，但保存开始时已写入本地存储，等待期间的新坐标会留在界面却未持久化，成功提示仍宣称当前设置已保存。
+- 设置页现只在 `busyAction === "save-settings"` 时禁用两项位置和九项画像字段；天气、推荐、定位等其他动作期间仍可编辑，因此不会破坏“改输入即取消旧异步结果”的既有交互。
+- 父组件增加同步 `settingsSaveInProgress`：保存入口拒绝重入，三个位置/画像更新处理函数也拒绝渲染间隙中的直接回调；finally 只清除仍属于自身的 `save-settings` busy。
+- 自动回归先红于字段未锁定，修复后 App 87/87、类型检查与差异检查通过。相同 Chrome 场景下 11/11 字段均禁用，填值尝试被阻止，保存结束后恢复可编辑，控制台 0 error/0 warning。红绿结果、脚本和截图保存在 `output/playwright/settings-save-race-20260716/`。
+
+### 已确认并修复：批量衣物部分成功后前端保留错误的旧状态
+- `bulkConfirm()` 与 `bulkUpdate()` 使用 `Promise.all()`；任一请求先失败就立即进入 catch，但同批其他请求不会被取消，仍可能随后成功落库。
+- `bulkConfirm()` 的 catch 完全不刷新衣橱；`bulkUpdate()` 虽刷新，却可能在其余 PUT 尚未 settle 时过早读取，因此两者都不能可靠恢复权威状态，也不会只保留失败项供重试。
+- 真实 Chrome 同时确认“白衬衫”和“黑长裤”：第二件立即返回 500，第一件 450 ms 后成功。最终 mock 权威状态中白衬衫已确认，界面仍显示“确认衣物”，且批量栏继续显示“已选择 2 件”：`uiMatchesAuthority=false`。
+- 新增 `settleMutations()`：把同步异常也转换为单项 rejection，等待所有异步变更完成后按原输入顺序返回成功项、失败项和失败原因。
+- 批量确认与通用批量更新现在都在全部请求 settle 后刷新衣橱；成功项从选择中移除，失败项保留以便重试，部分成功同时显示成功数量与失败原因。推荐约束只按真正成功的更新清理。
+- 通用 settle 与 App 接线测试先红后绿，目标 2 文件 90/90；相邻 Wardrobe 前端 20/20、类型检查与差异检查通过。
+- 同一 Chrome 场景中白衬衫刷新为“已确认”且取消选择，失败的黑长裤保持待确认和选中，批量栏为“已选择 1 件”，`uiMatchesAuthority=true`，除预期 500 网络消息外无控制台异常。红绿证据位于 `output/playwright/bulk-garment-partial-failure-20260716/`。
+
+### 已确认并修复：迟到的保存搭配刷新会覆盖更晚的收藏更新
+- `refreshSavedOutfits()` 并发读取 active/archived 后无版本检查直接 `setSavedOutfits()`；收藏、编辑、创建、归档和替换版本则通过局部 `upsertSavedOutfit()` 更新同一数组。
+- 历史页顶部刷新只设置全局 `busyAction=history`，保存搭配面板却只接收 `savedOutfitBusy`，因此刷新过程中收藏按钮仍可操作；这让旧 GET 与新 PUT 可以合法并发。
+- 真实 Chrome 固定刷新前的 `favorite=false` 快照，随后收藏 PUT 成功并让权威状态变成 true；释放旧 GET 后按钮又从“取消收藏”退回“收藏”：`staleRefreshWon=true`、`uiMatchesAuthority=false`，控制台无 warning/error。
+- 保存搭配现使用独立最新请求 gate；active/archived 成对读取只有当前 token 能提交结果或错误。所有创建、编辑、收藏、归档和替换成功最终都经过 `upsertSavedOutfit()`，该入口先失效旧读取再提交局部权威响应。
+- App 自动回归先红后绿至 89/89，相邻保存搭配 UI 13/13、类型与差异检查通过。
+- 同一 Chrome 场景中释放旧 GET 后仍保持“取消收藏”，`staleRefreshWon=false`、`uiMatchesAuthority=true`，控制台 0 error/0 warning。红绿证据位于 `output/playwright/saved-outfit-refresh-race-20260716/`。
+
+### 已确认并修复：较早的模型状态刷新会覆盖较新的刷新结果
+- `refreshVisionModels()` 对每次 `GET /api/vision/models` 都直接提交结果或把状态置空，没有请求版本；设置页“刷新模型”按钮也不会进入 busy，可连续发起请求。
+- 真实 Chrome 将第一次手动刷新挂起，第二次刷新先返回“新状态已可用”；释放较早响应后页面退回“旧状态未下载”：`staleStateVisible=true`、`newerStatePreserved=false`，控制台无 warning/error。
+- 同一写入点还被启动加载、模型下载后刷新和验证后刷新共享，因此乱序不只来自双击；旧错误也可能把新状态清空。
+- 模型状态读取现使用独立最新请求 gate；成功结果和 catch 置空都只由当前 token 提交，启动、手动刷新、下载后刷新与验证后刷新共享同一顺序。
+- App 回归先红后绿至 90/90，类型与差异检查通过；同一 Chrome 双刷新场景释放旧响应后仍显示“新状态已可用”，`staleStateVisible=false`、`newerStatePreserved=true`，控制台 0 error/0 warning。红绿证据位于 `output/playwright/vision-model-refresh-race-20260716/`。
+
+### 已确认并修复：启动阶段迟到的个人画像读取会覆盖用户编辑
+- `refreshProfile()` 无请求版本，成功、失败都会直接修改 `profile/profileLoaded`。开发 StrictMode 会并发两次启动读取；生产环境的 10 秒启动降级也允许单个慢请求未完成时先进入应用。
+- 真实 Chrome 将第一次启动 GET 挂起，第二次先返回身高 176 并放行界面；用户改成 180 后释放旧响应 170，输入框被静默改回 170：`userEditPreserved=false`，控制台无 warning/error。
+- 该竞态还可能与设置保存交叉：旧 GET 若晚于保存响应完成，同样能覆盖刚保存的画像并错误改变 `profileLoaded`。
+- 画像读取现使用独立最新请求 gate，成功画像、`profileLoaded` 和错误都只由当前 token 提交；画像编辑及通过校验后的保存开始会显式失效所有旧读取。
+- App 回归先红后绿至 91/91，类型与差异检查通过；同一 Chrome 双启动请求场景中释放旧 170 响应后输入仍为 180，`userEditPreserved=true`，控制台 0 error/0 warning。红绿证据位于 `output/playwright/profile-refresh-race-20260716/`。
+
+### 已确认并修复：可用状态旧响应会覆盖同一衣物更晚的通用编辑
+- `POST /api/garments/:id/availability` 的服务端事务只更新 `availability_status` 和更新时间，但响应返回完整 `Garment`；前端 `changeGarmentAvailability()` 又把该完整快照合并回 active/archived 数组。
+- 衣物卡片只禁用正在提交的 availability 下拉框，确认、拥有、排除推荐和编辑器仍可操作；这些通用更新经 `updateOne()` 使用另一套 per-ID 队列/版本，无法约束 availability 响应。
+- 真实 Chrome 先让 availability 请求在权威状态已变为 `repair` 后挂起其 `excluded=false` 响应快照，再成功提交更晚的“排除推荐”，权威状态成为 `{ availabilityStatus:"repair", excluded:true }`。释放旧 availability 响应后，页面从“已排除推荐”退回“排除推荐”，但状态仍显示维修中。
+- 结构化结果为 `editEnabledDuringAvailability=true`、`authoritativeExcluded=true`、`finalExcluded=false`、`staleAvailabilityResponseWon=true`、`uiMatchesAuthority=false`，控制台 0 error/0 warning。
+- 新增 `createKeyedSerialQueue()`：同一键严格串行，不同衣物仍可并行；前一项失败会被队列尾吸收而不阻塞后续操作，队列空闲后自动释放键。
+- `updateOne`、归档/恢复、批量确认/更新、单件/批量 availability、手工图片上传、缩略图选择、抠图和视觉标签现在全部共享 per-garment 队列。每次调用还递增该衣物版本；通用或专用接口返回的完整 DTO 只有在仍为当前版本时才能同时提交 active/archived 数组。
+- 若当前最新写入失败，会重新读取 active/archived 权威状态再展示错误；较旧失败不会回滚或覆盖后续写入。`updateOne` 也会同步更新归档数组，覆盖“编辑在途时被归档”的交叉路径。
+- 自动回归先在旧实现上失败于 `updateOne` 未使用公共队列；修复后 App 与队列专项 94/94，相邻前端 45/45、`npm run typecheck` 与 `git diff --check` 通过。
+- 同一真实 Chrome 释放顺序下，旧 availability 响应不再提交，后续通用 PUT 才开始并返回包含两项权威变化的 DTO；最终 `finalExcluded=true`、`finalAvailability="repair"`、`staleAvailabilityResponseWon=false`、`uiMatchesAuthority=true`，控制台 0 error/0 warning。红绿结果与截图保存在 `output/playwright/garment-cross-endpoint-race-20260716/`。
+
+### 已确认并修复：旧导入预览会在原始 JSON 改变后复活并允许提交
+- `previewImport()` 对 `importText` 做一次 `JSON.parse` 后发起异步预览，但没有输入版本或请求 token；`updateImportText()` 虽会清空当前预览和决策，却不能阻止在途旧响应重新写回。
+- 原始 JSON 文本框只在购买检查期间禁用，预览请求挂起时仍可编辑。这本身是合理的取消式交互，但当前实现没有把编辑视为旧预览失效信号。
+- 真实 Chrome 挂起旧 JSON 预览，随后把文本改成完全不同的新 JSON；旧响应释放后页面重新显示“旧预览衬衫”，并启用“提交选择”，而文本框仍是新 JSON。
+- 结构化结果为 `inputEnabledDuringPreview=true`、`finalTextMatchesNew=true`、`stalePreviewVisible=true`、`submitEnabled=true`、`stalePreviewMatchesCurrentInput=false`，控制台 0 error/0 warning。
+- 服务端会重新归一化并校验来源键，明显不匹配通常会被拒绝，但前端已向用户展示并允许提交与当前输入不一致的审核结果；若新旧内容保留相同稳定键，错误审核还可能更隐蔽。红灯证据位于 `output/playwright/import-preview-race-20260716/`。
+- 导入预览现使用独立 latest-request gate；原始 JSON 编辑、读取新采集产物以及正式导入开始都会失效在途旧预览。预览结果、错误和 busy 收尾均只允许当前 token 提交，旧请求无法复活候选或错误状态。
+- 正式导入期间会锁定原始 JSON、模式切换、候选决策和其他导入动作，保证不可取消的提交使用稳定快照；预览期间仍允许编辑 JSON 或读取新产物，以显式取消旧预览。
+- TDD 回归先在旧实现上失败；修复后 App、导入审阅和决策支持 UI 共 108/108，`npm run typecheck` 与 `git diff --check` 通过。
+- 同一真实 Chrome 释放旧预览响应后，页面仍保留新 JSON，未显示“旧预览衬衫”，且“提交选择”保持禁用；结构化结果为 `stalePreviewVisible=false`、`submitEnabled=false`、`stalePreviewMatchesCurrentInput=true`，控制台 0 error/0 warning。红绿结果、脚本与截图保存在 `output/playwright/import-preview-race-20260716/`。
+
+### 已确认并修复：跨衣物视觉任务互相覆盖 busy 状态并提前解锁
+- `cutoutGarment()` 与 `analyzeVisionTags()` 共用单例 `visionBusyId` 和全局单例 `busyAction`。不同衣物可以并行进入 keyed queue，但后启动任务会覆盖前一件衣物的 ID/动作；任一任务完成又会无条件把两个单例清空。
+- `GarmentItem` 只在 `visionBusyId === item.id` 时禁用视觉按钮；因此第二件衣物开始后，第一件仍在途的按钮立即恢复可用。第一件先完成时，第二件仍挂起的按钮也恢复为普通文案并可再次触发。
+- 真实 Chrome 使用只读 GET 夹具临时展示第二件衣物，并拦截两条 `POST /api/garments/:id/cutout`，未写真实数据库。两条请求均挂起时得到 `firstEnabledAfterSecondStart=true`；只释放第一条后，第二条仍 pending，但 `secondEnabledAfterFirstSettles=true`、文案为“去背景”。
+- 该竞态不会绕过同一衣物写队列，但会错误表达任务状态、允许重复排队昂贵的本地视觉进程，并让全局 `busyAction` 在不同页面上产生与实际任务不一致的锁定/解锁。控制台 0 error/0 warning；红灯脚本、结构化结果和截图位于 `output/playwright/vision-busy-race-20260716/`。
+- 新增 `GarmentVisionAction`，并以 `ReadonlyMap<garmentId, action>` 记录每件衣物的视觉任务；开始和收尾只设置或删除自己的键，动作不匹配的旧收尾不能清除后来任务。
+- 衣物视觉操作不再占用全局 `busyAction`。`WardrobeView` 将每件衣物自己的动作传给 `GarmentItem`，同一衣物的去背景与分析按钮共同禁用，并分别显示“处理中”或“分析中”。
+- TDD 先以源代码约束和双衣物组件行为得到 2 个红灯；修复后 App 96/96，相邻 6 个前端文件共 166/166、`npm run typecheck` 与 `git diff --check` 通过。
+- 同一真实 Chrome 释放顺序下，两条请求挂起时第一件不会被第二件解锁；只释放第一条后，第二条仍为“处理中”且不可点击。结构化结果为 `firstEnabledAfterSecondStart=false`、`secondEnabledAfterFirstSettles=false`、`busyStateMatchesPendingRequests=true`，控制台 0 error/0 warning；绿色结果与截图保存在同一证据目录。
+
+### 已确认并修复：跨衣物可用状态请求只能标记一个 busy ID
+- `changeGarmentAvailability()` 使用单例 `availabilityBusyGarmentId`。第二件衣物开始更新时会覆盖第一件 ID，导致第一件请求仍在途但下拉框立即恢复可操作。
+- 该函数的 finally 使用 `current === id ? null : current`，所以较早请求完成不会误清较新的第二件；缺陷集中在多个并行 ID 无法同时表达，而不是收尾顺序。
+- 真实 Chrome 使用只读双衣物夹具并拦截两条 `POST /api/garments/:id/availability`。两条请求均 pending 时，`firstBusyAfterStart=true` 但 `firstEnabledAfterSecondStart=true`；第二件仍正确保持禁用，控制台 0 error/0 warning。
+- 同一衣物写队列保证数据顺序，但提前解锁会允许用户在旧状态尚未确认时继续排队修改，且 UI 的 `aria-busy` 与真实网络状态不一致。红灯脚本、结果和截图位于 `output/playwright/availability-busy-race-20260716/`。
+- availability busy 现改为 `ReadonlySet<garmentId>`；开始操作复制集合并添加自身 ID，finally 只删除自身 ID，不会覆盖或清除其他衣物的在途状态。
+- `WardrobeView` 按 ID membership 向每个 `GarmentItem` 传递布尔 busy，`AvailabilityMenu` 因而能同时禁用任意数量的在途下拉框并维持正确 `aria-busy`。
+- TDD 先以处理函数约束和双衣物组件行为得到 2 个红灯；修复后 App 98/98，相邻 6 个前端文件共 168/168、`npm run typecheck` 与 `git diff --check` 通过。
+- 同一真实 Chrome 释放顺序下，两条请求同时 pending 时第一件不再被第二件解锁；只释放第一条后，第二件仍禁用。结构化结果为 `firstEnabledAfterSecondStart=false`、`secondEnabledAfterFirstSettles=false`、`busyStateMatchesPendingRequests=true`，控制台 0 error/0 warning；绿色结果与截图保存在同一证据目录。
+
+### 已确认、待修复：全局 BusyAction 可重叠并由较早任务提前清空
+- `busyAction` 是全应用单例，但多个入口直接 `setBusyAction(action)`，且采集、读取产物、批量 availability、缩略图、模型任务、历史刷新和导出等 finally 仍无条件 `setBusyAction(null)`。组件也不总是以 `props.busy` 禁用同页其他全局动作。
+- 穿搭历史页的刷新按钮只在 `busyAction === "history"` 时禁用，两个导出按钮只在导出类型时禁用；因此刷新 pending 时仍可启动导出。导出覆盖 action 后，刷新按钮又恢复可用；刷新先结束则无条件清空导出 busy。
+- 真实 Chrome 拦截 `/api/insights` 与 `/api/export`：得到 `exportEnabledDuringRefresh=true`、`refreshEnabledDuringExport=true`、`bothRequestsPending=true`；只释放刷新后，导出请求仍 pending，但按钮已恢复“导出 JSON”且可点击。
+- 该问题会允许重复启动昂贵操作、让 `aria-busy` 与网络状态分叉，并可能让不可重入的提交/下载在错误的“空闲”界面中再次触发。控制台 0 error/0 warning；红灯脚本、结果和截图位于 `output/playwright/global-busy-race-20260716/`。
+
+### 2026-07-16 断点恢复确认
+- session catchup 报告 37 条未同步消息；逐项核对后，内容属于暂停问答、技能恢复和只读检查，没有遗漏的产品代码编辑。
+- 当前 Git 差异为 59 个跟踪文件、3822 行新增与 392 行删除，另有既有 Playwright 证据和本轮新增 helper/测试；未执行 reset、checkout、clean 或文件删除。
+- 隔离 QA 的 Vite/API 仍分别监听 5174/8788，可直接用于全局 BusyAction 修复后的同场景复验；真实项目数据库仍不在本轮浏览器证据范围内。
+- 精确续作点是：先为全局动作建立同步互斥与动作匹配释放，再统一 History/导出等入口对全局 busy 的禁用语义。
+
+### 全局 BusyAction 暂停前静态盘点
+- `src/app/App.tsx` 的单例状态位于约 630 行；`import`、批量确认/更新、定位、天气、推荐和设置保存已有部分“动作匹配后释放”，但采集订单、采集商品、读取产物、批量 availability、补图、视觉模型下载/验证、历史刷新及两种导出仍无条件清空。
+- 单纯把所有 `finally` 改成动作匹配不足以阻止同一 React render 间隙内的同步双进入；修复需要同步 ref/helper 在设置 state 前原子取得全局动作锁。
+- `HistoryInsightsView` 目前分别以 `busyAction === "history" | "export" | "export-complete"` 判断按钮，只禁用自身动作；应让刷新与两种导出在任一全局动作存在时互斥，同时保留当前动作的文案。
+- `WardrobeView`、`ImportView`、`SettingsView` 也有只检查特定 action 的按钮；恢复后应先建立统一锁语义，再逐入口审查是否应该尊重 `props.busy`，避免过度锁定本来按实体并行的视觉/availability 操作。
+- 暂停前没有对这些产品文件或测试文件实施编辑。
+- 暂停时已核对 PID 1724/29876 为本项目 `tsx server/index.ts` 进程链、PID 43356 为本项目 Vite 5174；关闭后 5174/8788 监听数和三个目标进程数均为 0。
+
+### 全局 BusyAction 修复设计（恢复后确认）
+- `BusyAction` 枚举覆盖导入、采集、批量衣橱、模型、设置、历史、导出、天气和推荐，且父组件把 `Boolean(busyAction)` 作为多个页面的全局 busy 传递；其既有架构语义就是“同一时刻至多一个全局动作”，不是允许覆盖的最近动作标签。
+- `HistoryInsightsView` 的根节点已经以 `props.busy` 设置 `aria-busy`，但刷新只看 `history`，两个导出按钮只看两个导出 action，因此视觉语义与可操作性发生分叉。
+- 采用一个同步、可测试的独占动作锁：`tryAcquire(action)` 只有空闲时成功，`release(action)` 只有持有者匹配时成功；React state 只作为渲染镜像。这样可同时阻止同一渲染间隙的双进入，并阻止旧任务 finally 释放后来动作。
+- App 层统一通过 `tryStartBusyAction()` / `finishBusyAction()` 操作锁与 state；输入变化对可取消动作也必须调用匹配释放 helper，不能只清 React state 而留下锁。
+- 第一批验收测试应覆盖：锁拒绝第二动作、错误动作不能释放、正确释放后可重新取得；History 在任一全局 busy 下同时禁用刷新、JSON、完整备份及管理反馈。
+- 现有 `tests/app.test.tsx` 已通过 `namedFunctionSource()` 对请求 gate、队列和 busy 接线做结构约束，适合增加“每个全局动作入口调用 `tryStartBusyAction`，不再直接写 `setBusyAction`”的防回归检查。
+- 需要迁移的直接入口至少包括导入提交/预览、两种采集、读取产物、批量确认/更新/availability、补全缩略图、模型下载/验证、定位、天气、推荐、设置保存、历史刷新及两种导出。
+- `invalidateImportPreviewRequest()`、`invalidateRecommendationRequest()`、`invalidateLocationRequest()` 是合法的主动取消路径；它们必须通过匹配释放 helper 同步清锁。请求 finally 即使因 request token 失效而跳过，也不能留下锁。
+- 纯实体级并行状态（每件衣物视觉、单件 availability、手工建档、保存搭配等）不属于 `BusyAction`，不应被错误收敛进全局锁。
+
+### 2026-07-25 再次恢复确认
+- 保存时的 59 个跟踪文件修改已进入本地及跟踪分支最新提交 `ec96acb`（`fix: harden runtime concurrency and asset safety`，2026-07-23）；`git diff` 为空，改动没有丢失。
+- 当前仅保留既有 `.playwright-cli` 未跟踪证据文件；5174/8788 均无监听。继续修改以该提交后的源码为权威基线。
+- session catchup 没有返回遗漏上下文；全局 BusyAction 仍保持已记录的未修实现，因此续作点不变。
+
+### 全局 BusyAction TDD 红灯
+- 新增纯锁测试、App 全入口结构测试和 History 顶部操作渲染测试；首次目标运行得到 3 个预期失败面。
+- `tests/exclusiveAction.test.ts` 在收集阶段因 `src/lib/exclusiveAction` 不存在失败，证明产品尚无同步独占原语。
+- App 结构测试未找到 `createExclusiveActionLock<BusyAction>()`；History 在 `busyAction=history` 时仅有 2 个禁用按钮，而验收要求刷新、管理反馈、JSON、完整备份共 4 个全部禁用。
+- 同批 `tests/app.test.tsx` 其余 98 项通过；没有混入既有回归失败，可以进入实现。
+
+### 全局 busy 组件横向边界
+- `RecommendationView` 已把 `props.busy` 与推荐卡动作合并为 `interactionBusy`，天气、生成、核心和卡片动作基本已统一禁用；无需重复改造。
+- `ImportView` 的采集、预览、提交和模式切换多数已尊重全局 busy。“读取产物”在 `preview-import` 时故意例外，既有回归明确要求它可用来取消旧预览并读取新证据；修复应先同步释放 preview 锁，再取得 read 锁，而不是禁用该能力。原始 JSON 在预览期间可编辑同属主动取消设计。
+- `WardrobeView` 的补图和批量动作仍按具体 action 禁用；应改为全局 busy。每件衣物视觉与单件 availability 使用独立 keyed 状态，继续保留跨衣物并行，不纳入全局锁。
+- `SettingsView` 的保存已尊重全局 busy，但刷新模型没有禁用，下载/验证只看自身 action；三者都应在任一全局动作时禁用。坐标/画像输入仍需允许在推荐/定位期间主动使旧请求失效，仅保存期间锁定。
+- History 子导航和普通页面导航不启动异步写入，可保持可用；全局锁作为陈旧 DOM/直接回调的最终防线。
+
+### 全局 BusyAction 首轮实现反馈
+- 第一轮实现后纯锁通过，目标总计 102 项中 100 项通过。
+- 一项结构测试因 `requestRecommendations(constraints: { ... })` 的参数类型花括号被旧 `namedFunctionSource()` 误当函数体结束而失败；产品接线实际存在，测试需使用下一个函数声明作为明确边界。
+- 另一项是有效兼容回归：旧测试要求预览进行时“读取产物”保持可用。正确语义不是并发，而是原子式“取消 preview-import → 开始 read-capture”；将恢复该控件例外和 handler 顺序。
+
+### 全局 BusyAction 自动化目标绿灯
+- 新增通用 `createExclusiveActionLock<Action>()`：同步拒绝第二持有者，错误 action 无法释放，正确释放后才允许下一动作。
+- MainApp 的 18 个 BusyAction 入口全部通过 `tryStartBusyAction()` 取得锁并由 `finishBusyAction(action)` 匹配释放；全仓 `setBusyAction` 仅剩这两个封装内部调用。
+- 预览、天气/推荐、定位三类主动取消会同步释放匹配锁；读取新采集产物先取消 preview 再取得 read 锁，保留既有操作能力且不存在重叠窗口。
+- History、Wardrobe 全局批量/补图、Settings 模型操作统一尊重全局 busy；推荐页面原有 `interactionBusy` 保持不变，实体级并行任务未被误锁。
+- 第二轮目标回归 `tests/exclusiveAction.test.ts + tests/app.test.tsx` 为 2 文件、102/102 通过。
+
+### 全局 BusyAction 暂停快照（2026-07-25）
+- 当前实现已落盘但尚未提交：新增 `src/lib/exclusiveAction.ts` 与 `tests/exclusiveAction.test.ts`，并修改 App、History、Wardrobe、Settings 和 App 回归测试；既有 `.playwright-cli` 未跟踪文件属于先前证据，不是本轮产品改动。
+- 自动验证已完成：目标 102/102、相邻前端 129/129、`npm run typecheck` 与 `git diff --check` 通过；尚未执行修复后的真实浏览器绿色复验，因此不能把该缺陷标记为完整验收。
+- 5174/8788 均无监听，暂停时没有后台 QA 服务需要停止；没有删除、重置、清理或覆盖文件。
+- 精确恢复入口：以隔离数据库启动 API/Vite；保留 `output/playwright/global-busy-race-20260716/` 内的 `red-result.json`、红灯脚本和截图；新增绿色脚本验证“刷新阻止导出请求”和“导出阻止刷新请求”，保存结果、截图与控制台状态后再更新阶段 81。
+
+### 全局 BusyAction 绿色浏览器复验设计
+- 既有红灯脚本会先从真实隔离 API 获取 `/api/insights` 与 `/api/export` 夹具，再拦截两个 GET 并挂起请求；修复前可以同时启动刷新和导出，释放刷新后还会提前解锁仍 pending 的导出。
+- 绿色验收改为双向验证：刷新请求 pending 时 JSON 导出、完整备份和反馈管理均禁用，尝试点击不得产生 `/api/export`；释放刷新后操作恢复。随后挂起 JSON 导出，刷新和其余全局操作保持禁用，释放导出后全部恢复。
+- 为避免触碰真实数据库或依赖未知旧凭据，本轮使用 `output/playwright/global-busy-race-20260716/fixed-outfit.sqlite` 全新隔离数据库，并注册专用 QA 账号；既有红灯文件只读保留。
+
+### 全局 BusyAction 绿色浏览器复验结果
+- 隔离 Chrome 的刷新阶段得到 `disabledDuringRefresh=[true,true,true,true]`、`exportRequestsDuringRefresh=0`；说明刷新挂起时管理反馈、JSON 导出和完整备份均无法启动，且原竞态中的第二条 export 请求已消失。
+- 导出阶段得到 `disabledDuringExport=[true,true,true,true]`、`insightsRequestsDuringExport=0`；说明反向也成立，导出挂起时刷新不能启动。
+- 两个动作分别释放后均得到四个 `enabled=true`，总请求数严格为 insights 1、export 1；`exclusiveBusyStatePreserved=true`，脚本监听期 console warning/error 为空。
+- 结构化证据位于 `output/playwright/global-busy-race-20260716/fixed-result.json`，两张截图分别为 `fixed-refresh-excludes-export.png` 与 `fixed-export-excludes-refresh.png`；旧红灯结果与截图未覆盖。
+- 原互斥缺陷的视觉状态正确：刷新中显示“刷新中”，导出中显示“导出中”，其余三个操作均为明确禁用样式。截图还暴露一个独立布局候选：同一 1790px 视口下，刷新中把页头标题挤成两行，而导出中保持单行；需用 DOM 测量排除截图时序或字体加载差异。
+- 两张原始 PNG 宽度均为 1789px（高度分别 1612/1475），因此标题换行不是截图宽度差异；浏览器累计 console 仍为 0 warning/0 error，API/Vite stderr 为空。候选根因集中在 `.page-intro` 的 grid 列宽与 actions 动态宽度。
+
+### History 页头刷新文案布局候选
+- 通用 `.page-intro` 是 `grid-template-columns: minmax(0, 1fr) auto`；左侧 copy 明确允许缩到 0，右侧 actions 虽 `display:flex; flex-wrap:wrap`，但 auto 轨道没有最大宽度，因此按钮总宽度直接挤压标题列。
+- History 没有局部 PageIntro 覆盖；四个按钮都在同一 actions 容器内。“刷新”变“刷新中”增加的宽度处在四字标题单行所需宽度的临界点，截图表现与该 CSS 机制一致。
+- 已新增 `measure-history-header-refresh.js`，将同一浏览器中记录 idle/refresh 两阶段的标题行数、copy/actions 宽度和每个按钮矩形，作为修改 CSS 前的量化红灯。
+- 首轮 DOM 量化确认实际 `window.innerWidth=1037` CSS px，PNG 的 1789px 来自设备缩放；idle 与刷新中标题均为 2 行。刷新按钮加宽 16px，使 actions 由 547.52 增至 563.52、copy 由 158.18 减至 142.18，但并非首次触发换行。
+- 结合导出截图，真实候选改为“动态文案导致标题行数来回变化”：更短的“导出中”可能让 copy 跨过四字标题单行阈值。测量脚本已扩展 export pending 阶段，待取得三状态行数量化结果。
+
+### 已确认：History 页头 busy 文案导致约 68px 页面跳变
+- 同一 1037px CSS 视口、同一字体和同一浏览器中，idle/refresh/export 的标题行数严格为 `[2,2,1]`；`titleLineCountStable=false`，排除时序和字体加载差异。
+- 导出开始时按钮文案从“导出 JSON”缩为“导出中”，actions 宽度从 547.52px 降至 514.94px，copy 从 158.18px 增至 190.76px，刚好让四字标题恢复单行；PageIntro 高度由 147.98px 降到 79.99px，下面整页内容上跳约 67.99px。
+- 刷新开始则 actions 增加 16px、copy 减少 16px，但标题本来已是两行，因此高度不变。问题不是单个文案，而是 auto actions 轨道让动态标签直接改变 copy 断行。
+- 红灯结构化结果与两阶段截图保存在 `red-history-header-layout-result.json`、`red-history-header-refresh-wrap.png` 和 `red-history-header-export-shift.png`；浏览器 warning/error 为空。
+- 自动结构回归在产品未改时单独运行得到 1/1 预期失败（其余 101 跳过），明确缺少 `.history-insights-view .page-intro__copy { min-width: 12rem; }`；红灯未混入其他失败。
+
+### History 页头布局修复设计
+- 为 History copy 列局部保留 12rem；在临界桌面宽度，grid 不再把标题列压到 158px 以下，actions 的 flex-wrap 会承担不足空间。宽视口仍保持原双列，≤640px 通用单列布局下 12rem 也小于正常内容宽度。
+- 不把所有 busy 标签改成等宽或硬编码四个按钮宽度：那只能隐藏当前三种标签差异，无法约束未来新增动作；约束语义列的最小可读宽度更符合 PageIntro 布局责任。
+
+### History 页头布局绿色结果
+- App 新增结构用例与全文件分别 1/1、102/102 通过。
+- 同一 1037px 真实浏览器中，idle/refresh/export 的 title line count 从红灯 `[2,2,1]` 变为 `[1,1,1]`，PageIntro 高度从不稳定的 `[147.98,147.98,79.99]` 变为 `[79.99,79.99,79.99]`。
+- copy 宽度在三状态均精确为 192px，actions 仍按文案自然变化 547.52/563.52/514.94px；局部最小宽度隔离了动态 actions 对标题的影响，没有硬编码按钮宽度。
+- `layoutStable=true`、console warning/error 为空；结构化结果和 fixed 截图位于 `fixed-history-header-layout-result.json`、`fixed-history-header-refresh-stable.png`、`fixed-history-header-export-stable.png`。
+- 两张原始 fixed 截图逐像素视觉检查通过：刷新中与导出中标题都保持完整单行，副标题和周计划区域起始位置一致；四个按钮仍清晰呈现当前动作与其余禁用状态，没有遮挡、重叠或水平溢出。
+- BusyAction 与布局合并后的相邻 5 文件回归为 130/130，类型检查与 `git diff --check` 通过；差异检查只有现有 LF→CRLF 提示，没有空白错误。
+
+### 前端剩余异步入口重新枚举
+- App 当前异步域还包括购买检查/反馈、手工建档、缩略图候选选择、推荐替换/反馈、周计划/穿着日记、保存搭配和旅行计划；已修域包括启动读取、衣橱 keyed 写队列、全局 BusyAction、推荐/定位 gate、价值洞察、周计划读取和保存搭配刷新。
+- 新的高优先候选是 `openThumbnailPicker(garment)`：开始时把 picker 设为该衣物，响应提交只检查 `current.garment.id === garment.id`。若用户关闭并重新打开同一衣物，旧请求与新会话 ID 相同，旧响应可能穿过关闭边界覆盖新候选或错误，即典型 ABA。
+- 是否为真实缺陷取决于对话框 loading 期间能否关闭/同衣物能否立即重新打开；下一步只读核对组件禁用语义与 API 返回提交区块。
+
+### 缩略图选择器候选精确化
+- 候选加载本身已安全：`openThumbnailPicker` 每次递增 `thumbnailPickerRequestId`，成功/失败都要求 token 匹配；`closeThumbnailPicker` 也递增 token，因此关闭/重开同衣物不会让旧候选响应覆盖新会话。
+- 保存路径没有使用该会话 token。`saveThumbnailSelection` 开始后只捕获 garment/URL 和 garment mutation version；成功会无条件 `setThumbnailPicker(null)`，失败则仅按相同 garment ID 更新当前 picker。
+- `ThumbnailDialog` 的“关闭”按钮在 loading/saving 时始终启用。用户可在保存 pending 时关闭并重新打开同一衣物；此时旧成功会关闭新 picker，旧失败会把错误和 `saving:false` 写进新 picker。这是同 ID 的保存会话 ABA 候选，且 keyed garment mutation 只能保护衣物 DTO，不能保护 modal 会话。
+- 客户端路径为 `GET /api/garments/:id/thumbnail-candidates` 与 `POST /api/garments/:id/thumbnail`；衣物卡入口文案是“选择缩略图”，对话框保存文案是“保存为主图”。现有 App 测试只覆盖入口传参和基本选择/保存渲染，没有关闭重开时的异步会话隔离。
+
+### 已确认：旧缩略图保存会关闭重开的同衣物 picker
+- 浏览器夹具让第一次候选会话显示“订单图”，保存 POST 挂起；保存中的“关闭”按钮确实可用。关闭后重开同一衣物，第二次候选请求成功显示“详情图”。
+- 释放旧保存后，第二个 picker 从可见变为不可见，`secondSessionStillPresent=false`、`oldSaveClosedReopenedPicker=true`；证明旧成功分支的无条件 `setThumbnailPicker(null)` 越过了关闭/重开边界。
+- 两次 candidates GET 和一次 save POST 均由 Playwright route 接管；`databaseWriteRequestsContinued=0`，隔离数据库未收到产品写请求。console warning/error 为空。
+- 红灯脚本、结果和截图位于 `output/playwright/thumbnail-picker-aba-20260725/`。修复应复用现有 `thumbnailPickerRequestId` 作为 modal 会话 token，让成功关闭和失败错误都仅提交给发起保存的原会话；衣物 DTO 的 keyed mutation 仍照常提交。
+- 自动结构回归在旧实现上 1/1 预期失败、102 跳过；失败源码同时展示了缺少 token、无条件成功关闭和仅按 garment ID 的失败提交，红灯范围纯净。
+
+### 缩略图保存会话修复设计
+- 保存开始同步捕获当前 `thumbnailPickerRequestId`。成功仍提交衣物 DTO、失效推荐并显示全局成功提示，但仅在 requestId 仍匹配时关闭原 picker；失败仍恢复权威衣物状态，也仅在 requestId 匹配时把错误写回原 picker。
+- 关闭继续保持可用：用户无需被网络请求困在 modal 中。关闭自身会递增 requestId，重开也会取得新 token，因此旧成功/失败自然不能触碰新会话。
+
+### 缩略图保存会话绿色结果
+- 新增结构回归与完整 App 分别 1/1、103/103 通过。
+- 同一真实 Chrome 场景中，旧保存释放前新 picker 可见并显示“详情图”；释放后仍可见且该标签仍存在，`secondSessionStillPresent=true`、`oldSaveClosedReopenedPicker=false`。
+- 保存中的关闭仍可用，说明修复没有用强制锁死 modal 规避竞态；一次 POST 仍被浏览器夹具处理，数据库写入 0，console warning/error 为空。
+- fixed 结构化结果和截图位于 `output/playwright/thumbnail-picker-aba-20260725/fixed-result.json` 与 `fixed-old-save-preserved-reopened-picker.png`；红灯文件未覆盖。
+- 原始 fixed 截图视觉检查通过：重开的缩略图对话框保持打开，“详情图”仍标记为“当前选择”；顶部“主图已更新”成功提示可同时出现，控件没有遮挡、截断或错位。
+
+### 缩略图修复批次门禁收口
+- 恢复后补跑 App、独占锁、决策支持、导入审阅和保存搭配 5 个相邻测试文件，共 131/131 通过；新增 ABA 回归已纳入组合门禁。
+- `npm run typecheck` 通过；`git diff --check` 通过，仅报告现有 LF→CRLF 行尾转换提示，没有空白错误。
+- 缩略图保存会话修复现在具备结构红/绿、真实浏览器红/绿、视觉核验和相邻自动门禁四类证据，可以转入下一异步入口审查。
+
+### 反馈、替换与购买检查会话初筛
+- 购买检查已经有独立 `purchaseCheckRequestVersion`；重置、模式变化、候选变化和新检查都会递增版本，结果、错误及 busy 收尾均有版本匹配。需要继续核对反馈保存分支是否在所有 await 边界后都保护当前候选。
+- 推荐反馈的加载已有 `feedbackDialogRequestId`，关闭会递增 token；组件在 loading 或保存 busy 时同时禁止遮罩关闭、右上关闭和取消。初步看缩略图那种“保存中关闭重开”路径不可达，但仍需核对保存函数是否有其他跨候选提交。
+- ReplacementDialog 的遮罩、右上关闭和底部关闭均在 busy 时禁用；下一步读取 `applyReplacementSuggestion` 的完整状态提交，确认迟到结果是否可能写入不同目标。
+
+### 反馈、替换与购买检查会话精确结论
+- 购买检查主请求在预览 await、检查 await、catch 和 finally 处都比较同一 `requestVersion`；候选/模式/重置会递增版本并清空 busy。相似度反馈在写入完成后也先比较版本，后续重查结果、重查错误和 finally 均只提交给当前版本，未发现迟到响应覆盖新候选。
+- 推荐反馈加载使用独立 requestId；关闭时使其失效。保存期间组件把 loading/submit busy 合并为统一 busy，遮罩、关闭和取消均不可用，因此保存函数虽未另捕获 dialog token，也不存在用户可达的关闭/重开 ABA 边界。
+- 替换建议在 busy 期间同时禁止三个关闭入口；应用成功、失败和收尾只能回到仍打开的同一会话。当前状态更新没有跨目标可达路径，暂排除为缺陷。
+- 三者都存在“函数本身依赖 React 重渲染后的 disabled 防重复触发”而非同步 ref 的模式，但正常浏览器离散点击会在事件结束后刷新 DOM；没有直接复现证据前不按缺陷处理。下一步转向允许主动取消或存在多实体并行的其他对话框/任务。
+
+### 计划与穿着记录多实体 busy 候选
+- `toggleOutfitPlanSkipped` 和 `removeOutfitPlan` 共享单例 `busyPlanId`：开始任一计划请求会覆盖前一 ID，任一请求 finally 又无条件清空。若列表允许对不同计划并行操作，第二项开始会立即解锁仍 pending 的第一项，第一项完成又会提前解锁仍 pending 的第二项。
+- `removeWearEvent` 对穿着记录使用同样的单例 `busyWearEventId`，存在对称候选。需要读取 History/Planner 组件的禁用表达式，确认不同实体操作是否可达并行。
+- 计划/穿着 modal 使用全局 `plannerBusy` 且 busy 时禁止关闭；单 modal 保存路径暂未发现 ABA。手工建档对话框同样在 busy 时禁止关闭，部分成功会保留 `manualSavedGarment` 供照片步骤重试。
+
+### 已排除：计划与穿着记录单例 busy 不可并发覆盖
+- `WeekGrid` 把 `busyPlanId != null` 提升为 `anyBusy`，所有计划卡的标记已穿、跳过/恢复、编辑和删除入口在任一计划请求 pending 时统一禁用；不同计划无法通过正常 UI 并行启动，因此单例 ID 不会被第二项覆盖。
+- `WearDiaryPanel` 同样将 `busyEventId != null` 合并进 `anyBusy`，所有穿着记录操作在任一删除 pending 时统一禁用。单例只用于标出具体 `aria-busy` 卡片，不承担并行集合语义。
+- 该设计牺牲列表并行能力但状态一致，不构成已确认错误；不修改代码。下一候选转向旅行异步链和手工建档部分成功后的刷新/错误恢复。
+
+### 旅行异步链初筛
+- `beginTripMutation()` 每次先递增 `tripRequestVersion`，所以任何更早的 `refreshTrips()` 读取不能在写入后覆盖列表；旅行 mutation 自身用单一 `tripBusy`，设计意图是全域串行。
+- 放宽约束是明确的两阶段操作：先持久化新的限制并立即 `upsertTrip`，再重新生成；若第二步失败，错误文案明确为“约束放宽后重新生成失败”，没有把第一步伪装成回滚。
+- 装箱/必需品更新用当前 `selectedTrip` 组装前端列表，只有在组件没有全局禁用时才可能发生并发旧快照覆盖；下一步只读取实际旅行主组件来确认可达性。
+
+### 已排除：旅行并发旧快照覆盖
+- `TripPlannerView` 在 `busy` 时禁用新建、旅行选择、编辑、天气刷新、生成、放宽建议、局部重算、装箱状态、必需品增删和完成旅行等全部入口；编辑表单控件也统一禁用。
+- 因为 selected trip 不能在 mutation pending 时切换，装箱/必需品基于捕获 `selectedTrip` 的局部更新不存在用户可达的并发覆盖。`tripRequestVersion` 另行阻止旧列表读取覆盖写入。
+- 手工建档的刷新函数内部吸收读取错误，图片部分成功路径锁定已建档字段并只允许重试照片；未发现可复现的数据重复或会话覆盖。
+- 下一高风险入口改为反馈管理的“预览影响范围→确认清空”两阶段破坏性操作，重点检查预览条件与最终清空条件是否绑定。
+
+### 已排除：反馈清空预览与提交范围漂移
+- FeedbackManagementDialog 对范围类型、候选 ID、开始日期和结束日期的每次修改都同步调用 `onResetPreview()`；旧预览立即消失，“确认清空”按钮也随之卸载。
+- 预览请求 pending 时所有筛选控件、关闭入口和操作按钮均禁用；用户不能在旧请求完成前改范围。预览完成后，确认会重新从当前字段构造 scope，而字段若变化就已使预览为空。
+- App 端只有在 `feedbackClearPreview` 非空时才允许清空；正常 UI 路径保证该 preview 与当前 scope 同源。未发现可达的“看 A 范围、删 B 范围”错误，不修改代码。
+
+### 全仓自动测试稳定性复验
+- 当前 package 脚本的完整测试入口是 `vitest run`；恢复后直接运行 `npm test`，51 个测试文件、640 项测试全部通过，用时 9.52 秒。
+- 此次默认 pool 完整通过，未重现早期 43/44 文件附近 worker 异常退出，也没有 API 顺序依赖或未关闭数据库造成的残留失败；共享测试数据库清理修复在当前全套顺序下有直接绿色证据。
+- 自动测试绿灯不能证明剩余 6 万行无缺陷，但排除了现有覆盖范围内的回归；后续继续以状态边界和静态不变量寻找测试缺口。
+
+### 剩余状态与显式技术债盘点
+- App 的未审 busy 域已收敛为认证、planner modal、trip 全局、saved-outfit 全局、replacement、feedback clear、manual garment 等单会话状态；多实体 availability/vision 已是 Set/Map，衣橱/画像/历史/价值/周计划/推荐/定位/保存搭配/视觉模型读取均已有独立 gate。
+- `src`、`server`、`tests` 中没有真实 TODO/FIXME/HACK/“未实现”标记；唯一 `xxxxxxxx...` 命中是候选 UUID 输入框 placeholder，不是待办。
+- 下一步不依赖显式待办，转向服务端多步写入与事务边界扫描，优先检查“先写 A，再写 B，B 失败后是否留下不一致”。
+
+### 服务端事务审查范围
+- 最大写入集中区为 `db.ts`、`tripPlanner.ts`、`wearEvents.ts`、`savedOutfits.ts`、`outfitPlanner.ts`、`recommendationFeedback.ts` 和 `importTaobao.ts`；除旅行天气外，核心服务写函数大多是同步 SQLite 调用，具备在单个 `db.transaction` 内原子执行的条件。
+- 高风险多表函数已定位为：旅行完成写多条 wear events、穿着记录删除反向恢复旅行、计划标记已穿、推荐派生保存/替换、反馈清空与 pair stats 重算。下一步逐块核对是否整个读改写闭包都在事务内，以及异常是否回滚。
+
+### 多表写入事务核对（一）
+- `completeTrip` 把每条 wear event 插入、selection 链接、全量确认检查和 trip completed 状态更新全部包在 `inImmediateTransaction`；任一确认冲突或后置完整性检查失败都会回滚此前写入。
+- `deleteWearEvent` 在同一 immediate transaction 中恢复 outfit plan、解除 trip selection、把 completed trip 恢复 ready、撤销反馈实际穿着事实并删除事件，双向关系原子一致。
+- `markOutfitPlanWorn` 将 wear event 插入与 plan 的 worn/link 更新放在同一事务。保存搭配创建、推荐保存、派生替换与项目数组替换也都以事务包住 header/items 多表写入。
+- `archiveSavedOutfit` 未显式事务，但函数只执行单表幂等 UPDATE，前后读取均为同步、无 await，Node 事件循环内不会被同进程请求穿插；暂不构成跨表原子性缺陷。
+
+### 多表写入事务核对（二）
+- 反馈清空显式拒绝嵌套事务，随后 `BEGIN IMMEDIATE`；影响范围重算、反馈 DELETE、pair stats 全表重建和结果计数全部在同一事务，catch 统一 rollback，预览与实际删除也在取得写锁后重新计算。
+- 淘宝 commit 不在 `importTaobao.ts` 服务中，而由 `db.ts` 的 `commitTaobaoImport` 实现；路由只做同步 validate 后直接调用。下一步精确读取该函数及其 helper 的事务边界。
+
+### 淘宝导入提交事务结论
+- `commitTaobaoImport` 在任何持久化前拒绝嵌套事务并规范化输入，随后取得 `BEGIN IMMEDIATE`；写锁内重新构建可信 review context 并校验 decision 覆盖，避免基于旧预览提交。
+- source item、退款同步、garment create/update 和淘宝事实同步都在同一循环、同一事务；任一后置分类/override/关联失败都会 rollback 整批，不会留下半批导入。
+- 返回 summary/items 只在 COMMIT 成功后构造完成并返回。该高风险批量入口原子性通过，不修改代码。
+
+### 旅行优化持久化事务结论
+- 可行方案持久化在 `Trip optimization` immediate transaction 内重新读取当前 trip、删除/保留 selection、重绑 activity、重建 garment packing 并更新 ready 状态；任何未知日期、无效 activity 或衣物读取失败都会回滚整个方案。
+- 优化计算本身在事务外，但当前服务调用链全同步且没有 await，同一 Node 进程请求不能在计算与持久化之间穿插。事务内还会重新断言 trip 可写。
+- 理论上另一个进程直接写同一 SQLite 时，约束同日变化可能让旧计算落到新约束；项目正常部署是单 API 进程，暂缺可达证据，不升级为缺陷。下一步审查真正跨 await 的旅行天气刷新。
+
+### 旅行天气跨 await 一致性结论
+- `refreshTripWeather` 在请求前捕获 trip updatedAt、日期范围和坐标；网络响应后先按原日期集合严格验证 forecast，再取得 immediate transaction 并重新读取 trip。
+- 当前 trip 的 updatedAt、start/end 和经纬度任一变化都会返回 409 `TRIP_CHANGED`；逐日 UPDATE 还要求每个日期恰好命中一行，否则整事务回滚。迟到天气不能写入已编辑旅行。
+- Open-Meteo 4 秒 AbortController 直到正文 JSON 与逐日映射完成才在 finally 清理，数值也经有限数校验。该跨网络路径已有完整一致性保护，不修改代码。
+
+### 持久化 JSON 健壮性初筛
+- server 共 27 个 `JSON.parse` 调用；已抽查 db 迁移、通用 db 映射、天气缓存和周计划天气。迁移对坏 JSON 给出带 row id 的确定错误，通用 db 数组字段使用 fallback/白名单，天气缓存损坏按 cache miss 处理，周计划坏快照给出带表/row 的明确错误。
+- 这些调用没有裸露成无法定位的 SyntaxError。下一步继续检查导出完整性校验、保存搭配 snapshot、反馈 candidate/input 和旅行 stored JSON；关注的是损坏数据是否被静默接受，而不只是是否 catch。
+
+### 导出与保存搭配 JSON 结论
+- 导出使用 `parseJsonColumn(table,rowId,column)` 把语法错误转换为可定位的 `OutfitExportError`，随后各列还有 shape 校验；source order 的 detail_images/detail_props 在可移植资产检查中 catch 并拒绝坏结构。
+- 保存搭配对 recommendation candidate item IDs、input/snapshot record 和每个 garment snapshot 都分别做 JSON catch 与字段类型/枚举/正整数校验，错误包含 candidate 或 row id。
+- 这两组既不静默接受坏 JSON，也不会暴露无上下文 SyntaxError；继续检查反馈、旅行和 wear event 的剩余持久化字段。
+
+### 反馈/旅行/穿着 JSON 结论与新候选
+- reason codes、candidate item IDs、trip weather/activity evaluations/coverage/ID arrays/string arrays，以及 wear event 的 trip binding/weather/legacy snapshot 都有严格 shape 校验和 row/candidate 上下文错误。
+- 唯一不一致点是 `parseCandidateWearContext`：candidate `input_json` 语法损坏时直接降级为 `{ occasion: "casual" }`，非对象或字段无效也静默丢弃。若该上下文用于 `actuallyWorn` 反馈创建穿着事实，损坏数据库会被伪装成有效 casual 记录，而同一 candidate 的 item_ids 损坏却返回 500。
+- 下一步追踪该函数调用、旧 schema 兼容需求和现有测试；只有确认非法 JSON 会落入权威 wear event 且没有契约要求容错，才建立红灯修复。
+
+### 已确认候选：损坏推荐 input_json 被静默写成 casual 穿着事实
+- `upsertRecommendationFeedback` 在 `actuallyWorn=true` 且尚无 wear link 时调用 `parseCandidateWearContext`，随后把返回的 occasion/weather 直接交给 `insertWearEvent`；因此 malformed `recommendation_runs.input_json` 会真实创建 `occasion='casual'` 的权威 wear event 并影响历史统计。
+- 同一 candidate 的 `item_ids_json` 损坏会返回 500 `CORRUPT_RECOMMENDATION_CANDIDATE`，reason codes 也有 `CORRUPT_FEEDBACK`；只有 input_json 语法损坏被伪装成有效业务默认，错误策略不一致。
+- 旧记录使用合法 `{}` 是已知兼容形态，应继续按缺省 casual 处理；修复边界只要求“无法解析为 JSON”或明确非法结构不得写入穿着事实。现有测试没有损坏 input_json 场景，下一步先加服务层红灯。
+
+### 损坏推荐 input_json 自动红灯
+- 新增服务层用例把 candidate 所属 run 的 `input_json` 改为 `{broken`，再提交 `actuallyWorn=true`；旧实现没有抛错，证明它确实把损坏上下文当作 casual 继续写入。
+- 目标文件 18 项中仅新用例 1 项失败、既有 17 项全部通过，红灯范围纯净。用例还要求 feedback、wear_events、wear_event_items、outfit_pair_stats 均保持 0，以验证事务无副作用。
+
+### 损坏推荐 input_json 修复
+- `parseCandidateWearContext` 现在仅在 JSON 语法解析失败时抛出 500 `CORRUPT_RECOMMENDATION_CANDIDATE`，错误包含 candidate ID 与 `input_json`；合法 `{}` 和合法对象中的无效 occasion/weather 仍沿用既有 casual/no-weather 容错。
+- 因解析发生在 feedback immediate transaction 内，异常由统一 rollback 处理；新增用例的四张权威表均保持空。目标反馈服务 18/18 通过。
+- 推荐反馈服务/API、planner、trip planner 和 export 五个相邻文件共 73/73 通过，证明严格错误不会破坏合法反馈、穿着链接、旅行完成或导出路径。
+- 修复后全仓 51 文件、641/641 通过；类型检查与 `git diff --check` 通过，后者仅有既有 LF→CRLF 提示。该缺陷完成红灯、最小修复、相邻与全仓闭环。
+
+### 采集产物、视觉 stdout 与游标 JSON 初筛
+- 衣物图片补全索引对目录中的单个坏 JSON 采用 best-effort 跳过，不影响主采集数据；“读取最新采集产物”则有 16 MiB 上限并把最新文件的坏 JSON 明确报出文件名。两种用途的容错差异合理。
+- wear event 分页 cursor 同时校验 base64url JSON、恰好两个字段、正整数 ID 和 canonical UTC 时间戳，任一异常统一为 `cursor 无效`，没有裸解析错误。
+- 视觉标签 CLI 的 stdout 当前直接 `JSON.parse(stdout) as VisionTagInferenceResult`，既没有稳定 ApiError 包装，也尚未看到 runtime shape 校验；若脚本输出合法但错误结构，可能越过 TypeScript 类型断言进入标签持久化。列为下一高优先候选。
+
+### 视觉标签 stdout 候选精确化（第一步）
+- CLI 结果在持久化前会经过 `normalizeVisionTagSuggestion`，因此并非完全无处理；需要确认 normalization 是否真正验证数组/置信度结构，还是仅依赖 TypeScript 类型并在缺字段时抛裸 TypeError。
+- 现有可见测试覆盖注入 inference、embedding 错误和模型缺失，但关键词扫描未发现 CLI malformed stdout/错误 JSON 的专门回归。下一步读取 create/normalize/error mapping 和准确测试文件。
+
+### 视觉标签 runtime shape 候选（第二步）
+- `normalizeVisionTagSuggestion` 对 styles/patterns/tags 只做 `String(value)` 强制转换，非字符串对象可变成 `[object Object]` 后持久化；category 原样透传，无枚举校验。
+- scores 只先检查外层数组，随后直接访问 `score.label`；`scores:[null]` 会抛裸 TypeError。CLI stdout 的 JSON.parse 语法错误也没有转换为稳定视觉错误。
+- normalization 因此能阻止部分缺字段崩溃，但不是 runtime schema 验证。下一步核对 `saveGarmentVisionTags` 是否有二次校验以及当前测试对宽松转换的契约；若没有，应以服务层注入 malformed inference 做红灯，避免依赖真实模型进程。
+
+### 已确认：视觉推理错误结构可写入 vision_tags
+- `saveGarmentVisionTags` 直接 `JSON.stringify(suggestion)` 写库，没有二次校验；因此非法 category、对象型 tags 经 normalization 后可成为权威 `garments.vision_tags`。`scores:[null]` 则在持久化前产生无稳定 code/status 的 TypeError。
+- 当前视觉服务测试只覆盖合法 inference、模型缺失与 embedding 非法；没有 suggestion runtime shape 场景。该路径虽然通常由本地脚本产生，但子进程 stdout 属于不可信进程边界，TypeScript `as` 不能代替运行时验证。
+- 修复应在 create service 的 inference 边界统一验证：对象根、可选合法 category、纯字符串数组、score 对象/label/有限数值；错误统一 500 `VISION_TAG_OUTPUT_INVALID`，且标签和 embedding 都不得写入。CLI JSON 语法错误也应映射到同一稳定错误。
+
+### 视觉输出校验设计
+- `server/validation.ts` 已导出与 `GarmentCategory` 类型一致的 `GARMENT_CATEGORIES`，vision 服务本就依赖该模块，可直接复用而无需重复枚举或引入新依赖环。
+- 运行时 normalizer 应接收 `unknown`，只接受普通对象；category 缺省允许、出现时必须在白名单；styles/patterns/tags 必须是字符串数组；scores 必须是对象数组且 label 为非空字符串、score 为有限数。去重/截断和四位小数归一化在验证后保留。
+- 注入 inference 的 TypeScript 接口继续保持强类型；红灯通过 `unknown` 双重断言模拟不可信子进程边界，验证 runtime 而非编译期。
+
+### 视觉输出 schema 依据
+- 官方本地脚本 `vision_tags.mjs` 始终输出可选白名单 category、四个数组字段和 `{label,score}` scores；严格要求数组不会破坏正常脚本格式。
+- DB 读取端 `safeVisionTagSuggestionJson` 已实现几乎相同的严格 shape：合法 category、纯字符串数组、非空对象 score、字符串 label 和有限 number。写入边界比读取边界宽松是明确的不对称，可将该规则前移到服务 normalizer。
+- 红灯采用两类 payload：非法 category + 对象 tag（当前会成功落库），以及 `scores:[null]`（当前抛裸 TypeError）；两类都应统一为 `VISION_TAG_OUTPUT_INVALID` 且零写入。
+
+### 视觉输出 runtime schema 自动红灯
+- 目标文件新增两条参数化用例，旧实现 6 项中恰有新增 2 项失败、既有 4 项通过。
+- 非法 category + 对象 style 场景没有 rejection，并实际写入 `{"category":"hat","styles":["[object Object]"],...}`；直接证明垃圾结构进入权威列。
+- `scores:[null]` 场景抛出 `Cannot read properties of null (reading 'label')` 的裸 TypeError；两条红灯分别覆盖“错误成功”和“不稳定失败”，embedding 表均未写。
+
+### 视觉输出 runtime schema 修复
+- vision 服务 normalizer 现接收 unknown，严格验证普通对象、可选 category 白名单、styles/patterns/tags 纯字符串数组，以及 score 的对象/非空 label/有限 number；验证后保留去重、长度上限和四位小数规范化。
+- CLI stdout JSON 语法错误也转换为 500 `VISION_TAG_OUTPUT_INVALID`，不再泄露 SyntaxError；注入 inference 与真实 CLI 共享同一 normalizer。
+- 两条红灯转绿，视觉 embedding 目标文件 6/6 通过；非法 category/object tag 不再写库，null score 得到稳定 code/status。
+- scores 采用“验证全部、再截断前 12 项”，因此输出上限后的隐藏非法项也不能被截断逻辑掩盖；styles/patterns/tags 同样先验证全部类型再去重截断。
+- 视觉缓存、相似度和 API 主文件相邻回归 90/90；全仓 51 文件 643/643、类型检查和 `git diff --check` 全绿，差异检查仅有既有 LF→CRLF 提示。
+
+### 服务端错误映射初筛
+- 统一 `sendError` 对非 ApiError 固定返回 500 `INTERNAL_ERROR` / “服务器错误”，不会把 SQL、文件路径或子进程原始 message 发送给客户端；ApiError 才返回显式 code/message/details。
+- 主 routes 的同步与 async helper 都有 catch→sendError；分拆 route 中只有 garments/trips 含 async handler，已看到 handleAsync 或局部 try/catch，但需精读确保所有 Promise 分支都被消费且响应只发送一次。
+- 下一步读取 handle/sendError 和两份 async route 完整区块，并核对 Express 最终 error middleware 对 JSON 解析与意外 rejection 的处理顺序。
+
+### 异步路由与错误响应结论
+- 主 routes、garments 和 trips 的 handleAsync 都在 await 周围 catch 并调用统一形状的 sendError；调用点用 `void` 明确消费 Promise。garment asset 二进制 GET 使用自执行 async + try/catch，成功与失败路径各只发送一次响应。
+- 分拆路由的 sendError 逻辑与主 routes 一致：只有 ApiError 暴露显式详情，未知异常固定 INTERNAL_ERROR。未发现未处理 rejection、二次 response 或原始错误泄漏。
+- 三份 helper 有重复实现，属于可维护性风险但当前行为一致，且为避免无收益重构扩大差异，本轮不改。下一步检查全局 middleware 对 JSON parser/body limit/origin 错误的标准化。
+
+### 全局 parser/body/origin middleware 结论
+- 全局 JSON parser 限制 5 MiB；413 对图片专用路由映射 `IMAGE_TOO_LARGE`，其他请求映射 `PAYLOAD_TOO_LARGE`。坏 JSON 映射 400 `INVALID_JSON`，headers 已发送时正确交回 Express 默认错误链。
+- 图片上传 raw parser位于具体路由，image MIME 不会被前置 `express.json` 消费；raw 的 5 MiB limit 同样进入上述 413 映射。API 测试已有跨来源、超大图片与内容类型覆盖。
+- mutation 来源校验拒绝 `sec-fetch-site: cross-site`，有 Origin 时要求 http(s) 且与 Host 完全相同；无 Origin 保留 CLI/本机客户端兼容。未发现 parser 绕过或错误信息泄漏。
+- 下一步运行当前生产依赖漏洞审计；这是时间敏感信号，只把 registry 的实时结果作为证据。
+
+### 2026-07-26 实时生产依赖审计红灯
+- `npm run audit:prod` 联网成功但因漏洞返回 1；没有修改 package.json/package-lock。报告共 12 项：1 low、1 moderate、9 high、1 critical。
+- 可修链：body-parser 2.0.0–2.2.2 的 limit DoS；protobufjs 7.5.0–7.6.4 的 proto option 无限循环；tar ≤7.5.20 的多项 critical/high DoS；archiver 7 依赖链中的 glob/minimatch/brace-expansion OOM。
+- audit 建议 `--force` 才能通过 archiver 8 解决 brace 链，这是破坏性主版本，不能盲用。项目已有 `glob:10.5.0` override，而报告恰把 10.5.0 列为 vulnerable，需核对 registry 新补丁并更新 override。
+- sharp <0.35.0 因 libvips CVE 被列 high，当前 audit 显示 no fix available，且既是直接依赖又由 transformers 引入；必须区分“可升级修复”与“上游尚无修复的残余风险”。
+
+### 漏洞实际依赖树与 registry 最新版本
+- 当前树：express 5.2.1→body-parser 2.2.2；onnxruntime-node 1.21.0→tar 7.5.16；onnxruntime-web→protobufjs 7.6.4；archiver 7.0.1→glob 10.5.0/minimatch 9.0.9 和 minimatch 5.1.9→brace-expansion 2.1.2；transformers 3.8.1 与项目直接依赖共同使用 sharp 0.34.5。
+- 2026-07-26 registry latest：body-parser 2.3.0、brace-expansion 5.0.8、minimatch 10.2.5、glob 13.0.6、protobufjs 8.7.1、tar 7.5.22、sharp 0.35.3、archiver 8.0.0、transformers 4.2.0。
+- 不能简单升所有 latest：glob/protobufjs/transformers 均跨主版本。优先查询同主版本安全补丁与父包依赖范围；archiver 8 和 sharp 0.35 只在确认 API/engine 并通过专项测试后采用。
+
+### 依赖兼容范围结论
+- express 5.2.1 声明 body-parser `^2.2.1`，可直接解析到 2.3.0；onnxruntime-node 声明 tar `^7.0.1`，onnxruntime-web 声明 protobufjs `^7.2.4`，均可在原主版本升级到已修补的 7.5.22/7.6.5。
+- glob 10.5.1 不存在，10.5.0 没有同主修补；archiver 8 改用 readdir-glob 3、zip-stream 7 且不再列 archiver-utils/glob，Node engine ≥18，项目 Node ≥24 满足。需要用 export 专项证明 API 兼容。
+- transformers 3.8.1 直接声明 sharp `^0.34.1`，无法自然解析到安全的 0.35.3；可选方案是受控 override 子依赖到项目直接 sharp 0.35.3，或跨 transformers 4 主版本。优先尝试前者并运行模型状态/视觉/构建测试，失败再评估 v4 迁移。
+
+### 依赖修复决策
+- transformers 4.2.0 仍声明 sharp `^0.34.5`，因此升级 transformers 主版本不能解决 Sharp 公告；选择保持 transformers 3.8.1 API，直接依赖 sharp 升 0.35.3，并用 npm 子依赖 override 让 transformers 复用同一安全版本。
+- archiver 仅在 export 服务用标准 `archiver("zip", {zlib})` 和 `Archiver` 类型；8.0 的 Node engine 满足项目要求，依赖改为 readdir-glob 3→minimatch 10.2.2，不再经过 archiver-utils/glob 10.5.0。采用受控主版本升级并以 export/API/构建验证。
+- body-parser 2.3.0、protobufjs 7.6.5、tar 7.5.22 以 overrides 固定安全补丁；移除已无必要且本身脆弱的 glob 10.5.0 override。安装允许机械更新 package-lock/node_modules，但不清理项目文件。
+
+### 依赖安装第一结果
+- `npm install` 成功：新增 3、移除 40、更新 15 个 node_modules 包并更新 package-lock；这些是已提前告知的依赖树替换，没有删除项目源码、文档或证据。
+- 安装时即时审计从 12 项降到 1 项 high，但尚未确认具体依赖；下一步运行正式 `audit:prod` 和 `npm ls`，核对 overrides 是否实际生效、剩余项是否来自 dev 或生产链。
+
+### 生产依赖漏洞修复绿色结果
+- 正式 `npm run audit:prod` 返回 0 且明确 `found 0 vulnerabilities`。
+- 实际树核对：body-parser 2.3.0、tar 7.5.22、protobufjs 7.6.5 均显示 overridden；transformers 与项目 direct sharp 共同 dedupe 到 0.35.3；archiver 8→readdir-glob 3→minimatch 10.2.5→brace-expansion 5.0.8，旧 glob/archiver-utils 链已消失。
+- 安装摘要仍报告 1 high，说明可能仅在 devDependencies；生产脚本因 `--omit=dev` 看不到。下一步额外跑全依赖 audit，不能把生产 0 漏洞误报为整个开发树 0。
+
+### 开发依赖 PostCSS 红灯
+- 全依赖 `npm audit` 仍有 1 high：postcss ≤8.5.17 的 previous source map 路径穿越/任意 `.map` 文件泄露；当前唯一链是 vite 8.0.16→postcss 8.5.15。
+- registry 当前 postcss 8.5.23，8.5.18 已越过受影响上限且 Node engine 与项目兼容。以 override 固定 8.5.23，可在不升级 Vite 主版本的情况下修复开发/构建链。
+
+### PostCSS 安装结果
+- 加入 postcss 8.5.23 override 后 `npm install` 更新 2 个包，安装摘要明确 `found 0 vulnerabilities`。
+- 尚需分别执行全依赖与 production audit，并核对 vite 实际解析到 8.5.23；随后运行 export、vision、模型状态、全仓测试和生产构建验证主版本/原生模块兼容。
+
+### 双 audit 与最终依赖树绿色结果
+- 全依赖 `npm audit --audit-level=high` 与 `npm run audit:prod` 均返回 0，二者都明确 `found 0 vulnerabilities`。
+- 实际树再次确认 postcss 8.5.23 override；生产树仍为 body-parser 2.3.0、tar 7.5.22、protobufjs 7.6.5、sharp 0.35.3、archiver 8/readdir-glob 3/minimatch 10.2.5/brace-expansion 5.0.8。
+- 安全元数据门禁已绿；还不能单凭 audit 宣称兼容，下一步运行 native Sharp 内存转换、模型状态、export/API/全仓测试和 Vite 生产构建。
+
+### Archiver 8 兼容性红灯
+- 依赖升级后的首组 API/export/asset/thumbnail/vision 测试共 127 项，124 通过、3 失败；两个 export 与一个 API ZIP 均归因于 `archiver("zip")` 处 `TypeError: default is not a function`。
+- 失败证明 v8 ESM 入口形状改变，但 ZIP 业务实现本身尚未运行；不能以测试绿灯前提继续。修复方向是适配 v8 正式导出 API，而非回退到含 brace/glob 漏洞的 v7。
+- 同一并行编排中的 Sharp 内存 smoke 与 models:status 结果未回传，不能据此判绿，适配后须独立重跑。
+
+### Archiver 8 正式入口确认
+- 安装包 `package.json` 为 `type:module`、exports=`./index.js`；入口只导出 `Archiver`、`ZipArchive`、`TarArchive`、`JsonArchive`，无 default/create。ZIP 正式调用应改为 `new ZipArchive({ zlib: { level: 9 } })`。
+- 当前 @types/archiver 7 仍描述旧 callable default，预计不包含 ZipArchive；适配需要局部运行时构造类型或模块声明，不能继续依赖错误的旧默认类型。
+- namespace-only 运行时探针确认 keys 恰为 Archiver/JsonArchive/TarArchive/ZipArchive，ZipArchive 类型为 function；旧 @types 则只有 callable archiver/create 和 `export = archiver`，证实运行时与类型包版本错位。
+- 采用局部、显式构造器桥接：namespace runtime 取 ZipArchive，并把其构造签名限制为现有 ArchiverOptions→Archiver；不伪造 default，也不在全局声明中扩散错误类型。
+
+### Archiver 8 适配绿色结果
+- export.ts 已改为 namespace runtime + `new ZipArchive({zlib:{level:9}})`；旧 @types 只通过局部 `ArchiverOptions→Archiver` 构造签名桥接，不改变全局模块声明。
+- 原失败组合 API/export/garmentAssets/thumbnail/vision 5 文件现在 127/127 通过，TypeScript 检查通过；ZIP 响应、固定安全 entry 名、损坏资产跳过等原有行为恢复。
+
+### Sharp 与模型运行兼容结果
+- Sharp 0.35.3 原生模块加载成功，绑定 libvips 8.18.3；纯内存 2×2 RGBA→WebP 转换并重新读取 metadata 成功，格式 webp、尺寸 2×2、输出 68 bytes，无磁盘文件。
+- `npm run models:status` 成功读取现有 rembg u2netp 和 clip-vit-base-patch32，两者均 installed=true；transformers 子依赖 override 没有破坏模型目录识别脚本。
+- 下一步运行 Vite production build 与全仓测试。build 会按 Vite 语义清理/重建被忽略的 dist 生成目录，不触碰源码或证据。
+
+### 依赖升级生产构建结果
+- `npm run build` 成功：TypeScript 与 Vite 8.0.16 均通过，1610 modules transformed；生成 index 0.68 kB、CSS 119.07 kB、JS 408.66 kB，Vite 阶段 7.51 秒。
+- dist 仅按已告知的构建语义重建；待最终 Git 状态确认没有跟踪文件受影响。下一步全仓测试、双 audit 与差异检查联合收口。
+
+### 依赖安全升级最终门禁
+- 升级后全仓 51 文件、643/643 通过；全依赖 audit 与 production audit 均再次为 0 漏洞；`git diff --check` 通过，仅有既有 LF→CRLF 提示。
+- 连同 127/127 相邻 ZIP/asset/vision、Sharp 原生 smoke、models:status 和生产构建，已覆盖 Archiver API、Sharp native binding、Transformers 模型目录、PostCSS/Vite 构建与主要业务回归。
+- 待只读 Git 状态确认 package-lock/package.json 与预期代码文件之外无跟踪差异；若成立，本依赖批次可收口。
+
+### 依赖批次 Git 边界确认
+- Git 状态新增的跟踪差异仅为预期 package.json/package-lock、Archiver 适配、两项代码缺陷及此前前端修复/记录，共 16 个文件；`git status -- dist` 为空，生产构建未把 dist 纳入跟踪差异。
+- package.json 差异与决策一致：archiver 8、sharp 0.35.3，transformers→$sharp，以及 body-parser/postcss/protobufjs/tar overrides；旧 glob override 已移除。
+- package-lock 的 985 行机械变化来自旧 archiver/glob 链移除和安全版本解析；`npm ls`、双 audit、测试和构建共同证明锁文件与 node_modules 一致。本依赖批次可收口。
+
+### 2026-07-26 暂停时的确定事实
+- active goal 仍为 `active`，此次暂停不是完成或阻塞；恢复时不得跳过尚未执行的 Python/辅助脚本门禁，也不得直接进入最终签收。
+- 当前最近可信基线为全仓 51 文件 643/643、TypeScript/差异检查/生产构建通过、full/prod audit 双 0；这些结果覆盖本轮两项服务修复与依赖迁移，但不代表 Python 测试已经执行。
+- 下一条可执行审查链为：枚举 Python 测试 → 检查 pytest 可用性 → 运行 `tests/test_vision_rembg.py` → 只读审查其他辅助脚本及 `models:verify` 副作用 → 继续寻找下一项服务端/脚本层确认缺陷。
+- `privacy:clean` 具有删除语义，不属于恢复后的自动门禁；在没有再次明确告知用户并取得相应授权前不得运行。所有现有未提交差异、Playwright 证据和两个未跟踪 helper 均需原样保留。
+
+### 2026-07-26 自动恢复核对
+- session catchup 无未同步输出；active goal 仍为 `active`，当前工作树与暂停断点一致。
+- Git 汇总为 16 个跟踪文件差异、67 条未跟踪记录；后者是既有 Playwright 证据及辅助文件，全部保留。5174/8788 监听数为 0，不需要清理服务进程。
+- 恢复读取的组合输出因 443 行而截断，但阶段 81—83、暂停入口、最新测试/audit/build 基线和 Git 汇总均已返回；后续只按小范围读取，避免再次丢失尾部信息。
+
+### Python 与辅助脚本门禁范围
+- 本机 Python 3.13.9、pytest 8.4.2 可用；项目 Python 测试共 3 个文件：两组淘宝 Selenium 采集测试和 `test_vision_rembg.py`，对应生产 Python 脚本也正好 3 个。
+- `test_vision_rembg.py` 通过隔离 `tmp_path`、伪 rembg/onnxruntime 包和子进程覆盖状态、缺模型、fallback 模型、provider 选择、CUDA DLL 降级与 warmup；测试不会写项目模型目录。
+- `models:verify` 会执行真实 rembg/CLIP 推理；源码只在系统临时目录创建 `outfit-rembg-verify-*`/`outfit-clip-verify-*`，finally 中递归删除自己创建的临时目录，不会下载模型或删除项目文件。按用户删除知情约束，执行前仍需明确告知。
+- 下一步先读取两组淘宝测试的 fixture/import/subprocess 边界，确认不会启动真实浏览器、访问真实账号或清理项目产物，再决定全量 `pytest` 命令。
+
+### Python 测试副作用审查
+- 两组淘宝采集测试合计覆盖解析、去重、隐私 JS、风险页、分页/重试、CLI 参数与 help；所有浏览器采集测试均 patch `create_chrome_driver`，不会启动真实 Chrome、访问淘宝或读取真实 profile。
+- 测试输出仅写入 `tempfile.TemporaryDirectory()`；CLI help 子进程只执行 argparse。生产脚本有明确 `if __name__ == "__main__"` guard，import 不会执行采集。
+- 运行全部 pytest 的预期文件副作用仅是 pytest/tmp_path 与标准库 TemporaryDirectory 在系统临时目录创建并清理隔离文件；已在执行前明确告知用户，不会删除项目文件、模型或既有证据。
+
+### Python 与模型验证结果
+- `python -m pytest -q tests` 成功：38/38，耗时 8.05 秒；两组淘宝采集和 rembg 脚本测试全部通过，无跳过或告警。
+- `npm run models:verify` 成功：rembg 使用已安装 `u2netp` 完成真实去背景推理，CLIP `Xenova/clip-vit-base-patch32` 完成真实标签推理；结果仍显示两者 installed=true。
+- 两项门禁均未修改项目源码、模型或证据；只按预告创建并清理系统临时测试目录。Python/辅助脚本动态基线现已补齐。
+
+### 模型下载恢复性候选
+- `scripts/models.mjs` 的 rembg 与 Hugging Face 文件下载都直接 `writeFile(finalPath, buffer)`；后续仅以 `existsSync`（CLIP 另加任意 ONNX 文件存在）跳过下载，没有原子临时文件提交或内容完整性判定。
+- 若磁盘写入中断、旧版本留下零字节/截断文件，后续 `download` 会把它视为已取得：rembg 会反复在 warmup 失败，CLIP 甚至只完成下载而不做推理验证。当前 `modelsScript.test.mjs` 只覆盖成功下载与 HTTP 503，不覆盖损坏既有文件或失败恢复。
+- 这仍是候选而非已确认修复范围：下一步核对 `status`/`hasOnnxFile`/`clipModelReady` 的完整判定和下载命令对已安装模型的契约，再用隔离临时模型根建立可控红灯。
+
+### 模型状态与下载契约边界
+- README/API 明确区分轻量 `status` 与真实推理 `verify`：状态只检查本机所需文件存在，验证才加载模型。因此不能把每次状态查询改成昂贵推理，也不能据此要求 status 识别任意非零内容损坏。
+- 当前存在性判定比公开契约还弱：rembg 任意同名路径即 installed；CLIP 的 7 个配置路径和递归任意 `.onnx` 路径即 ready，均不要求普通非空文件。零字节文件会被明确误报 installed，并阻止下载修复。
+- 对下载脚本自身可完整解决的范围是：下载内容先写同目录唯一临时文件、成功后原子替换；失败只清理本次临时文件；轻量状态/skip 至少要求普通非空文件。这样不把推理塞进 status，同时防止本脚本再制造可见的部分文件并修复零字节残留。
+- 在建立红灯前还需核对服务层是否已有下载进程超时/终止；若父进程可能强杀写入，原子提交的重要性更高。
+
+### 模型 job 永久挂起确认缺陷
+- `server/services/vision.ts:startVisionModelJob` 启动 `scripts/models.mjs download|verify` 后只监听 error/close 并 drain stdout/stderr，没有定时器；`models.mjs` 的 fetch 同样没有 AbortSignal 超时。
+- 普通去背景/标签推理走独立 `runProcess`，已有 120 秒超时和进程树终止，但该保护不覆盖模型管理 job。一个不返回的网络/子进程会让 job 永久 `running`，同模型后续 download/verify 请求因运行中去重而永远复用该死 job。
+- 现有 API 测试覆盖 job 启动、同模型复用、close 成功/失败、clear 时 kill，未覆盖时间推进后的失败状态、进程终止及迟到 close 不覆盖超时原因。
+- 修复应为模型 job 使用独立、较长且可测试配置的超时；超时后只结算一次、终止进程树、保留稳定失败原因，并让 clear 同时取消 timer。不能复用推理默认 120 秒，以免合法大模型下载被过早终止。
+
+### 模型 job 超时 TDD 设计
+- 采用独立 `visionModelJobTimeoutMs` 选项，经 `ApiAppOptions → visionOptions → VisionServiceOptions` 传递；生产默认值应按大模型下载量级设置，测试可注入几十毫秒，不改变现有推理 `visionProcessTimeoutMs`。
+- API 红灯使用现有 mock ChildProcess，使其永不触发 close：启动 download 后等待短超时，再读取 `/api/vision/models`，要求 job=`failed`、错误包含“超时”、child.kill 恰好调用一次。
+- 红灯还会主动触发迟到 close，要求已结算的超时状态/原因不被 generic exit-code 失败覆盖；修复需要统一 settle guard、timer 清理和 clearVisionJobs 取消控制器。
+
+### 模型 job 超时红灯
+- 新增 API 用例只使用现有 mock ChildProcess、内存数据库和系统临时模型根；不启动真实下载。目标运行 77 项中 1 项预期失败、76 跳过。
+- 等待注入的 20ms 超时后（实际留出 60ms），模型 job 仍为 `running` 且无 error；失败位于首个状态断言，直接证明选项尚未接线、服务端没有任何超时结算。
+- 红灯尚未越过首断言，因此 kill 与迟到 close 保护必须在绿色实现后由同一用例继续验证，不能仅把状态改为 failed。
+
+### 模型 job 超时目标绿色
+- `VisionServiceOptions` 新增独立 `visionModelJobTimeoutMs`，默认 30 分钟；路由选项完整透传，不复用 120 秒推理超时。
+- 模型 job 现在由统一 finish guard 处理 error/close/timeout：首次结算会清 timer、移除进程/取消器，超时会终止进程树并写稳定中文失败原因；迟到 close/error 被忽略。
+- `clearVisionJobs` 先调用每个模型 job 取消器以清 timer/终止，再处理其他视觉进程和 job map，避免测试/服务器关闭后残留长 timer。
+- 原红灯目标用例 1/1 通过（76 跳过）：超时 failed、kill 一次与迟到 close 保持“超时”错误三个断言均已实际执行。待相邻回归和类型检查。
+
+### 模型 job 超时相邻门禁
+- API、models script、model-files、vision embedding、server lifecycle 共 5 文件 93/93 通过；覆盖正常 start/reuse/close、clear kill、脚本下载/验证、进程级推理和服务器关闭相邻路径。
+- `npm run typecheck` 与 `git diff --check` 通过；差异检查只有既有 LF→CRLF 提示。
+- 差异复核确认本批只新增 `server/routes.ts` 选项透传、`server/services/vision.ts` job 生命周期控制和 `tests/api.test.ts` 回归；当前 18 个跟踪差异、67 条未跟踪证据/辅助文件，均保留。
+- 模型 job 超时缺陷可收口；同一链仍有已记录的最终路径非原子写入/零字节误判候选，继续 TDD，不把 93/93 误当作整个下载链完成。
+
+### 模型文件完整性 TDD 范围
+- `models.mjs` 中 installed/verify/download 对 rembg 复用同一存在性判断；CLIP readiness/skip 则由 required files 与递归 ONNX 判断组成。应统一要求路径为普通、非空文件，且 symlink 不算本地模型文件。
+- 下载提交采用同目录唯一 `.part-*` 文件、`wx` 写入和 rename：成功前最终路径不可见；失败 finally 只删除本次临时文件。测试会注入“写出部分临时内容后抛错”，要求最终路径不存在且 `.part` 清空。
+- 红灯矩阵：零字节 rembg 不得 installed 且 download 必须重新获取；零字节 CLIP required/ONNX 不得 ready/skip；注入中断写入不得留下最终或临时文件。
+- API 服务有独立 `visionModelStatus`，必须同时核对/修复，否则脚本状态正确而 Web 仍可能把零字节模型报 installed。下一步读取该函数并补跨层测试。
+
+### 模型文件弱判定跨层确认
+- 服务端 `visionModelStatus` 独立复制了脚本逻辑：rembg 同名路径存在即 installed；CLIP 7 个 required 路径存在且递归发现任意 `.onnx` 文件即 installed。两侧都不检查普通文件或 size。
+- 后果不仅是状态文案错误：`createGarmentCutout`/`createGarmentVisionTags` 会通过 installed 前置检查，再在子进程加载零字节或目录/链接路径时以较晚、较模糊的模型处理失败结束。
+- 红灯将分为：`modelsScript.test.mjs` 覆盖零字节状态、重新下载和原子失败清理；`api.test.ts` 在隔离模型根放置完整文件名但零字节内容，要求两个模型仍 installed=false。
+
+### 模型文件脚本红灯
+- `modelsScript.test.mjs` 新增两项均预期失败：status 把零字节 rembg/CLIP 都报 installed=true；注入中断写入后 Promise 仍成功，证明实现直接写最终路径且未使用原子写入依赖。
+- 第一项因 status 首断言失败尚未继续执行“重新下载空 rembg”断言；绿色实现必须让同一用例完整通过，不能只改 status。
+- 组合过滤器未匹配 API 测试名，导致 API 文件跳过；该命令错误已写入 task_plan，下一步以唯一完整片段单独运行 API 红灯。
+
+### 模型文件 API 红灯
+- 精确运行 API 新用例后得到 1 项预期失败、77 跳过：零字节 rembg 返回 installed=true/“已可用：isnet-general-use”，零字节 CLIP 返回 installed=true/“已可用”。
+- 三类红灯现已齐备：脚本/API 弱状态判定、空 rembg 不重下（同一脚本用例后半段待绿色执行）、下载中断不走临时文件。
+- 项目 `garmentAssets` 已有同目录独占临时文件、写入完成后 rename 的成熟范式；模型脚本采用相同提交原则，并在 catch/finally 只清理本次 `.part`。
+
+### 模型文件完整性目标绿色
+- `models.mjs` 的 rembg/CLIP status、download skip 与 verify 现统一要求普通非空文件；零字节、目录或 symlink 不再算 installed。空 rembg 会重新请求并替换。
+- 所有 rembg/Hugging Face 下载内容现在先写同目录唯一 `.part-<pid>-<uuid>`（`wx`），写完后 rename 到最终路径；写入或 rename 失败会 best-effort 删除仅属于本次的临时文件并保留原错误。
+- API 服务端独立状态函数同步采用 `lstat + isFile + size>0`，`createGarmentCutout` 也 await 同一 rembg 判定；Web 状态和视觉前置检查与脚本一致。
+- 两文件目标运行 3/3 通过（83 跳过）：零字节脚本状态/重下、注入中断清理、API 零字节状态均完整执行。待相邻测试、类型和差异检查。
+
+### 模型文件首轮相邻兼容红灯
+- 5 文件相邻运行 96 项中 5 项失败：3 个 models script 和 2 个 API 标签用例都使用合法的空 `merges.txt`，新“一律非空”规则把 CLIP 误判缺失；其余 91 项通过。
+- 根因不是产品模型文件损坏，而是 BPE merges 文本允许零条 merge；JSON 配置、ONNX 权重和 rembg 权重仍不能为空。应拆分“普通文件”与“普通非空文件”，仅对 `merges.txt` 允许 size=0。
+- 同一编排中的 typecheck/models:status/diff 输出因测试 Promise 失败未回传，不能据此宣称通过；兼容修正后须独立重跑。
+
+### 模型文件相邻绿色
+- 文件有效性最终语义：rembg 与 ONNX 必须普通非空；CLIP JSON 必须普通非空；`merges.txt` 必须普通文件但允许 size=0；symlink/目录均不接受。
+- 兼容修正后 models script、model-files、API、vision embedding、server lifecycle 共 5 文件 96/96 通过，既有合法空 merges 与新增三项完整性测试均覆盖。
+- 原子下载仍只在失败时删除本次唯一 `.part`；不清理、覆盖或删除任何既有非空模型。待独立 typecheck/models status/真实 verify/diff 门禁。
+
+### 模型文件真实环境门禁
+- `npm run typecheck` 通过；`npm run models:status` 仍识别 rembg u2netp 与 CLIP 为 installed=true。
+- `npm run models:verify` 再次完成两种现有模型的真实本地推理，证明异步文件判定和 merges 兼容调整未破坏实际模型加载；只清理已预告的系统临时目录。
+- `git diff --check` 通过，仅有既有 LF→CRLF 提示。下一步运行全仓 Node 测试，随后把 model job timeout 与模型文件完整性作为同一批次收口。
+
+### 模型管理批次最终收口
+- 全仓 Node 回归 51 文件 647/647 通过；此前 Python 38/38 也保持最近可信基线。模型 job timeout 与文件完整性改动未破坏其他业务模块。
+- 本批目标覆盖 4 项（job timeout 一项、文件完整性三项），相邻 5 文件 96/96；TypeScript、models:status、真实 models:verify、`git diff --check` 全绿。
+- Git 边界复核：本批预期文件为 `scripts/models.mjs`、`server/routes.ts`、`server/services/vision.ts`、`tests/modelsScript.test.mjs`、`tests/api.test.ts`；项目 `output/models` 内 `.part-*` 残留为 0。
+- 当前总工作树为 20 个跟踪差异、67 条既有未跟踪证据/辅助文件；未提交、回退、清理或删除任何项目文件。本批可收口并继续下一审查面。
+
+### 模型目录链接穿透确认候选
+- `safeModelOutputPath` 仅做词法 absolute/`..` 边界；若 `localDir/onnx` 是指向根外的 junction/symlink，`mkdirSync`、`.part` 写入和 rename 都会沿链接落到外部目录。
+- 新增普通文件 `lstat(finalPath)` 只拒绝最终条目本身为链接，无法发现父目录链接；服务端 API 状态同样会把 junction 后的普通 JSON/ONNX 视为本地 installed。
+- 项目 garment assets、privacy clean、Taobao capture 已有“根本身或子路径链接必须拒绝”的一致安全策略，模型目录应采用同一不变量：配置根必须是真实目录，文件/父目录 realpath 必须留在该真实根内。
+- 下一步用 Windows junction（不可用则按既有 EPERM/EACCES/ENOTSUP 规则 skip）在系统临时目录构造下载子目录穿透和 API 链接根两条红灯；不会触碰项目模型或证据。
+
+### 模型目录链接穿透红灯
+- Windows junction 创建成功，两条目标测试均失败且未 skip：`downloadHuggingFaceModel` 沿 `clip/onnx` junction 成功完成（根外文件已在隔离临时目录落地）；API linked model root 的所有模型仍 installed=true。
+- 下载用例在“应 reject”断言处失败，API 在“全部 installed=false”断言处失败，直接证明词法边界与最终文件 lstat 无法防父级链接穿透。
+- 修复需要两层约束：配置/局部模型根本身必须是非链接普通目录；读取文件和写入父目录的 `realpath` 必须等于根或严格位于根的真实路径下。状态遇到不安全路径返回未安装，下载遇到不安全路径明确拒绝。
+
+### 模型目录链接穿透目标绿色
+- `models.mjs` 现把可信配置根贯穿 status/download/verify；下载前要求根与输出父目录为非链接目录，且 realpath 留在可信根内。链接路径抛出稳定 `model directory must stay inside...`。
+- 服务端 API 状态把 `modelRoot` 作为真实边界；linked root、linked 子目录或根外真实文件都保守视为未安装，不再进入视觉子进程。
+- 两条 Windows junction 目标用例 2/2 通过（86 跳过），均未 skip：下载未在外部目录生成最终文件，API linked root 全部 installed=false。待普通目录/相邻安全回归与类型检查。
+
+### 模型链接首轮相邻 worker 异常
+- 7 文件默认 forks 相邻运行没有断言失败，但一个 Vitest worker unexpectedly exited；结果只完成 79/117、6/7 文件，不能作为绿色证据。
+- 同轮 `npm run typecheck` 与 `git diff --check` 独立通过。此前链接目标 2/2、普通模型相邻 96/96、全仓 647/647 均曾稳定，因此目前更像 runner 资源/进程异常，但仍须用不同 pool 的完整结果证明。
+- 下一步采用单 worker threads + verbose 运行相同 7 文件，不重复默认 forks；若出现具体文件/断言，再按根因处理。
+
+### 模型目录链接修复最终门禁
+- 相同 7 文件改用单 worker threads + verbose 后 117/117 全部通过；两条 Windows junction、资产链接、privacy realpath、普通模型/API/视觉/生命周期均实际执行，无 skip 或未处理错误。
+- 随后默认全仓 forks 51 文件 649/649 通过，排除首轮 worker exit 是稳定代码/测试缺陷；该一次 runner 异常保留在错误日志，但不再阻塞本批。
+- `models:status` 与真实 `models:verify` 继续识别并加载项目 rembg u2netp/CLIP；可信根 realpath 检查没有误伤正常模型目录。此前 typecheck/diff 同批已绿。
+- 模型管理链三项缺陷至此收口：永久 job、部分/零字节文件、junction 根外读写均有先红后绿直接证据。
+
+### 淘宝采集 job 永久挂起确认缺陷
+- `startTaobaoCaptureJob` 对 loginWait/maxPages 做输入上限并提供显式 cancel，但 spawn 后仅监听 exit/error，没有 timer；外部浏览器/WebDriver 若失联，job 和唯一采集锁会永久 running。
+- artifact 出现时当前设计故意保持锁到 child exit，防止仍写入的进程与新采集重叠；因此不能把“发现 JSON”当作通用超时替代。
+- 修复应使用独立、较长的采集 job 默认超时（不复用模型或视觉推理上限），测试可注入短值；正常 exit/error、取消、clear、timeout 和迟到 exit 必须清理 timer/日志/child 且只结算一次。
+- 超时前若已有 artifact，应沿用 exit 语义保留成功产物；无 artifact 才 failed/“超时”。首条红灯先覆盖无产物挂起、kill、锁释放和迟到 exit 保留超时原因。
+
+### 淘宝采集 job 超时红灯
+- 新增 API 用例使用现有 mock child、内存数据库和 20ms 注入上限；目标运行 80 项中 1 项预期失败、79 跳过。
+- 留出 60ms 后 job 仍为 running 且无 error，失败位于首个状态断言，直接证明 API 选项尚未接线、采集服务没有 timer。
+- 同一用例后半段还要求 kill 一次、迟到 exit 保留超时原因、下一 job 可启动；实现必须让全部断言通过，不能只改状态字段。
+
+### 淘宝采集超时首轮实现错误
+- 首轮实现后目标用例在最前置 `job.status` 得到 undefined；读取 `publicJob` 确认新 `timeout` 句柄未从 InternalCaptureJob 中剥离，Express 序列化 Node Timeout 循环结构导致启动 API 500。
+- 这不是旧缺陷红灯转绿，也不能据此评价 timeout 行为；需先把 timeout 定义为纯私有字段，在响应映射中剥离，并增加 startResponse=200 断言，再继续同一用例。
+
+### 淘宝采集 job 无产物超时绿色
+- `taobaoCaptureJobTimeoutMs` 已从 ApiAppOptions 传入采集服务，生产默认两小时；Timeout 句柄作为 InternalCaptureJob 私有字段，publicJob 不再泄漏/序列化。
+- 目标用例 1/1 通过（79 跳过）：启动 HTTP 200/running，超时后 failed/error 含“超时”，child.kill 一次，迟到 exit 不覆盖原因，下一采集 job 成功启动并可取消。
+- 正常 exit/error、cancel、clear 都调用 timer 清理；clear 在 kill 前把 job 标记 cancelled，迟到事件不会重新结算。下一步补已有 artifact 的 timeout 分支，随后相邻门禁。
+
+### 淘宝采集 job 双分支目标绿色
+- 补充“已有完整 JSON 但 child 挂起”的短超时用例：timeout 会 kill child，同时沿用 exit 语义把 job 标为 succeeded、保留 artifactPath，message 说明超时终止且 error 为空。
+- 两条目标测试 2/2 通过（79 跳过），共同覆盖无产物 failed/锁释放与有产物 succeeded/结果保留；两者都断言 kill 恰好一次。
+- 下一步相邻范围为完整 API、taobaoCapture 文件安全/读取、server lifecycle 与 Taobao import，再做 typecheck/diff。
+
+### 默认 Vitest worker 异常第二次复现
+- 采集相邻实际 4 文件 139/139、typecheck/diff 通过；随后默认 `npm test` 在 50/51 文件、570/651 后发生 fork worker unexpected exit，无断言失败。
+- 总测试 651 减去已完成 570 恰为 API 文件当前 81 项，说明未汇总 worker 是 `api.test.ts`；该文件目标 2/2 与相邻全文件均曾通过，因此需审查并发资源/runner，而非猜测具体产品断言。
+- 这是当前续跑中的第 2 次默认 forks worker 异常（前次 7 文件相邻）；不能再归类单次偶发，也不能重复原命令。下一步单 worker threads 全仓 + Vitest 配置/API 资源审查。
+
+### Vitest 稳定性诊断基线
+- 项目没有独立 Vitest 配置，`vite.config.ts` 也无 `test` 字段；`npm test` 只是裸 `vitest run`，因此在 Windows/Node 24 使用 Vitest 4 默认 forks 并发。
+- `api.test.ts` 当前 81 项，每项创建独立 HTTP server 和数据库并在 afterEach 关闭；清理逻辑存在，但它仍是最重单 worker，恰是第二次默认运行缺失的完整文件。
+- `npx vitest run --pool=threads --maxWorkers=1` 全仓 51 文件 651/651 通过，23.51 秒稳定退出，证明产品断言和串行资源收敛无缺陷。
+- 下一步测试受限 threads=4 的完整全仓稳定性/耗时；若连续通过，再把显式 pool/maxWorkers 纳入 Vite test 配置，避免默认 forks 依赖环境漂移。
+
+### Vitest 受限 threads 选择证据
+- `--pool=threads --maxWorkers=4` 在未改配置前连续两次全仓 51 文件 651/651，通过时间分别 8.35 秒和 9.18 秒；未出现 worker exit 或未处理错误。
+- 相比单 worker 23.51 秒，4 threads 保留并发效率；相比默认 forks 两次 worker 崩溃，连续结果证明它是当前 Windows/Node 24 环境更稳定的项目默认值。
+- 决定把 pool/maxWorkers 写入 Vite/Vitest 配置，不改 `npm test` 命令；配置后必须用裸 `npm test` 验证实际生效，并补 typecheck/diff。
+
+### Vitest 显式配置首轮绿色
+- `vite.config.ts` 改由 `vitest/config` 提供 defineConfig，并显式设置 test.pool=`threads`、maxWorkers=4；Vite plugins/server proxy 保持不变。
+- 修改后裸 `npm test`（无额外 CLI 参数）51 文件 651/651，9.97 秒通过，证明配置已自动生效且 API 81 项完整汇总。
+- 待第二次裸运行、TypeScript 与差异检查；只有重复稳定和配置类型均绿后才收口默认 runner 缺陷。
+
+### 淘宝采集与 Vitest 稳定性最终收口
+- 采集超时相邻实际 4 文件 139/139；TypeScript 与差异检查通过。两条 timeout 目标覆盖无产物 failed/锁释放/迟到 exit 和有产物 succeeded/保留 artifact。
+- 显式 Vitest threads/4 配置后，裸 `npm test` 连续两次 51 文件 651/651（9.97s、10.35s）；TypeScript 识别 `vitest/config`，Vite 配置无类型错误。
+- 稳定性证据链完整：单 worker 651/651；未配置前参数化 threads/4 连续两次 651/651；配置后裸命令连续两次 651/651。默认 forks 两次崩溃已被项目级稳定配置替代。
+- Git 边界：当前 22 个跟踪差异、67 条既有未跟踪证据/辅助文件；`git status -- output` 为空，5174/8788 无监听。测试产生的采集目录仍在被忽略 output 内，没有删除项目文件或证据。
+
+### 网络超时横向盘点
+- 服务端真实网络入口仅 Open-Meteo current/forecast、旅行天气、缩略图和模型源；前三类已有 AbortController（4–5 秒）及正文/大小保护，淘宝 Selenium/Playwright 内部等待有界且外层采集 job 现有两小时终止上限。
+- `scripts/models.mjs` 的直接 `fetch`/`response.arrayBuffer` 没有 signal；从 Web/API 启动时父模型 job 30 分钟会终止整个子进程，但用户直接运行 `npm run models:download:*` 时仍可能永久等待。这是下一确认候选。
+- 搜索命中 `scripts/__pycache__/*.pyc`；时间戳均为本轮前的 2026-06/07，且 `.gitignore:9` 已忽略。本次 Python 测试没有新建或更新时间，文件原样保留，未执行删除。
+
+### 模型 CLI 网络超时红灯
+- `modelsScript.test.mjs` 新增 metadata JSON 正文挂起、模型 `arrayBuffer` 正文挂起两项；均注入 requestTimeoutMs=20ms，并用 100ms 外层观察窗防止测试本身永久等待。
+- 旧实现两项都返回 `still-pending`，目标文件 2 项失败/9 跳过；证明仅给 fetch 建连加 signal 仍不够，截止器必须覆盖 fetch + JSON/arrayBuffer 整个请求体消费。
+- 修复使用统一 per-request deadline，默认 30 分钟；超时触发 AbortController 并通过 Promise.race 保证即使自定义 fetch 忽略 signal 也能拒绝，finally 清 timer。
+
+### 模型 CLI 网络超时目标绿色
+- GitHub rembg、Hugging Face metadata 与每个 CLIP 文件现在都通过统一 `withModelRequestTimeout`；默认单请求 30 分钟，测试可注入短值。
+- 截止器覆盖 fetch、HTTP 状态检查和完整 JSON/arrayBuffer 正文；超时先拒绝稳定 `model download request timed out...`，再 abort 底层请求，finally 清 timer。
+- 两项目标 2/2 通过（9 跳过），总测试 89ms；自定义 fetch 的正文 Promise 永不 resolve/reject 仍能按时结束。待完整模型脚本、真实 status/verify、类型与差异门禁。
+
+### 模型 CLI 网络超时最终门禁
+- 完整 models script/model-files 2 文件 13/13 通过；真实 models:status/verify 仍可识别并推理 rembg u2netp 与 CLIP。
+- `npm run typecheck`、`git diff --check` 通过；全仓裸 `npm test` 51 文件 653/653，10.47 秒稳定退出。
+- 至此网络盘点中的唯一无上限真实请求已补齐；普通 Web/API 启动仍另有 30 分钟父 job 上限，形成请求级 + 进程级双层终止。
+
+### CLIP 下载完成性确认候选
+- `download("clip")` 调用 Hugging Face helper 后直接返回，不检查 7 个 required files 与至少一个 ONNX 是否最终齐全；与 rembg 下载后必跑 warmup 不一致。
+- metadata 缺项/空 siblings 时进程可 exit 0，Web job 因此显示“本地模型已准备好”，但随后 status 仍 installed=false，形成 job 成功与权威状态矛盾。
+- metadata.siblings 也未做 runtime schema：非数组或 null item 会抛裸 `.map`/属性 TypeError。应在任何文件写入前验证 root/siblings/rfilename，并在下载后复用 clipModelReady 做最终完成性门禁。
+- 下一步两条红灯：缺少 required runtime files 的 clip download 必须 reject incomplete；siblings 非数组必须返回稳定 metadata schema 错误。
+
+### CLIP 下载完成性红灯
+- 两条目标测试均预期失败（11 跳过）：metadata 只提供 config 时 `download("clip")` Promise 成功；siblings 为对象时错误为裸 `(metadata.siblings || []).map is not a function`。
+- 第一项证明 Web/API child 可 exit 0 并误报模型准备好；第二项证明网络 schema 边界没有稳定诊断。两者均在隔离临时模型根、无真实网络。
+- 修复必须在写入前校验 metadata root/siblings/item.rfilename，并在 helper 返回后复用权威 clipModelReady；不能仅根据本次 metadata 列表推断完成，因为本地可能已有合法 ONNX/配置。
+
+### CLIP 下载完成性目标绿色
+- `normalizeHuggingFaceRuntimeFiles` 现严格验证 metadata 对象、siblings 数组和每项字符串 rfilename，并去重后才应用固定 runtime allowlist；坏 schema 不再进入文件系统循环。
+- `download("clip")` 在 helper 完成后以可信根调用 `clipModelReady`；本次 metadata 缺项但本地已有完整文件可成功，最终仍缺任何 required/ONNX 则稳定 reject incomplete，父 job 不会误报 succeeded。
+- 两项目标 2/2 通过（11 跳过）。待完整模型脚本、真实模型与全仓门禁。
+
+### CLIP 下载完成性最终门禁
+- 完整 models script/model-files 2 文件 15/15；真实 models:status/verify 通过，现有本地模型没有被 metadata validator 误伤。
+- TypeScript、`git diff --check` 通过；稳定 threads/4 裸全仓 51 文件 655/655、9.11 秒，无 worker 异常或未处理错误。
+- CLIP download 的“子进程 exit 0 但权威状态未安装”矛盾已消除。本批收口，转入阶段 81/82/83 完成性审计。
+
+### 2026-07-26 暂停状态事实
+- 当前实现与证据均已落盘，最新权威验证为：Python 38/38、模型专项 15/15、真实模型 status/verify、全仓 655/655、类型检查与差异检查全绿。
+- Git 暂停边界为 22 个跟踪修改和 67 个未跟踪证据/新增文件；未执行暂存、提交、删除、回退或清理。
+- 5174/8788 无监听；下次无需恢复运行进程，只需从三份规划文档恢复认知并启动最终完成性审计。
+- 暂停时使用 `-like '??*'` 统计 porcelain 状态不可靠，因为 PowerShell 把 `?` 当单字符通配符；以后应使用 `.StartsWith('??')` 或正则 `^\?\?`。
+
+### 完成性审计恢复事实
+- 会话补漏脚本没有报告规划文件之外的未同步上下文；当前磁盘状态可作为恢复基线。
+- 阶段 81/82 的未勾选总括项与其下已完成证据存在“状态未对齐”，不能直接推断为遗漏或完成；需要按总括要求检查覆盖面、浏览器产物和当前代码后再决定。
+- 阶段 83 尚无本次恢复后的最终证据，必须重跑而不能沿用暂停前局部门禁完成签收。
+
+### 阶段 81 浏览器证据盘点
+- `output/playwright` 现有 24 个按批次隔离的证据目录，阶段 81 的请求竞态/busy/会话问题均同时保留红灯脚本、结构化结果和修复后截图；最新两批为全局 busy/History 布局（22 文件）和缩略图 picker ABA（5 文件）。
+- 阶段 81 的高风险场景覆盖历史周切换、推荐卡动作、推荐输入与定位、Builder 草稿、衣橱事实失效、衣橱刷新、洞察刷新、设置保存、批量部分失败、收藏刷新、模型状态、画像刷新、跨端点写入、导入预览、视觉/availability busy、全局 busy 与 modal ABA；不是单一 happy-path 证据。
+- 最新修复批次的结构化结果与截图仍在磁盘，固定浏览器会话日志 `console-2026-07-25T15-32-15-145Z.log` 为 0 error/0 warning。较早 console 文件中的 error 命中来自修复前红灯/路由夹具等调查过程，不能与最终绿色日志混为一谈。
+- 这些证据足以支持阶段 81 第三项“已做过隔离浏览器复验”，但阶段 83 要求恢复后的最终浏览器验收，仍需以当前工作树重跑最小主流程而非只引用旧产物。
+
+### 当前前端差异复审
+- 全局 BusyAction 不再依赖异步 React state 做互斥：`createExclusiveActionLock` 在事件处理同步阶段取得锁，错误动作不能释放当前持有者；17 个全局入口均为 try/finally 匹配释放，推荐入口也由独立源码断言覆盖。
+- 导入预览、推荐和定位的显式失效会释放对应逻辑锁；迟到 Promise 因 request gate 已失效而不提交状态，也不能用错误 action 释放后继持有者。该语义允许用户取消逻辑上过期的读取后继续操作，并非 ABA 解锁。
+- History 四个顶部动作、衣橱批量/补图、设置模型与保存入口均统一尊重 `props.busy`；锁单测覆盖“拒绝重叠、错误持有者不能释放、正确释放后可复用”。
+- 缩略图 picker 的关闭和错误都要求保存开始时的会话 token，静态回归明确禁止无条件 `setThumbnailPicker(null)`；与既有真实浏览器 ABA 绿灯一致。
+- 本轮逐差异复审尚未确认新的前端实现错误；最终仍需用当前构建运行浏览器主流程，验证静态源码断言与真实交互没有分叉。
+
+### 当前服务端差异复审
+- 视觉模型 job 用单一 `finish` 结算 close/error/timeout，结算前清 timer、移除进程/取消映射，超时后进程树终止；`clearVisionJobs` 另有不写入终态的 cancel 路径，避免清理时旧事件重新生成 job 状态。
+- 服务端模型 installed 判定现在以普通文件、必要非空、可信根 realpath 为准；CLIP 的空 `merges.txt` 是唯一允许空文件的例外，ONNX 递归不会跟随 junction。路由测试可注入 job timeout，生产默认 30 分钟。
+- 淘宝 job 的 exit/error/timeout 共享一次结算；超时前已生成 JSON 时保留 succeeded artifact，无产物则 failed，cancel/clear 均先清 timer 并终止子进程。私有 `Timeout`/child/fd 已从公开 DTO 去除，避免 Express JSON 循环。
+- 推荐反馈仅把语法损坏的 `input_json` 升格为明确 500；合法对象、`{}` 和业务字段无效仍沿用既有 casual/无天气降级，不扩大破坏性兼容范围。
+- Archiver 8 使用运行时正式 `ZipArchive` ESM 类并保留现有 Archiver 类型契约；已有 ZIP 专项覆盖实际构造与流结束。当前代码复审未确认新的服务端缺陷，下一步核对测试是否覆盖迟到事件、文件系统边界和序列化契约。
+
+### 模型目录检查前写入候选
+- `download("clip")` 先对 `modelRoot/huggingface/Xenova/clip-vit-base-patch32` 执行递归 `mkdirSync`，随后才 `assertSafeModelDirectory`。若 `modelRoot/huggingface` 是 junction，递归创建会先在根外生成 Xenova/模型目录，再因 realpath 越界失败。
+- 既有测试只覆盖已存在的 `clipDir/onnx` junction；该路径的 dirname 已存在，因此检查发生在文件写入前，没有覆盖“多级目录创建本身穿过 junction”。
+- 这是模型根写边界的残余 TOCTOU 前置问题。下一步在系统临时目录构造 intermediate junction，断言 download 拒绝且根外目录仍不存在；测试使用 mock fetch，不访问真实网络或项目模型。
+
+### 模型目录检查前写入红灯
+- 单项目标测试稳定失败：下载请求本身以 `model directory` 拒绝且 mock fetch 为 0 次，但 `outsideDir/Xenova` 已存在，断言得到 expected false / received true。
+- 这证明副作用发生在 metadata/文件下载之前，根因就是 `mkdirSync(models.clip.path, { recursive:true })` 穿过 intermediate junction；后置 realpath 检查只能阻止模型文件写入，不能撤销已创建的根外目录。
+- 修复必须替换可信根内的递归 mkdir：逐个路径组件检查普通目录和 realpath，再以非递归 mkdir 创建单层并复核；不能在失败后删除根外目录，因为用户要求删除必须知情且安全边界本应从源头避免写入。
+
+### 模型目录逐级创建目标绿色
+- 新增 `ensureSafeModelDirectory`：先确认目标在可信根的词法范围内并取得普通根 realpath，再逐级 lstat；不存在的组件只用非递归 mkdir 创建一层，随后立即复核目录类型与 realpath。
+- rembg、CLIP 模型目录和每个下载文件的父目录均改用该 helper；Hugging Face 公共 helper 会先确认其可信根，再进入逐级创建。
+- 原红灯单项已转绿（1/1，13 跳过）：intermediate `huggingface` junction 被拒绝，fetch 仍为 0，根外 `Xenova` 不再产生。未通过删除掩盖副作用。
+- 仍需运行模型脚本完整 14 项、模型文件专项、真实 status/verify、全仓和类型/差异门禁。
+
+### 模型目录逐级创建相邻门禁
+- 完整模型脚本与模型文件 2 文件 16/16 通过（新增后 modelsScript 为 14 项）；既有 zero-byte、partial、最终 onnx junction、timeout、metadata schema 和完成性用例均未回退。
+- `npm run typecheck` 与 `git diff --check` 通过，仅有既有 LF→CRLF 提示；确认新 async helper 的 Node/TypeScript 边界正确。
+- 待真实模型 status/verify 与最终全仓复验后收口。
+
+### 模型目录修复真实验证与服务测试覆盖复核
+- 当前项目模型根仍识别 rembg `u2netp` 与 CLIP 为 installed；`models:verify` 对两者执行真实推理并成功，逐级目录 helper 未破坏合法模型路径。验证仅按预告删除其自行创建的系统临时目录。
+- API 新增测试覆盖淘宝 timeout 后迟到 exit、锁释放、已有 artifact；视觉 job timeout 后迟到 close；模型零字节和 linked root；这些正对应服务端单次结算、公开 DTO 与可信根不变量。
+- 推荐损坏 JSON 测试同时断言 feedback、wear_events、items、pair_stats 四处零写入；视觉坏 schema 测试断言标签与 embedding 均零写入，避免只检查错误码却漏掉部分提交。
+- 当前修改的服务端/模型测试覆盖与实现契约相符，未发现“绿灯但未检查核心副作用”的空洞用例。
+
+### 阶段 81/82 完成性判定
+- 阶段 81 的状态/竞态总括由 20 余类请求、跨实体、缓存、busy 和 modal 会话红绿场景覆盖；可用性总括另有 aria/语义、键盘/44px 触控、390/320px、长文本、空错加载、危险确认、图片隐私和本地数据披露测试及浏览器证据。
+- 阶段 81 浏览器要求由 24 个隔离证据批次、结构化网络结果、桌面/移动截图及最终清洁控制台支持；阶段 83 仍将重跑当前工作树最小主流程，二者证据目的不同。
+- 阶段 82 的所有确认缺陷均在 findings/progress 中保留候选、红灯、修复和目标/相邻门禁；当前新增 intermediate junction 缺陷也完成同样闭环。没有为了勾选状态跳过失败复现或副作用断言。
+- 因此阶段 81/82 的未勾选属于文档状态滞后，现可权威对齐为 complete；剩余仅阶段 83 最终复验、差异/残余风险和签收。
+
+### 阶段 83 首次全仓 Node 门禁异常
+- 标准 `npm test` 在只打印 Vitest `RUN` 后约 10.5 秒以 exit 1 终止，没有测试文件列表、失败断言、worker 错误或最终汇总。
+- 该输出既不能证明产品测试失败，也不能作为通过；与此前 forks worker 崩溃现象相似，但当前已配置 threads/4，因此不先入为主归因。
+- 下一步改用 `--pool=threads --maxWorkers=1 --reporter=verbose` 获取可定位结果；这是不同诊断策略，不重复同一无信息失败。诊断后仍必须让标准裸命令通过才能签收。
+
+### 阶段 83 Node 门禁恢复证据
+- threads/1 verbose 完整通过 51 文件 656/656（27.96 秒），包括新增 intermediate junction 用例；没有断言、未处理错误或资源失败。
+- 随后项目标准裸 `npm test`（vite.config threads/4）通过 51 文件 656/656（9.80 秒）。首次无输出 exit 1 目前表现为一次性进程/runner 异常，没有可归属产品断言。
+- 单 worker 运行中的 migration rehearsal 明确保留了一份系统临时证据目录并打印路径；本轮未删除它。鉴于首次标准异常，最终签收前再执行一次裸命令稳定性确认。
+
+### 阶段 83 Python、供应链与静态门禁
+- Python 全量 38/38（4.55 秒）；三项脚本测试仍全部通过。
+- 当前 registry 结果：全依赖 `npm audit` 0 漏洞，production `audit:prod` 0 漏洞；此前安全 override 与 Archiver 8/Sharp 升级未回退。
+- `npm run lint`（项目定义为完整 TypeScript noEmit）通过，`git diff --check` 通过；仅有既有换行转换提示，无空白错误。
+
+### 阶段 83 生产构建
+- 按提前告知的边界，Vite 清空并重建了被 Git 忽略的 `dist`；没有删除源码、数据库、模型或浏览器证据。
+- `npm run build` 通过：TypeScript emit + Vite 8.0.16，1610 模块；index 0.68 kB、CSS 119.07 kB、JS 408.66 kB，构建 6.94 秒。
+- 浏览器技能已完整读取，下一步用隔离数据库对当前构建对应源码执行最终真实浏览器验收。
+
+### 最终浏览器环境边界
+- 当前源码入口确认 `OUTFIT_DATABASE_PATH` 可隔离 SQLite，API 端口 8788，Vite 5174 代理到 API；两端口启动前均为空闲。
+- 本次将新建 `output/playwright/final-audit-20260726` 保存数据库、日志、结构化结果和截图；不读取、覆盖或删除 `data/outfit.sqlite` 与既有 24 批证据。
+
+### 最终浏览器环境启动
+- 当前隔离库 `output/playwright/final-audit-20260726/outfit-final.sqlite` 已创建；API 8788 和 Vite 5174 各一个监听，PID 分别为 5284/34388。
+- API/Vite stderr 都是空文件，stdout 分别确认 API listening 和 Vite ready；可进入真实浏览器，不需要复用旧登录态。
+
+### 最终浏览器首次连接异常
+- 首次创建/打开标签时，浏览器连接层的外部遥测请求超时并中断调用；本地页面尚未形成可读 snapshot，隔离数据库没有表单写入。
+- 错误没有报告 browser disconnected。按官方 troubleshooting，应保留当前 browser binding，检查现有 tab 或新建 fresh tab，不重选浏览器、不切换外部 Playwright。
+
+### 最终浏览器首屏恢复
+- 原标签实际已成功打开 `http://127.0.0.1:5174/` 且标题为 Outfit；复用同一 tab 后 DOM snapshot 正常，连接无需重建。
+- 新隔离库显示首次账号创建页，用户名/密码均有可访问名称和帮助文本；本地存储、第三方不发送等隐私说明在首屏可见。
+- 下一步仅向本机 127.0.0.1 隔离 API 提交专用 QA 凭据，属于用户已授权的本地项目验收，不向外部站点发送数据。
+
+### 最终浏览器隔离注册
+- 使用 snapshot 中完整可访问名称后，用户名、密码、创建按钮均唯一（1/1/1），本地 QA 账号 `qa_final_20260726` 创建成功。
+- 登录后显示跳过链接、五项主导航、当前账号和退出；默认“今日推荐”空衣橱状态含场合 pressed 语义、天气待获取、单一“先导入衣物”行动。
+- 这同时验证首次账号流程、session cookie、Vite 代理同源、空态和基本可访问结构在当前工作树可用。
+
+### 最终浏览器衣橱与历史页
+- 衣服库真实导航通过：标题、0/0/0 统计、添加/刷新/补图、搜索框、五组原生 combobox 和空衣橱说明均呈现；“选择当前结果”在空结果时正确 disabled。
+- 历史洞察真实导航通过：四个顶部动作、五个二级分区、周导航和本地周 7 天列表完整；当前日期 7 月 26 日正确标记“今天”。
+- 两页都保留 skip link、五项主导航、账号/退出和 main focus active；未出现错误态或意外跳转。
+
+### 最终浏览器导入与设置页
+- 导入页真实导航通过：外部淘宝链接明确可见但未点击；导入/购买检查模式、订单/详情采集、Selenium/Playwright 单选、产物读取和预览/提交 disabled 状态正确。未启动真实采集或访问淘宝。
+- 设置页真实导航通过：位置、画像、图片隐私、本地视觉四区完整；远程淘宝图默认关闭并明确披露 IP/User-Agent 风险，模型只存本机且下载/验证均为手动。
+- UI 通过真实 API 正确显示 rembg u2netp 与 CLIP 已可用；已安装模型的下载按钮 disabled、验证按钮可用，与此前 CLI status/verify 一致。
+
+### 最终浏览器桌面与移动视觉验收
+- 默认桌面视口为 1280×720，document/body clientWidth 与 scrollWidth 均 1280，`horizontalOverflow=false`；视觉上侧栏、标题、条件卡和推荐空态双栏清晰，无截断/覆盖。
+- 页面中 `img[src^="http"]` 为 0，证明远程图默认关闭状态没有隐式外部图片请求。
+- 显式 390×844 移动视口下 document/body clientWidth=scrollWidth=375，`horizontalOverflow=false`；截图显示单列条件/空态、固定底部五项导航和可读操作，不存在横向溢出或遮挡主内容。
+- `mainNavigationVisible` 的直接 nav 自身 computed style 为 true，但其桌面侧栏祖先在截图中未呈现；权威视觉与 `移动导航` DOM 均证明移动导航已生效，不把祖先可见性误读为双导航缺陷。
+
+### 最终浏览器控制台与视口收口
+- 临时移动 viewport 已按 capability 要求 reset，恢复默认 1280×720，横向溢出仍为 false；没有给用户浏览器遗留尺寸覆盖。
+- 当前真实浏览器 tab 的 error/warn/warning 日志为空数组；注册、五页导航、API 模型状态和两种视口过程中没有控制台异常。
+- 浏览器验收核心要求已满足；结束前还需保存结构化摘要到规划文件、finalize tab，并关闭隔离 API/Vite。
+
+### 最终浏览器验收收口
+- in-app Browser tab 已以空 keep 列表 finalize；测试页没有留给用户，也没有再调用浏览器工具。
+- 仅停止本轮 5174/8788 监听 PID 34388/5284，现两端口均为 0；没有删除隔离数据库、WAL/SHM 或日志。
+- final-audit 目录保留 7 个文件，API/Vite stderr 均为 0 字节。当前工作树浏览器验收完成。
+
+### 最终依赖与 Git 边界复核
+- package.json/lock 的依赖变更与安全修复一致：Archiver 8.0.0、Sharp 0.35.3；body-parser 2.3.0、tar 7.5.22、protobufjs 7.6.5、postcss 8.5.23 均由实际 `npm ls` 解析生效，transformers 复用顶层 Sharp。
+- Vite 配置只新增明确的 threads/4 测试池并保留 `changeOrigin:false` 代理安全契约；production build 已证明从 `vitest/config` 导入没有污染构建。
+- Git 仍为 22 个预期跟踪修改；67 个未跟踪条目精确分为 `.playwright-cli` 既有证据 65 个，以及应纳入本轮实现的 `src/lib/exclusiveAction.ts`、`tests/exclusiveAction.test.ts` 各 1 个。没有未知调试源码或数据文件。
+- final-audit 证据与 dist 都被既有 `.gitignore` 排除，dist 状态为空；`git diff --check` 再次通过，5174/8788 均无监听。
+
+## 2026-07-26 全项目深审最终结论
+- 本次阶段 78–83 已覆盖动态基线、后端/数据/安全、前端状态与可用性、确认缺陷 TDD、供应链及最终运行时验收；所有在当前环境可确认的错误均已修复并有目标/相邻/全仓或浏览器直接证据。
+- 最后新增的 intermediate junction 根外目录写入也完成红灯（根外 Xenova 被创建）到绿色（fetch 0、根外零创建）的闭环，未用失败后删除掩盖问题。
+- 最终权威质量状态：Node 656/656、Python 38/38、lint/typecheck、双 audit 0、真实模型推理、生产构建、diff check、隔离浏览器与控制台全部通过。
+- 一次裸 Vitest 无诊断退出在 threads/1 全通过及默认 threads/4 连续两次全通过后未复现；保留为 runner 瞬态记录，不存在失败断言或未解决产品根因。
+- 工作树故意保留未提交，便于用户审阅：22 个跟踪差异、67 个未跟踪文件；其中 65 个为既有浏览器证据，另外两个是本轮应纳入的独占锁实现/测试。没有清理用户资产。

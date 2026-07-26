@@ -29,17 +29,18 @@ export function setGarmentAvailability(
   if (!AVAILABILITY_STATUS_SET.has(status)) {
     throw new ValidationError("availabilityStatus 无效");
   }
-  const current = getGarmentById(db, garmentId);
-  if (current.availabilityStatus === status) {
-    return { changed: false, garment: current };
-  }
   if (db.isTransaction) {
     throw new Error("Garment availability cannot start inside an existing transaction");
   }
 
-  const changedAt = (options.now?.() ?? new Date()).toISOString();
   db.exec("BEGIN IMMEDIATE");
   try {
+    const current = getGarmentById(db, garmentId);
+    if (current.availabilityStatus === status) {
+      db.exec("COMMIT");
+      return { changed: false, garment: current };
+    }
+    const changedAt = (options.now?.() ?? new Date()).toISOString();
     const updated = db.prepare(`
       UPDATE garments
       SET availability_status = ?, updated_at = CURRENT_TIMESTAMP

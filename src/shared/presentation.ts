@@ -13,6 +13,7 @@ export type AppTab = "import" | "wardrobe" | "recommend" | "history" | "settings
 export type AuthInput = { username: string; password: string };
 export type WearLogFeedback = { outfitId: string; message: string };
 export type SelectOption = { value: string; label: string };
+export type GarmentVisionAction = "cutout-garment" | "vision-tags";
 export type BusyAction =
   | "import"
   | "preview-import"
@@ -31,8 +32,6 @@ export type BusyAction =
   | "export"
   | "export-complete"
   | "weather"
-  | "cutout-garment"
-  | "vision-tags"
   | "recommend";
 
 export type WardrobeStatusFilter = "all" | "pending" | "confirmed" | "excluded";

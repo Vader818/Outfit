@@ -37,6 +37,8 @@ export interface SettingsViewProps {
 }
 
 export function SettingsView(props: SettingsViewProps) {
+  const savingSettings = props.busyAction === "save-settings";
+
   function updateProfile(update: Partial<PersonalProfile>) {
     props.onProfile({ ...props.profile, ...update });
   }
@@ -63,7 +65,7 @@ export function SettingsView(props: SettingsViewProps) {
               <h2 id="location-settings-title">位置</h2>
               <p>仅用于获取当地天气，不会保存位置轨迹。</p>
             </div>
-            <Button disabled={props.busyAction === "locate"} onClick={props.onLocate}>
+            <Button disabled={props.busy} onClick={props.onLocate}>
               <MapPin aria-hidden="true" size={18} />
               {props.busyAction === "locate" ? "定位中" : "定位"}
             </Button>
@@ -74,6 +76,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="纬度"
               value={props.latitude}
               inputMode="decimal"
+              disabled={savingSettings}
               onChange={(event) => props.onLatitude(event.target.value)}
             />
             <Field
@@ -81,6 +84,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="经度"
               value={props.longitude}
               inputMode="decimal"
+              disabled={savingSettings}
               onChange={(event) => props.onLongitude(event.target.value)}
             />
           </div>
@@ -101,6 +105,7 @@ export function SettingsView(props: SettingsViewProps) {
               type="number"
               step="any"
               value={props.profile.heightCm ?? ""}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({ heightCm: numberOrUndefined(event.target.value) })}
             />
             <Field
@@ -109,6 +114,7 @@ export function SettingsView(props: SettingsViewProps) {
               type="number"
               step="any"
               value={props.profile.weightKg ?? ""}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({ weightKg: numberOrUndefined(event.target.value) })}
             />
             <SelectField
@@ -116,6 +122,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="体型"
               value={props.profile.bodyType ?? ""}
               options={BODY_TYPE_OPTIONS}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({
                 bodyType: event.target.value
                   ? event.target.value as PersonalProfile["bodyType"]
@@ -127,6 +134,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="肤色"
               value={props.profile.skinTone ?? ""}
               options={SKIN_TONE_OPTIONS}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({
                 skinTone: event.target.value
                   ? event.target.value as PersonalProfile["skinTone"]
@@ -138,6 +146,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="色彩倾向"
               value={props.profile.colorDisposition ?? ""}
               options={COLOR_DISPOSITION_OPTIONS}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({
                 colorDisposition: event.target.value
                   ? event.target.value as PersonalProfile["colorDisposition"]
@@ -149,6 +158,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="温度感受"
               value={props.profile.temperatureSensitivity ?? ""}
               options={TEMPERATURE_OPTIONS}
+              disabled={savingSettings}
               onChange={(event) => updateProfile({
                 temperatureSensitivity: event.target.value
                   ? event.target.value as PersonalProfile["temperatureSensitivity"]
@@ -160,6 +170,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="偏好颜色"
               value={formatColorList(props.profile.preferredColors)}
               placeholder="白色,蓝色,灰色"
+              disabled={savingSettings}
               onChange={(event) => updateProfile({ preferredColors: parseColorList(event.target.value) })}
             />
             <Field
@@ -167,6 +178,7 @@ export function SettingsView(props: SettingsViewProps) {
               label="避开颜色"
               value={formatColorList(props.profile.avoidedColors)}
               placeholder="黄色,棕色"
+              disabled={savingSettings}
               onChange={(event) => updateProfile({ avoidedColors: parseColorList(event.target.value) })}
             />
             <Field
@@ -175,6 +187,7 @@ export function SettingsView(props: SettingsViewProps) {
               value={formatList(props.profile.preferredStyles)}
               placeholder="casual,smart-casual"
               hint="使用逗号分隔多个风格。"
+              disabled={savingSettings}
               onChange={(event) => updateProfile({ preferredStyles: parseList(event.target.value) })}
             />
           </div>
@@ -228,7 +241,7 @@ export function SettingsView(props: SettingsViewProps) {
               <span><strong>启用本地视觉</strong><small>用于去背景和衣物标签建议。</small></span>
             </label>
             {props.onRefreshVisionModels ? (
-              <Button onClick={props.onRefreshVisionModels}>
+              <Button disabled={props.busy} onClick={props.onRefreshVisionModels}>
                 <RefreshCw aria-hidden="true" size={18} />
                 刷新模型
               </Button>
@@ -277,7 +290,7 @@ export function SettingsView(props: SettingsViewProps) {
                     <div className="vision-model-actions">
                       {props.onDownloadVisionModel ? (
                         <Button
-                          disabled={model.installed || running || props.busyAction === "download-vision-model"}
+                          disabled={props.busy || model.installed || running}
                           onClick={() => props.onDownloadVisionModel?.(model.id)}
                           size="sm"
                         >
@@ -287,7 +300,7 @@ export function SettingsView(props: SettingsViewProps) {
                       ) : null}
                       {props.onVerifyVisionModel ? (
                         <Button
-                          disabled={!model.installed || running || props.busyAction === "verify-vision-model"}
+                          disabled={props.busy || !model.installed || running}
                           onClick={() => props.onVerifyVisionModel?.(model.id)}
                           size="sm"
                         >
@@ -309,7 +322,7 @@ export function SettingsView(props: SettingsViewProps) {
 
         <div className="settings-actions">
           <p>保存后，新的位置和画像会用于下一次天气与穿搭推荐。</p>
-          <Button disabled={props.busyAction === "save-settings"} type="submit" variant="primary">
+          <Button disabled={props.busy} type="submit" variant="primary">
             <Save aria-hidden="true" size={18} />
             {props.busyAction === "save-settings" ? "保存中" : "保存"}
           </Button>

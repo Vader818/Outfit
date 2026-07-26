@@ -187,6 +187,38 @@ describe("normalizeTaobaoBatch", () => {
     }
   });
 
+  it("merges duplicate source evidence deterministically regardless of item order", () => {
+    const first = {
+      pageType: "order-list" as const,
+      orderId: "order-duplicate",
+      itemId: "450",
+      title: "白色纯棉短袖T恤",
+      sku: "颜色分类: 白色; 尺码: M",
+      quantity: 1,
+      payment: "99.00",
+      status: "买家已付款"
+    };
+    const second = {
+      ...first,
+      quantity: 2,
+      payment: "198.00",
+      status: "卖家已发货",
+      imageUrl: "https://img.alicdn.com/duplicate-tee.jpg"
+    };
+
+    const forward = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      items: [first, second]
+    });
+    const reversed = normalizeTaobaoBatch({
+      source: "taobao-selenium-order-list",
+      items: [second, first]
+    });
+
+    expect(forward.batchId).toBe(reversed.batchId);
+    expect(forward.sourceItems).toEqual(reversed.sourceItems);
+  });
+
   it("merges a detail capture into every purchased SKU regardless of input order", () => {
     const black = {
       pageType: "order-list" as const,

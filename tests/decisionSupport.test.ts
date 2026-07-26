@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import type { AppDatabase } from "../server/db";
 import { createWearEvent, deleteWearEvent, updateWearEvent } from "../server/services/wearEvents";
 import {
   buildWardrobeValueInsights,
   getWardrobeValueInsights
 } from "../server/services/wardrobeValue";
+import { createDatabase } from "./helpers/testDatabase";
 
 const NOW = new Date("2026-07-13T00:00:00.000Z");
 

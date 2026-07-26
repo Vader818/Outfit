@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, GripVertical, Pencil, Plus, Save, Trash2, X } from "lucide-react";
-import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, Dialog, Field, IconButton, Notice, SelectField } from "../../components/ui";
 import { CATEGORY_LABELS } from "../../shared/presentation";
 import type {
@@ -33,6 +33,14 @@ export interface OutfitBuilderValidation {
 export interface UnavailableOutfitItem {
   item: SavedOutfitItem;
   reason: "archived" | "deleted" | "unavailable";
+}
+
+export function outfitBuilderDraftIdentity(
+  open: boolean,
+  outfit: SavedOutfit | null | undefined
+): string | null {
+  if (!open) return null;
+  return outfit ? `saved:${outfit.id}` : "new";
 }
 
 export interface OutfitBuilderSubmissionOptions {
@@ -198,9 +206,16 @@ export function OutfitBuilder(props: OutfitBuilderProps) {
   );
   const [replacementIds, setReplacementIds] = useState<Record<number, string>>({});
   const [validation, setValidation] = useState<OutfitBuilderValidation>({ items: [] });
+  const draftIdentity = outfitBuilderDraftIdentity(props.open, props.outfit);
+  const initializedDraftIdentity = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!draftIdentity) {
+      initializedDraftIdentity.current = null;
+      return;
+    }
+    if (initializedDraftIdentity.current === draftIdentity) return;
+    initializedDraftIdentity.current = draftIdentity;
     const next = createBuilderDraft(props.outfit, activeGarments);
     setName(next.name);
     setNotes(next.notes);
@@ -214,7 +229,12 @@ export function OutfitBuilder(props: OutfitBuilderProps) {
     setUnresolvedItems(findUnavailableOutfitItems(props.outfit, props.garments));
     setReplacementIds({});
     setValidation({ items: [] });
-  }, [activeGarments, props.garments, props.open, props.outfit]);
+  }, [activeGarments, draftIdentity, props.garments, props.outfit]);
+
+  useEffect(() => {
+    if (!props.open || !props.outfit || contentDirty) return;
+    setUnresolvedItems(findUnavailableOutfitItems(props.outfit, props.garments));
+  }, [contentDirty, props.garments, props.open, props.outfit]);
   const garmentById = useMemo(
     () => new Map(activeGarments.map((garment) => [garment.id, garment])),
     [activeGarments]

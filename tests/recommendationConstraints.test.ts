@@ -90,6 +90,24 @@ describe("recommendation constraint request validation", () => {
     expect(result).not.toHaveProperty("candidateId");
   });
 
+  it.each([
+    ["temperature", null],
+    ["apparentTemperature", "29"],
+    ["precipitationProbability", true],
+    ["windSpeed", ""],
+    ["weatherCode", {}]
+  ] as const)("rejects a non-numeric weather.%s value instead of coercing it", (field, value) => {
+    expect(() => validateRecommendationRequest({
+      weather: { ...weather, [field]: value }
+    })).toThrow(new ValidationError(`weather.${field} 必须是数字`));
+  });
+
+  it("rejects an impossible recommendation weather calendar date", () => {
+    expect(() => validateRecommendationRequest({
+      weather: { ...weather, date: "2026-02-30" }
+    })).toThrow(new ValidationError("weather.date 必须是真实日历日期"));
+  });
+
   it("accepts present constraint arrays containing one through twenty-four positive safe integers", () => {
     const includeGarmentIds = Array.from({ length: 24 }, (_, index) => index + 1);
     const result = validateRecommendationRequest({

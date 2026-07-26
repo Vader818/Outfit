@@ -20,6 +20,7 @@ import {
   SEASON_FILTER_OPTIONS,
   STATUS_FILTER_OPTIONS,
   type BusyAction,
+  type GarmentVisionAction,
   type WardrobeFilters,
   type WardrobeOwnedFilter,
   type WardrobeStatusFilter
@@ -49,13 +50,13 @@ export interface WardrobeViewProps {
   onRefreshThumbnails?: () => void;
   onOpenThumbnailPicker?: (garment: Garment) => void;
   onUseGarmentAsCore?: (garment: Garment) => void;
-  availabilityBusyGarmentId?: number | null;
+  availabilityBusyGarmentIds?: ReadonlySet<number>;
   onAvailabilityChange?: (id: number, status: GarmentAvailabilityStatus) => void;
   onBulkAvailability?: (status: GarmentAvailabilityStatus) => void;
   onCutoutGarment?: (id: number) => void;
   onAnalyzeGarmentVision?: (id: number) => void;
   visionEnabled?: boolean;
-  visionBusyId?: number | null;
+  visionBusyActions?: ReadonlyMap<number, GarmentVisionAction>;
   thumbnailRefreshMessage?: string;
   allowRemoteTaobaoImages?: boolean;
 }
@@ -110,7 +111,7 @@ export function WardrobeView(props: WardrobeViewProps) {
             {props.onRefreshThumbnails ? (
               <Button
                 variant="secondary"
-                disabled={props.busyAction === "refresh-thumbnails"}
+                disabled={props.busy}
                 onClick={props.onRefreshThumbnails}
               >
                 <Images aria-hidden="true" size={18} />
@@ -207,7 +208,7 @@ export function WardrobeView(props: WardrobeViewProps) {
             <Button
               variant="primary"
               size="sm"
-              disabled={props.busyAction === "bulk-confirm"}
+              disabled={props.busy}
               onClick={props.onBulkConfirm}
             >
               <Check aria-hidden="true" size={16} />
@@ -216,7 +217,7 @@ export function WardrobeView(props: WardrobeViewProps) {
           </div>
           {props.onBulkSeasons || props.onBulkTags || props.onBulkExcluded || props.onBulkAvailability ? (
             <WardrobeBatchControls
-              disabled={props.busyAction === "bulk-update" || props.busyAction === "bulk-availability"}
+              disabled={props.busy}
               onSeasons={props.onBulkSeasons}
               onTags={props.onBulkTags}
               onExcluded={props.onBulkExcluded}
@@ -256,16 +257,15 @@ export function WardrobeView(props: WardrobeViewProps) {
                     item={item}
                     presentation="review"
                     selected={selectedSet.has(item.id)}
-                    busyAction={props.busyAction}
                     visionEnabled={props.visionEnabled}
-                    visionBusyId={props.visionBusyId}
+                    visionBusyAction={props.visionBusyActions?.get(item.id)}
                     allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                     onSelect={(selected) => updateSelection(item.id, selected)}
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}
                     onOpenThumbnailPicker={props.onOpenThumbnailPicker}
                     onUseGarmentAsCore={props.onUseGarmentAsCore}
-                    availabilityBusyGarmentId={props.availabilityBusyGarmentId}
+                    availabilityBusy={props.availabilityBusyGarmentIds?.has(item.id)}
                     onAvailabilityChange={props.onAvailabilityChange}
                     onCutoutGarment={props.onCutoutGarment}
                     onAnalyzeGarmentVision={props.onAnalyzeGarmentVision}
@@ -291,16 +291,15 @@ export function WardrobeView(props: WardrobeViewProps) {
                     item={item}
                     presentation="card"
                     selected={selectedSet.has(item.id)}
-                    busyAction={props.busyAction}
                     visionEnabled={props.visionEnabled}
-                    visionBusyId={props.visionBusyId}
+                    visionBusyAction={props.visionBusyActions?.get(item.id)}
                     allowRemoteTaobaoImages={props.allowRemoteTaobaoImages}
                     onSelect={(selected) => updateSelection(item.id, selected)}
                     onUpdate={props.onUpdate}
                     onDelete={props.onDelete}
                     onOpenThumbnailPicker={props.onOpenThumbnailPicker}
                     onUseGarmentAsCore={props.onUseGarmentAsCore}
-                    availabilityBusyGarmentId={props.availabilityBusyGarmentId}
+                    availabilityBusy={props.availabilityBusyGarmentIds?.has(item.id)}
                     onAvailabilityChange={props.onAvailabilityChange}
                     onCutoutGarment={props.onCutoutGarment}
                     onAnalyzeGarmentVision={props.onAnalyzeGarmentVision}

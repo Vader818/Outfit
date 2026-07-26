@@ -87,6 +87,12 @@ interface FeedbackPairAccumulator {
   totalFeedback: number;
 }
 
+interface TripWearBindingRow {
+  selection_id: number;
+  garment_ids_json: string;
+  trip_id: number;
+}
+
 export function listWearEvents(
   db: AppDatabase,
   query: unknown = {},
@@ -180,6 +186,7 @@ export function updateWearEvent(
   const update = parseWearEventUpdate(input);
   return inImmediateTransaction(db, "Wear event", () => {
     const current = getWearEvent(db, eventId);
+    const tripBinding = getTripWearBinding(db, eventId);
     const outfitId = update.outfitId === null
       ? undefined
       : update.outfitId ?? current.outfitId;
@@ -198,6 +205,16 @@ export function updateWearEvent(
       itemIds: update.itemIds ?? current.items.map((item) => item.itemId)
     };
     assertWearReferences(db, merged);
+    if (tripBinding !== undefined && update.itemIds !== undefined) {
+      const plannedItemIds = parseTripSelectionItemIds(tripBinding);
+      if (!arraysEqual(plannedItemIds, merged.itemIds)) {
+        throw new ApiError(
+          "TRIP_WEAR_EVENT_ITEMS_MISMATCH",
+          "旅行实际穿着记录的 itemIds 必须与原旅行搭配选择一致",
+          409
+        );
+      }
+    }
     const now = (options.now?.() ?? new Date()).toISOString();
     db.prepare(`
       UPDATE wear_events
@@ -232,11 +249,25 @@ export function deleteWearEvent(db: AppDatabase, id: number): WearEvent {
   return inImmediateTransaction(db, "Wear event", () => {
     const current = getWearEvent(db, eventId);
     const now = new Date().toISOString();
+    const tripBinding = getTripWearBinding(db, eventId);
     db.prepare(`
       UPDATE outfit_plan_entries
       SET status = 'planned', worn_at = NULL, wear_event_id = NULL, updated_at = ?
       WHERE wear_event_id = ?
     `).run(now, eventId);
+    if (tripBinding !== undefined) {
+      db.prepare(`
+        UPDATE trip_outfit_selections
+        SET actual_wear_event_id = NULL, updated_at = ?
+        WHERE id = ? AND actual_wear_event_id = ?
+      `).run(now, tripBinding.selection_id, eventId);
+      db.prepare(`
+        UPDATE trips
+        SET status = CASE WHEN status = 'completed' THEN 'ready' ELSE status END,
+          updated_at = ?
+        WHERE id = ?
+      `).run(now, tripBinding.trip_id);
+    }
     retractFeedbackWearFacts(db, eventId, now);
     db.prepare("DELETE FROM wear_events WHERE id = ?").run(eventId);
     return current;
@@ -393,6 +424,39 @@ function insertWearEventItems(db: AppDatabase, eventId: number, itemIds: readonl
     VALUES (?, ?, ?)
   `);
   itemIds.forEach((itemId, position) => insert.run(eventId, itemId, position));
+}
+
+function getTripWearBinding(db: AppDatabase, eventId: number): TripWearBindingRow | undefined {
+  return db.prepare(`
+    SELECT selections.id AS selection_id, selections.garment_ids_json,
+      days.trip_id
+    FROM trip_outfit_selections AS selections
+    INNER JOIN trip_days AS days ON days.id = selections.trip_day_id
+    WHERE selections.actual_wear_event_id = ?
+  `).get(eventId) as TripWearBindingRow | undefined;
+}
+
+function parseTripSelectionItemIds(binding: TripWearBindingRow): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(binding.garment_ids_json) as unknown;
+  } catch {
+    throw new ApiError(
+      "CORRUPT_TRIP_SELECTION",
+      `旅行搭配选择 ${binding.selection_id} 的 garment_ids_json 损坏`,
+      500
+    );
+  }
+  if (!Array.isArray(parsed) || !parsed.length ||
+    !parsed.every((id) => Number.isSafeInteger(id) && Number(id) > 0) ||
+    new Set(parsed).size !== parsed.length) {
+    throw new ApiError(
+      "CORRUPT_TRIP_SELECTION",
+      `旅行搭配选择 ${binding.selection_id} 的 garment_ids_json 无效`,
+      500
+    );
+  }
+  return parsed as number[];
 }
 
 function mapWearEvent(db: AppDatabase, row: WearEventRow): WearEvent {
@@ -737,6 +801,10 @@ function feedbackItemPairs(itemIds: readonly number[]): Array<readonly [number, 
     }
   }
   return pairs;
+}
+
+function arraysEqual(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function inImmediateTransaction<T>(db: AppDatabase, label: string, callback: () => T): T {

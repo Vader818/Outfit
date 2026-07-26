@@ -18,9 +18,11 @@ import {
   writeSessionStorageValue
 } from "../src/lib/browser";
 import {
+  garmentPatchAffectsRecommendationConstraints,
   isRecommendationEligibleGarment,
   isRecommendationPendingGarment,
   isWardrobeReviewPendingGarment,
+  omitGarmentIds,
   resolveGarmentImageSource
 } from "../src/lib/garments";
 import {
@@ -111,6 +113,311 @@ describe("App", () => {
       latitude: 31.2304,
       longitude: 121.4737
     });
+  });
+
+  it("衣物事实变更统一失效推荐，并只移除受影响的推荐约束", () => {
+    expect(garmentPatchAffectsRecommendationConstraints({ excluded: true })).toBe(true);
+    expect(garmentPatchAffectsRecommendationConstraints({ category: "outerwear" })).toBe(true);
+    expect(garmentPatchAffectsRecommendationConstraints({ availabilityStatus: "repair" })).toBe(true);
+    expect(garmentPatchAffectsRecommendationConstraints({ name: "新名称", tags: ["通勤"] })).toBe(false);
+    expect(omitGarmentIds([1, 2, 3], [2, 4])).toEqual([1, 3]);
+    expect(omitGarmentIds([1, 2, 3], [])).toEqual([1, 2, 3]);
+
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const requestInvalidator = namedFunctionSource(source, "invalidateRecommendationRequest");
+    expect(requestInvalidator).toContain("recommendationRequestGate.invalidate()");
+    expect(requestInvalidator).toContain("setRecommendations(null)");
+    expect(requestInvalidator).toContain("setWearLogFeedback(null)");
+
+    const wardrobeInvalidator = namedFunctionSource(source, "invalidateWardrobeRecommendations");
+    expect(wardrobeInvalidator).toContain("invalidateRecommendationRequest()");
+    expect(wardrobeInvalidator).toContain("garmentRequestGate.invalidate()");
+    expect(wardrobeInvalidator).toContain("setIncludeGarmentIds");
+    expect(wardrobeInvalidator).toContain("setExcludeGarmentIds");
+
+    const refreshGarments = namedFunctionSource(source, "refreshGarments");
+    expect(refreshGarments).toContain("garmentRequestGate.begin()");
+    expect(refreshGarments.match(/garmentRequest\.isCurrent\(\)/g)).toHaveLength(2);
+
+    for (const functionName of [
+      "runImport",
+      "updateOne",
+      "archiveOne",
+      "restoreOne",
+      "bulkConfirm",
+      "bulkUpdate",
+      "changeGarmentAvailability",
+      "bulkAvailability",
+      "submitManualGarment",
+      "refreshThumbnails",
+      "saveThumbnailSelection",
+      "cutoutGarment"
+    ]) {
+      expect(namedFunctionSource(source, functionName), functionName)
+        .toContain("invalidateWardrobeRecommendations");
+    }
+  });
+
+  it("价值洞察只允许最新请求提交结果、错误和加载收尾", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const refreshValueInsights = namedFunctionSource(source, "refreshValueInsights");
+
+    expect(refreshValueInsights).toContain("valueInsightsRequestGate.begin()");
+    expect(refreshValueInsights.match(/valueRequest\.isCurrent\(\)/g)).toHaveLength(3);
+    expect(refreshValueInsights).not.toContain("setValueInsights(await getValueInsights())");
+  });
+
+  it("批量衣物变更等待全部请求结束，刷新权威状态并只保留失败项", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+
+    for (const functionName of ["bulkConfirm", "bulkUpdate"]) {
+      const mutation = namedFunctionSource(source, functionName);
+      expect(mutation, functionName).toContain("settleMutations");
+      expect(mutation, functionName).toContain("setSelectedIds(failedIds)");
+      expect(mutation, functionName).toContain("await refreshGarments()");
+      expect(mutation, functionName).not.toContain("await Promise.all(");
+    }
+  });
+
+  it("同一衣物的所有写入口共享串行队列，完整响应只由当前变更提交", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+
+    for (const functionName of [
+      "updateOne",
+      "archiveOne",
+      "restoreOne",
+      "bulkConfirm",
+      "bulkUpdate",
+      "changeGarmentAvailability",
+      "bulkAvailability",
+      "submitManualGarment",
+      "saveThumbnailSelection",
+      "cutoutGarment",
+      "analyzeVisionTags"
+    ]) {
+      expect(namedFunctionSource(source, functionName), functionName)
+        .toContain("queueGarmentMutation");
+    }
+
+    for (const functionName of [
+      "updateOne",
+      "changeGarmentAvailability",
+      "submitManualGarment",
+      "saveThumbnailSelection",
+      "cutoutGarment",
+      "analyzeVisionTags"
+    ]) {
+      expect(namedFunctionSource(source, functionName), functionName)
+        .toContain("commitCurrentGarmentMutation");
+    }
+
+    const updateOne = namedFunctionSource(source, "updateOne");
+    expect(updateOne).toContain("beginGarmentMutation");
+    expect(updateOne).not.toContain("garmentUpdateQueues.current");
+  });
+
+  it("缩略图保存只关闭或报错到发起保存的 picker 会话", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const saveThumbnailSelection = namedFunctionSource(source, "saveThumbnailSelection");
+
+    expect(saveThumbnailSelection).toContain("const pickerRequestId = thumbnailPickerRequestId.current;");
+    expect(saveThumbnailSelection.match(/thumbnailPickerRequestId\.current === pickerRequestId/g)).toHaveLength(2);
+    expect(saveThumbnailSelection).not.toContain("setThumbnailPicker(null)");
+  });
+
+  it("保存搭配刷新只提交最新读取，成功写入会失效旧快照", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const refreshSavedOutfits = namedFunctionSource(source, "refreshSavedOutfits");
+    const upsertSavedOutfit = namedFunctionSource(source, "upsertSavedOutfit");
+
+    expect(refreshSavedOutfits).toContain("savedOutfitRequestGate.begin()");
+    expect(refreshSavedOutfits.match(/savedOutfitRequest\.isCurrent\(\)/g)).toHaveLength(2);
+    expect(upsertSavedOutfit).toContain("savedOutfitRequestGate.invalidate()");
+  });
+
+  it("视觉模型状态只允许最新刷新提交成功或错误", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const refreshVisionModels = namedFunctionSource(source, "refreshVisionModels");
+
+    expect(refreshVisionModels).toContain("visionModelsRequestGate.begin()");
+    expect(refreshVisionModels.match(/visionModelsRequest\.isCurrent\(\)/g)).toHaveLength(2);
+    expect(refreshVisionModels).not.toContain("setVisionModels(await getVisionModels())");
+  });
+
+  it("衣物视觉任务按 ID 和动作独立跟踪，不借用全局页面 busy", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+
+    for (const [functionName, action] of [
+      ["cutoutGarment", "cutout-garment"],
+      ["analyzeVisionTags", "vision-tags"]
+    ] as const) {
+      const mutation = namedFunctionSource(source, functionName);
+      expect(mutation, functionName).toContain(`setGarmentVisionBusy(id, "${action}")`);
+      expect(mutation, functionName).toContain(`clearGarmentVisionBusy(id, "${action}")`);
+      expect(mutation, functionName).not.toContain("setBusyAction(");
+      expect(mutation, functionName).not.toContain("setVisionBusyId(");
+    }
+    expect(source).toContain("visionBusyActions={visionBusyActions}");
+  });
+
+  it("衣物可用状态为每个在途 ID 保留 busy，单个收尾只清理自身", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const changeAvailability = namedFunctionSource(source, "changeGarmentAvailability");
+
+    expect(changeAvailability).toContain("markGarmentAvailabilityBusy(id)");
+    expect(changeAvailability).toContain("clearGarmentAvailabilityBusy(id)");
+    expect(changeAvailability).not.toContain("setAvailabilityBusyGarmentId(");
+    expect(source).toContain("availabilityBusyGarmentIds={availabilityBusyGarmentIds}");
+  });
+
+  it("个人画像启动读取不能覆盖用户编辑或后续保存", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const refreshProfile = namedFunctionSource(source, "refreshProfile");
+
+    expect(refreshProfile).toContain("profileRequestGate.begin()");
+    expect(refreshProfile.match(/profileRequest\.isCurrent\(\)/g)).toHaveLength(2);
+    expect(namedFunctionSource(source, "updateRecommendationProfile"))
+      .toContain("profileRequestGate.invalidate()");
+    expect(namedFunctionSource(source, "saveSettings"))
+      .toContain("profileRequestGate.invalidate()");
+  });
+
+  it("所有全局动作通过同步独占锁进入，并且只匹配释放自身", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const actions = [
+      ["runImport", "import"],
+      ["startOrdersCapture", "capture-orders"],
+      ["startItemCapture", "capture-item"],
+      ["readLatestCapture", "read-capture"],
+      ["previewImport", "preview-import"],
+      ["bulkConfirm", "bulk-confirm"],
+      ["bulkUpdate", "bulk-update"],
+      ["bulkAvailability", "bulk-availability"],
+      ["refreshThumbnails", "refresh-thumbnails"],
+      ["downloadLocalVisionModel", "download-vision-model"],
+      ["verifyLocalVisionModel", "verify-vision-model"],
+      ["locate", "locate"],
+      ["fetchForecast", "weather"],
+      ["saveSettings", "save-settings"],
+      ["refreshHistory", "history"],
+      ["exportBackup", "export"],
+      ["exportCompleteBackup", "export-complete"]
+    ] as const;
+
+    expect(source).toContain("createExclusiveActionLock<BusyAction>()");
+    for (const [functionName, action] of actions) {
+      const actionSource = namedFunctionSource(source, functionName);
+      expect(actionSource, functionName).toContain(`tryStartBusyAction("${action}")`);
+      expect(actionSource, functionName).toContain(`finishBusyAction("${action}")`);
+      expect(actionSource, functionName).not.toContain("setBusyAction(");
+    }
+
+    const recommendationStart = source.indexOf("async function requestRecommendations");
+    const recommendationEnd = source.indexOf("\n  function useGarmentAsCore", recommendationStart);
+    expect(recommendationStart).toBeGreaterThanOrEqual(0);
+    expect(recommendationEnd).toBeGreaterThan(recommendationStart);
+    const recommendationSource = source.slice(recommendationStart, recommendationEnd);
+    expect(recommendationSource).toContain('tryStartBusyAction("recommend")');
+    expect(recommendationSource).toContain('finishBusyAction("recommend")');
+    expect(recommendationSource).not.toContain("setBusyAction(");
+
+    const readCaptureSource = namedFunctionSource(source, "readLatestCapture");
+    expect(readCaptureSource.indexOf("invalidateImportPreviewRequest()"))
+      .toBeLessThan(readCaptureSource.indexOf('tryStartBusyAction("read-capture")'));
+
+    expect(namedFunctionSource(source, "invalidateImportPreviewRequest"))
+      .toContain('finishBusyAction("preview-import")');
+    expect(namedFunctionSource(source, "invalidateRecommendationRequest"))
+      .toContain('finishBusyAction("weather")');
+    expect(namedFunctionSource(source, "invalidateRecommendationRequest"))
+      .toContain('finishBusyAction("recommend")');
+    expect(namedFunctionSource(source, "invalidateLocationRequest"))
+      .toContain('finishBusyAction("locate")');
+  });
+
+  it("页面中的全局异步入口统一尊重全局 busy", () => {
+    const importSource = readFileSync(new URL("../src/features/import/ImportView.tsx", import.meta.url), "utf8");
+    const wardrobeSource = readFileSync(new URL("../src/features/wardrobe/WardrobeView.tsx", import.meta.url), "utf8");
+    const settingsSource = readFileSync(new URL("../src/features/settings/SettingsView.tsx", import.meta.url), "utf8");
+
+    expect(importSource).toContain('disabled={props.busy && props.busyAction !== "preview-import"}');
+    expect(wardrobeSource).toMatch(/disabled=\{props\.busy\}\s+onClick=\{props\.onRefreshThumbnails\}/);
+    expect(wardrobeSource).toMatch(/disabled=\{props\.busy\}\s+onClick=\{props\.onBulkConfirm\}/);
+    expect(wardrobeSource).toContain("disabled={props.busy}\n              onSeasons={props.onBulkSeasons}");
+    expect(settingsSource).toContain("<Button disabled={props.busy} onClick={props.onRefreshVisionModels}>");
+    expect(settingsSource).toContain("disabled={props.busy || model.installed || running}");
+    expect(settingsSource).toContain("disabled={props.busy || !model.installed || running}");
+  });
+
+  it("导入预览只允许当前输入对应的请求提交结果、错误和加载收尾", () => {
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    const previewImport = namedFunctionSource(source, "previewImport");
+
+    expect(previewImport).toContain("importPreviewRequestGate.begin()");
+    expect(previewImport.match(/previewRequest\.isCurrent\(\)/g)).toHaveLength(3);
+    expect(namedFunctionSource(source, "updateImportText"))
+      .toContain("invalidateImportPreviewRequest()");
+    expect(namedFunctionSource(source, "readLatestCapture"))
+      .toContain("invalidateImportPreviewRequest()");
+  });
+
+  it("正式导入期间锁定原始 JSON 和所有导入动作，预览期间仍允许编辑以取消旧结果", () => {
+    const baseProps = {
+      bookmarklet: "javascript:void(0)",
+      importText: "{}",
+      importResult: null,
+      importPreview: null,
+      importDecisions: {},
+      filterSummary: null,
+      captureUrl: "https://item.taobao.com/item.htm?id=1",
+      captureEngine: "selenium" as const,
+      captureResult: null,
+      onCopyBookmarklet: vi.fn(),
+      onImportText: vi.fn(),
+      onImport: vi.fn(),
+      onPreviewImport: vi.fn(),
+      onCaptureUrl: vi.fn(),
+      onCaptureEngine: vi.fn(),
+      onStartOrdersCapture: vi.fn(),
+      onStartItemCapture: vi.fn(),
+      onReadLatestCapture: vi.fn()
+    };
+    const previewing = ImportView({
+      ...baseProps,
+      busy: true,
+      busyAction: "preview-import"
+    });
+    const importing = ImportView({
+      ...baseProps,
+      busy: true,
+      busyAction: "import"
+    });
+    const rawJson = (tree: ReactNode) => {
+      let match: ReactElement | undefined;
+      const visit = (node: ReactNode) => {
+        if (match) return;
+        if (Array.isArray(node)) {
+          node.forEach(visit);
+          return;
+        }
+        if (!isValidElement(node)) return;
+        if (node.type === "textarea" && node.props.id === "import-json") {
+          match = node;
+          return;
+        }
+        visit(node.props.children);
+      };
+      visit(tree);
+      if (!match) throw new Error("未找到原始 JSON 文本框");
+      return match;
+    };
+
+    expect(rawJson(previewing).props.disabled).not.toBe(true);
+    expect(rawJson(importing).props.disabled).toBe(true);
+    expect(findButtonsByText(importing, "采集订单页")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(importing, "采集商品详情")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(importing, "读取产物")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(importing, "预览")[0].props.disabled).toBe(true);
   });
 
   it("stores remote image consent only in session storage", () => {
@@ -615,6 +922,45 @@ describe("App", () => {
     expect(markup).toContain('role="status"');
   });
 
+  it("推荐卡异步动作进行中时会锁定所有候选卡片", () => {
+    const weather = makeWeather();
+    const first = makeOutfit();
+    const second: OutfitRecommendation = {
+      ...makeOutfit(),
+      id: "22222222-2222-4222-8222-222222222222",
+      candidateId: "22222222-2222-4222-8222-222222222222",
+      outfitSignature: "b".repeat(64),
+      reasons: ["备选搭配"]
+    };
+    const tree = RecommendationView({
+      weather,
+      recommendations: {
+        runId: 1,
+        weather,
+        occasion: "casual",
+        outfits: [first, second],
+        missingSlots: []
+      },
+      occasion: "casual",
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: false,
+      cardActionBusy: true,
+      recordingOutfitId: first.candidateId,
+      savingOutfitId: first.candidateId,
+      schedulingOutfitId: null,
+      wearLogFeedback: null,
+      onOccasion: vi.fn(),
+      onFetchWeather: vi.fn(),
+      onGenerate: vi.fn(),
+      onRecordWearLog: vi.fn()
+    } as Parameters<typeof RecommendationView>[0] & { cardActionBusy: boolean });
+    const stages = findElementsByComponentName(tree, "OutfitStage");
+
+    expect(stages).toHaveLength(2);
+    expect(stages.map((stage) => stage.props.actionBusy)).toEqual([true, true]);
+  });
+
   it("renders wardrobe labels, color names, and season chips in Chinese without visible enum text", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -886,6 +1232,91 @@ describe("App", () => {
     });
   });
 
+  it("keeps every pending garment vision action disabled with its own label", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        visionBusyActions?: ReadonlyMap<number, "cutout-garment" | "vision-tags">;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+        onCutoutGarment?: (id: number) => void;
+        onAnalyzeGarmentVision?: (id: number) => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const tree = WardrobeView?.({
+      garments: [
+        makeGarment(451, "去背景处理中", "top"),
+        makeGarment(452, "视觉分析处理中", "bottom")
+      ],
+      selectedIds: [],
+      busy: false,
+      visionBusyActions: new Map([
+        [451, "cutout-garment"],
+        [452, "vision-tags"]
+      ]),
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      onCutoutGarment: vi.fn(),
+      onAnalyzeGarmentVision: vi.fn()
+    });
+    const garmentItems = findElementsByComponentName(tree, "GarmentItem");
+    const cutoutTree = renderFunctionElement(garmentItems[0]);
+    const analysisTree = renderFunctionElement(garmentItems[1]);
+
+    expect(findButtonsByText(cutoutTree, "处理中")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(cutoutTree, "分析图片")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(analysisTree, "分析中")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(analysisTree, "去背景")[0].props.disabled).toBe(true);
+  });
+
+  it("keeps every pending garment availability control busy independently", async () => {
+    const appModule = await import("../src/App");
+    const WardrobeView = (appModule as {
+      WardrobeView?: (props: {
+        garments: Garment[];
+        selectedIds: number[];
+        busy: boolean;
+        availabilityBusyGarmentIds?: ReadonlySet<number>;
+        onRefresh: () => void;
+        onSelect: (ids: number[]) => void;
+        onUpdate: (id: number, update: Partial<Garment>) => void;
+        onDelete: (id: number) => void;
+        onBulkConfirm: () => void;
+        onAvailabilityChange?: (id: number, status: Garment["availabilityStatus"]) => void;
+      }) => ReactNode;
+    }).WardrobeView;
+    const tree = WardrobeView?.({
+      garments: [
+        makeGarment(461, "待洗处理中", "top"),
+        makeGarment(462, "维修处理中", "bottom")
+      ],
+      selectedIds: [],
+      busy: false,
+      availabilityBusyGarmentIds: new Set([461, 462]),
+      onRefresh: vi.fn(),
+      onSelect: vi.fn(),
+      onUpdate: vi.fn(),
+      onDelete: vi.fn(),
+      onBulkConfirm: vi.fn(),
+      onAvailabilityChange: vi.fn()
+    });
+    const garmentItems = findElementsByComponentName(tree, "GarmentItem");
+    const firstMenu = findElementsByComponentName(renderFunctionElement(garmentItems[0]), "AvailabilityMenu")[0];
+    const secondMenu = findElementsByComponentName(renderFunctionElement(garmentItems[1]), "AvailabilityMenu")[0];
+
+    expect(firstMenu.props.busy).toBe(true);
+    expect(secondMenu.props.busy).toBe(true);
+  });
+
   it("marks a visual suggestion as applied when the garment already matches it", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -1148,6 +1579,76 @@ describe("App", () => {
     expect(markup).toContain("较黑黄");
     expect(markup).toContain("白色,蓝色");
     expect(markup).toContain("黄色,棕色");
+  });
+
+  it("其他全局动作进行中时禁止再次启动定位或保存设置", () => {
+    const tree = SettingsView({
+      latitude: "39.9042",
+      longitude: "116.4074",
+      busy: true,
+      busyAction: "recommend",
+      profile: {},
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn()
+    });
+
+    expect(findButtonsByText(tree, "定位")[0].props.disabled).toBe(true);
+    expect(findButtonsByText(tree, "保存")[0].props.disabled).toBe(true);
+  });
+
+  it("保存设置期间锁定本次快照字段，并在其他动作期间保持可编辑", () => {
+    const props = {
+      latitude: "39.9042",
+      longitude: "116.4074",
+      profile: { heightCm: 176 },
+      onLatitude: vi.fn(),
+      onLongitude: vi.fn(),
+      onLocate: vi.fn(),
+      onSave: vi.fn(),
+      onProfile: vi.fn()
+    };
+    const savedFieldIds = new Set([
+      "settings-latitude",
+      "settings-longitude",
+      "profile-height",
+      "profile-weight",
+      "profile-body-type",
+      "profile-skin-tone",
+      "profile-color-disposition",
+      "profile-temperature",
+      "profile-preferred-colors",
+      "profile-avoided-colors",
+      "profile-preferred-styles"
+    ]);
+    const savedFields = (tree: ReactNode) => [
+      ...findElementsByComponentName(tree, "Field"),
+      ...findElementsByComponentName(tree, "SelectField")
+    ].filter((field) => savedFieldIds.has(String(field.props.id)));
+
+    const savingTree = SettingsView({
+      ...props,
+      busy: true,
+      busyAction: "save-settings"
+    });
+    const recommendingTree = SettingsView({
+      ...props,
+      busy: true,
+      busyAction: "recommend"
+    });
+
+    expect(savedFields(savingTree)).toHaveLength(savedFieldIds.size);
+    expect(savedFields(savingTree).every((field) => field.props.disabled === true)).toBe(true);
+    expect(savedFields(recommendingTree).every((field) => field.props.disabled !== true)).toBe(true);
+
+    const source = readFileSync(new URL("../src/app/App.tsx", import.meta.url), "utf8");
+    expect(namedFunctionSource(source, "saveSettings")).toContain("settingsSaveInProgress.current");
+    expect(namedFunctionSource(source, "updateLatitude")).toContain("settingsSaveInProgress.current");
+    expect(namedFunctionSource(source, "updateLongitude")).toContain("settingsSaveInProgress.current");
+    expect(namedFunctionSource(source, "updateRecommendationProfile"))
+      .toContain("settingsSaveInProgress.current");
   });
 
   it("keeps blank profile numbers undefined instead of saving them as zero", () => {
@@ -1641,6 +2142,26 @@ describe("App", () => {
     expect(markup).not.toContain("liquid-");
   });
 
+  it("历史页任一全局动作进行时统一禁用刷新、反馈和两种导出", () => {
+    for (const busyAction of ["history", "export", "export-complete", "recommend"] as const) {
+      const markup = renderToStaticMarkup(
+        <HistoryInsightsView
+          insights={null}
+          wearLogs={[]}
+          recommendationRuns={[]}
+          busy
+          busyAction={busyAction}
+          onRefresh={vi.fn()}
+          onManageFeedback={vi.fn()}
+          onExport={vi.fn()}
+          onExportComplete={vi.fn()}
+        />
+      );
+
+      expect(markup.match(/<button[^>]*disabled=""/g), busyAction).toHaveLength(4);
+    }
+  });
+
   it("asks for explicit confirmation before archiving a garment", async () => {
     const appModule = await import("../src/App");
     const WardrobeView = (appModule as {
@@ -1791,6 +2312,21 @@ describe("App", () => {
     expect(cssRule(styles, ".outfit-stage")).toMatch(/overflow:\s*hidden;/);
     expect(cssRule(styles, ".outfit-stage__match")).toMatch(/display:\s*grid;/);
     expect(cssRule(styles, ".outfit-stage__match")).toMatch(/min-width:\s*4\.8rem;/);
+  });
+
+  it("让分栏推荐页的空态正文保有可读宽度，并在窄屏恢复单列", () => {
+    const styles = readAppStyles();
+
+    expect(cssRule(styles, ".recommendation-empty-stage .ui-empty"))
+      .toMatch(/grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\);/);
+    expect(cssRule(styles, ".recommendation-empty-stage .ui-empty__action"))
+      .toMatch(/grid-column:\s*2;/);
+    expect(styles).toMatch(
+      /@media\s+\(max-width:\s*640px\)[\s\S]*?\.recommendation-empty-stage\s+\.ui-empty\s*{[\s\S]*?grid-template-columns:\s*1fr;/
+    );
+    expect(styles).toMatch(
+      /@media\s+\(max-width:\s*640px\)[\s\S]*?\.recommendation-empty-stage\s+\.ui-empty__action\s*{[\s\S]*?grid-column:\s*auto;/
+    );
   });
 
   it("uses resilient semantic layouts for wardrobe filters and technical paths", () => {
@@ -2354,6 +2890,12 @@ describe("App", () => {
     expect(cssRule(styles, ".vision-models")).toMatch(/display:\s*grid;/);
   });
 
+  it("reserves stable history title space while action labels change", () => {
+    const styles = readAppStyles();
+
+    expect(cssRule(styles, ".history-insights-view .page-intro__copy")).toMatch(/min-width:\s*12rem;/);
+  });
+
   it("keeps garment identity and actions resilient beside long brand names", () => {
     const styles = readAppStyles();
 
@@ -2865,6 +3407,22 @@ function readAppStyles(): string {
   const modules = Array.from(entry.matchAll(/@import\s+"\.\/styles\/([^";]+)";/g), (match) => match[1])
     .map((name) => readFileSync(new URL(name, stylesDirectory), "utf8"));
   return [entry, ...modules].join("\n");
+}
+
+function namedFunctionSource(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`找不到函数 ${name}`);
+  const openingBrace = source.indexOf("{", start);
+  if (openingBrace < 0) throw new Error(`函数 ${name} 缺少函数体`);
+  let depth = 0;
+  for (let index = openingBrace; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  throw new Error(`函数 ${name} 缺少闭合括号`);
 }
 
 function elementText(node: ReactNode): string {

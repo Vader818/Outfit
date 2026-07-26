@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { archiveGarment, createDatabase, listGarments, type AppDatabase } from "../server/db";
+import { archiveGarment, listGarments, type AppDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
 import { recommendOutfits } from "../server/services/recommend";
 import { persistRecommendationSnapshot } from "../server/services/recommendationCandidates";
@@ -12,6 +12,7 @@ import {
   saveRecommendationCandidate,
   updateSavedOutfit
 } from "../server/services/savedOutfits";
+import { createDatabase } from "./helpers/testDatabase";
 
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
 let nextUsername = 0;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import type { AppDatabase } from "../server/db";
 import {
   DEFAULT_CLIP_MODEL_ID,
   calculateGarmentSimilarity,
@@ -11,6 +11,7 @@ import {
   upsertSimilarityFeedback
 } from "../server/services/garmentSimilarity";
 import type { Garment } from "../src/shared/types";
+import { createDatabase } from "./helpers/testDatabase";
 
 describe("garment similarity scoring", () => {
   it("normalizes Unicode width, case and whitespace deterministically", () => {
@@ -72,6 +73,29 @@ describe("garment similarity scoring", () => {
     });
     expect(isPossibleDuplicate(75)).toBe(true);
     expect(isPossibleDuplicate(74.9)).toBe(false);
+  });
+
+  it("treats the classifier's unknown color sentinel as missing evidence", () => {
+    const subject = garment({
+      id: 1,
+      color: "unknown",
+      styles: ["casual"],
+      name: "甲甲甲"
+    });
+    const compared = garment({
+      id: 2,
+      color: "unknown",
+      styles: ["casual"],
+      name: "乙乙乙"
+    });
+
+    const result = calculateGarmentSimilarity(subject, compared);
+    expect(result).toEqual({
+      similarity: 57.1,
+      availableWeight: 35,
+      reasons: ["风格重合 1/1", "品牌与名称相似度 0%"]
+    });
+    expect(isPossibleDuplicate(result!.similarity)).toBe(false);
   });
 
   it("builds stable server candidate fingerprints without order metadata or paths", () => {

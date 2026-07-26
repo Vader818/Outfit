@@ -3,7 +3,7 @@ import helmet from "helmet";
 import { AUTH_COOKIE_NAME, SESSION_TTL_SECONDS, authenticateUser, createFirstUser, createSession, deleteSession, getAuthStatus, getUserForSession } from "./auth";
 import type { AppDatabase, ThumbnailRefreshOptions } from "./db";
 import type { OutfitOccasion, WearLogEntry, WeatherSnapshot } from "../src/shared/types";
-import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, selectGarmentThumbnail } from "./db";
+import { commitTaobaoImport, getCachedWeather, getPersonalProfile, getWardrobeInsights, isWeatherSnapshot, listGarmentThumbnailCandidates, listGarments, listRecentlyWornGarmentIds, listRecommendationRuns, previewTaobaoImportForDb, refreshGarmentThumbnails, savePersonalProfile, saveWeatherCache, selectGarmentThumbnail } from "./db";
 import { buildOutfitExportV2, previewOutfitExportZip, writeOutfitExportZip } from "./services/export";
 import { recommendOutfits } from "./services/recommend";
 import { persistRecommendationSnapshot } from "./services/recommendationCandidates";
@@ -22,6 +22,7 @@ import { registerDecisionSupportRoutes } from "./routes/decisionSupport";
 import { listWearEvents } from "./services/wearEvents";
 import { registerTripRoutes } from "./routes/trips";
 import type { TripWeatherForecast } from "./services/tripPlanner";
+import { createLoginRateLimiter } from "./loginRateLimiter";
 
 export interface ApiAppOptions {
   thumbnailCaptureRoot?: string;
@@ -30,9 +31,13 @@ export interface ApiAppOptions {
   thumbnailMaxDownloadsPerGarment?: number;
   thumbnailDelayMs?: number;
   garmentAssetRoot?: string;
+  taobaoCaptureJobTimeoutMs?: number;
   visionModelRoot?: string;
   visionDevice?: VisionServiceOptions["visionDevice"];
   rembgProvider?: VisionServiceOptions["rembgProvider"];
+  visionModelJobTimeoutMs?: VisionServiceOptions["visionModelJobTimeoutMs"];
+  visionProcessTimeoutMs?: VisionServiceOptions["visionProcessTimeoutMs"];
+  visionProcessMaxOutputBytes?: VisionServiceOptions["visionProcessMaxOutputBytes"];
   runRembg?: VisionServiceOptions["runRembg"];
   inferVisionTags?: VisionServiceOptions["inferVisionTags"];
   fetchTripWeatherForecast?: TripWeatherForecast;
@@ -145,7 +150,10 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
   });
 
   app.post("/api/capture/jobs", (request, response) => {
-    handle(response, () => startTaobaoCaptureJob(validateCaptureJobRequest(request.body)));
+    handle(response, () => startTaobaoCaptureJob(
+      validateCaptureJobRequest(request.body),
+      { timeoutMs: options.taobaoCaptureJobTimeoutMs }
+    ));
   });
 
   app.get("/api/capture/jobs/:id", (request, response) => {
@@ -283,6 +291,9 @@ export function createApiApp(db: AppDatabase, options: ApiAppOptions = {}): expr
       assetRoot: options.garmentAssetRoot
     }).catch((error: unknown) => {
       if (!response.headersSent) {
+        response.removeHeader("Content-Disposition");
+        response.removeHeader("Content-Type");
+        response.removeHeader("Content-Length");
         sendError(response, error);
         return;
       }
@@ -421,7 +432,11 @@ function getCachedWeatherForecast(
   } | undefined;
   if (!row) return null;
   const fetchedAt = Date.parse(row.fetched_at);
-  if (Number.isFinite(maxAgeMs) && (!Number.isFinite(fetchedAt) || Date.now() - fetchedAt > maxAgeMs)) {
+  if (!Number.isFinite(fetchedAt)) {
+    return null;
+  }
+  const ageMs = Date.now() - fetchedAt;
+  if (ageMs < 0 || (Number.isFinite(maxAgeMs) && ageMs > maxAgeMs)) {
     return null;
   }
   try {
@@ -459,18 +474,6 @@ function saveWeatherForecastCache(
 
 function weatherForecastCacheKey(latitude: number, longitude: number, days: number): string {
   return `weather-forecast:${latitude.toFixed(4)}:${longitude.toFixed(4)}:${days}`;
-}
-
-function isWeatherSnapshot(value: unknown): value is WeatherSnapshot {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const snapshot = value as Partial<WeatherSnapshot>;
-  return typeof snapshot.date === "string" &&
-    typeof snapshot.temperature === "number" &&
-    typeof snapshot.apparentTemperature === "number" &&
-    typeof snapshot.precipitationProbability === "number" &&
-    typeof snapshot.windSpeed === "number" &&
-    typeof snapshot.weatherCode === "number" &&
-    typeof snapshot.summary === "string";
 }
 
 const LEGACY_WEAR_OCCASIONS = new Set<OutfitOccasion>([
@@ -584,6 +587,9 @@ function visionOptions(options: ApiAppOptions): VisionServiceOptions {
     thumbnailMaxDownloadsPerGarment: options.thumbnailMaxDownloadsPerGarment,
     visionDevice: options.visionDevice,
     rembgProvider: options.rembgProvider,
+    visionModelJobTimeoutMs: options.visionModelJobTimeoutMs,
+    visionProcessTimeoutMs: options.visionProcessTimeoutMs,
+    visionProcessMaxOutputBytes: options.visionProcessMaxOutputBytes,
     runRembg: options.runRembg,
     inferVisionTags: options.inferVisionTags
   };
@@ -634,53 +640,6 @@ function isTrustedMutatingRequest(request: Request): boolean {
   } catch {
     return false;
   }
-}
-
-function createLoginRateLimiter(): {
-  assertAllowed: (request: Request, username: string) => void;
-  recordFailure: (request: Request, username: string) => void;
-  reset: (request: Request, username: string) => void;
-} {
-  const failures = new Map<string, { count: number; firstFailureAt: number }>();
-  const maxFailures = 5;
-  const windowMs = 15 * 60 * 1000;
-
-  function key(request: Request, username: string): string {
-    return `${username.toLowerCase()}|${request.socket.remoteAddress || "unknown"}`;
-  }
-
-  function currentEntry(request: Request, username: string): { count: number; firstFailureAt: number } | undefined {
-    const entryKey = key(request, username);
-    const entry = failures.get(entryKey);
-    if (!entry) return undefined;
-    if (Date.now() - entry.firstFailureAt > windowMs) {
-      failures.delete(entryKey);
-      return undefined;
-    }
-    return entry;
-  }
-
-  return {
-    assertAllowed(request, username) {
-      const entry = currentEntry(request, username);
-      if (entry && entry.count >= maxFailures) {
-        throw new ApiError("LOGIN_RATE_LIMITED", "登录失败次数过多，请稍后再试", 429);
-      }
-    },
-    recordFailure(request, username) {
-      const entryKey = key(request, username);
-      const entry = currentEntry(request, username);
-      if (!entry) {
-        failures.set(entryKey, { count: 1, firstFailureAt: Date.now() });
-        return;
-      }
-      entry.count += 1;
-      failures.set(entryKey, entry);
-    },
-    reset(request, username) {
-      failures.delete(key(request, username));
-    }
-  };
 }
 
 function isTruthyQueryFlag(value: unknown): boolean {

@@ -28,7 +28,20 @@ export interface TaobaoLatestCaptureResult {
 
 export interface CaptureFileSystem {
   readdirSync(path: string): string[];
-  statSync(path: string): { mtimeMs: number; size?: number; isFile: () => boolean; isDirectory?: () => boolean };
+  statSync(path: string): {
+    mtimeMs: number;
+    size?: number;
+    isFile: () => boolean;
+    isDirectory?: () => boolean;
+    isSymbolicLink?: () => boolean;
+  };
+  lstatSync?(path: string): {
+    mtimeMs: number;
+    size?: number;
+    isFile: () => boolean;
+    isDirectory?: () => boolean;
+    isSymbolicLink?: () => boolean;
+  };
   readFileSync(path: string, encoding: BufferEncoding): string;
 }
 
@@ -36,9 +49,14 @@ export interface ReadLatestTaobaoCaptureOptions {
   wardrobeOnly?: boolean;
 }
 
+export interface TaobaoCaptureJobOptions {
+  timeoutMs?: number;
+}
+
 const OUTPUT_DIR = "output/taobao-captures";
 const DEFAULT_ORDER_MAX_PAGES = 3;
 const DEFAULT_LOGIN_WAIT_SECONDS = 60;
+const DEFAULT_CAPTURE_JOB_TIMEOUT_MS = 2 * 60 * 60_000;
 const MAX_CAPTURE_SCAN_DEPTH = 2;
 const MAX_CAPTURE_ARTIFACT_BYTES = 20 * 1024 * 1024;
 
@@ -49,6 +67,7 @@ interface InternalCaptureJob extends CaptureJob {
     on?: (event: string, callback: (...args: unknown[]) => void) => unknown;
   };
   logFd?: number;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 const captureJobs = new Map<string, InternalCaptureJob>();
@@ -88,7 +107,7 @@ export function startTaobaoCaptureJob(input: {
   loginWait?: number;
   url?: string;
   engine?: CaptureEngine;
-}): CaptureJob {
+}, options: TaobaoCaptureJobOptions = {}): CaptureJob {
   const activeJob = findActiveCaptureJob();
   if (activeJob) {
     throw new ApiError("CAPTURE_JOB_RUNNING", "已有采集任务正在运行，请等待完成或取消后再启动。", 409);
@@ -124,35 +143,47 @@ export function startTaobaoCaptureJob(input: {
     logFd
   };
   let completed = false;
-
-  captureJobs.set(id, job);
-  child.on?.("exit", (code, signal) => {
+  const finish = (outcome: "exit" | "error" | "timeout", code?: unknown, signal?: unknown): void => {
     if (completed || job.status === "cancelled") return;
     completed = true;
+    clearCaptureJobTimeout(job);
+    if (outcome === "timeout") {
+      terminateCaptureProcess(job);
+    }
     const artifact = findLatestJsonArtifact(job.outputDir);
     if (artifact) {
       job.status = "succeeded";
       job.artifactPath = artifact.filePath;
-      job.message = "采集完成，产物已生成。";
+      job.message = outcome === "timeout"
+        ? "采集产物已生成；挂起的采集进程已在超时后终止。"
+        : "采集完成，产物已生成。";
     } else {
       job.status = "failed";
-      job.error = code === 0 ? "采集进程结束，但没有生成 JSON 产物。" : `采集进程退出：code=${code ?? "null"} signal=${signal ?? "null"}`;
+      job.error = outcome === "timeout"
+        ? "采集任务超时，已终止挂起的采集进程。"
+        : outcome === "error"
+          ? (code instanceof Error ? code.message : String(code))
+          : code === 0
+            ? "采集进程结束，但没有生成 JSON 产物。"
+            : `采集进程退出：code=${code ?? "null"} signal=${signal ?? "null"}`;
       job.message = job.error;
     }
     job.updatedAt = new Date().toISOString();
     closeJobLog(job);
     delete job.child;
+  };
+
+  captureJobs.set(id, job);
+  job.timeout = setTimeout(
+    () => finish("timeout"),
+    configuredCaptureJobTimeout(options.timeoutMs)
+  );
+  job.timeout.unref?.();
+  child.on?.("exit", (code, signal) => {
+    finish("exit", code, signal);
   });
   child.on?.("error", (error) => {
-    if (completed || job.status === "cancelled") return;
-    completed = true;
-    const message = error instanceof Error ? error.message : String(error);
-    job.status = "failed";
-    job.error = message;
-    job.message = message;
-    job.updatedAt = new Date().toISOString();
-    closeJobLog(job);
-    delete job.child;
+    finish("error", error);
   });
 
   return publicJob(job);
@@ -173,6 +204,7 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
     throw new ApiError("NOT_FOUND", "采集任务不存在", 404);
   }
   if (job.status === "running" || job.status === "pending") {
+    clearCaptureJobTimeout(job);
     terminateCaptureProcess(job);
     job.status = "cancelled";
     job.message = "采集任务已取消。";
@@ -183,17 +215,26 @@ export function cancelTaobaoCaptureJob(id: string): CaptureJob {
   return publicJob(job);
 }
 
+export function clearTaobaoCaptureJobs(): void {
+  for (const job of captureJobs.values()) {
+    clearCaptureJobTimeout(job);
+    if (job.child) {
+      job.status = "cancelled";
+      terminateCaptureProcess(job);
+    }
+    closeJobLog(job);
+    delete job.child;
+  }
+  captureJobs.clear();
+}
+
 export function readTaobaoCaptureJobArtifact(id: string, options: ReadLatestTaobaoCaptureOptions = {}): CaptureArtifact {
   const job = captureJobs.get(id);
   if (!job) {
     throw new ApiError("NOT_FOUND", "采集任务不存在", 404);
   }
   const latest = readLatestTaobaoCapture(job.outputDir, fs, options);
-  job.status = "succeeded";
-  job.artifactPath = latest.path;
-  job.message = "采集产物已读取。";
-  job.updatedAt = new Date().toISOString();
-  closeJobLog(job);
+  recordCaptureArtifact(job, latest.path, true);
   return {
     jobId: id,
     outputDir: latest.outputDir,
@@ -354,7 +395,7 @@ function createCaptureJobId(): string {
 }
 
 function publicJob(job: InternalCaptureJob): CaptureJob {
-  const { child: _child, logFd: _logFd, ...rest } = job;
+  const { child: _child, logFd: _logFd, timeout: _timeout, ...rest } = job;
   return { ...rest };
 }
 
@@ -372,10 +413,22 @@ function refreshJobFromArtifact(job: InternalCaptureJob): void {
   if (job.status !== "running" && job.status !== "pending") return;
   const artifact = findLatestJsonArtifact(job.outputDir);
   if (!artifact) return;
-  job.status = "succeeded";
-  job.artifactPath = artifact.filePath;
-  job.message = "采集完成，产物已生成。";
+  recordCaptureArtifact(job, artifact.filePath, false);
+}
+
+function recordCaptureArtifact(job: InternalCaptureJob, artifactPath: string, wasRead: boolean): void {
+  job.artifactPath = artifactPath;
   job.updatedAt = new Date().toISOString();
+  if (job.child && (job.status === "running" || job.status === "pending")) {
+    job.message = wasRead
+      ? "采集产物已读取，等待采集进程结束。"
+      : "采集产物已生成，等待采集进程结束。";
+    return;
+  }
+  if (job.status !== "cancelled") {
+    job.status = "succeeded";
+    job.message = wasRead ? "采集产物已读取。" : "采集完成，产物已生成。";
+  }
   closeJobLog(job);
 }
 
@@ -385,6 +438,7 @@ function findLatestJsonArtifact(outputDir: string): { fileName: string; filePath
       .sort((left, right) => right.mtimeMs - left.mtimeMs || right.fileName.localeCompare(left.fileName))[0] ?? null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof ApiError && error.code === "CAPTURE_ARTIFACT_UNSAFE") return null;
     throw error;
   }
 }
@@ -423,10 +477,16 @@ function readCaptureDirectory(outputDir: string, fileSystem: CaptureFileSystem):
 }
 
 function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, depth = 0): Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> {
+  if (depth === 0) {
+    assertSafeCaptureRoot(outputDir, fileSystem);
+  }
   const candidates: Array<{ fileName: string; filePath: string; mtimeMs: number; size?: number }> = [];
   for (const fileName of readCaptureDirectory(outputDir, fileSystem)) {
     const filePath = path.join(outputDir, fileName);
-    const stat = fileSystem.statSync(filePath);
+    const stat = fileSystem.lstatSync?.(filePath) ?? fileSystem.statSync(filePath);
+    if (stat.isSymbolicLink?.()) {
+      continue;
+    }
     if (stat.isFile() && fileName.toLowerCase().endsWith(".json")) {
       candidates.push({ fileName, filePath, mtimeMs: stat.mtimeMs, size: stat.size });
       continue;
@@ -436,6 +496,24 @@ function collectJsonArtifacts(outputDir: string, fileSystem: CaptureFileSystem, 
     }
   }
   return candidates;
+}
+
+function assertSafeCaptureRoot(outputDir: string, fileSystem: CaptureFileSystem): void {
+  if (!fileSystem.lstatSync) return;
+  let stat: ReturnType<NonNullable<CaptureFileSystem["lstatSync"]>>;
+  try {
+    stat = fileSystem.lstatSync(outputDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (stat.isSymbolicLink?.() || !stat.isDirectory?.()) {
+    throw new ApiError(
+      "CAPTURE_ARTIFACT_UNSAFE",
+      "采集产物目录不是安全的本地目录。",
+      400
+    );
+  }
 }
 
 function terminateCaptureProcess(job: InternalCaptureJob): void {
@@ -452,6 +530,18 @@ function terminateCaptureProcess(job: InternalCaptureJob): void {
       // The child may already be gone.
     }
   }
+}
+
+function configuredCaptureJobTimeout(value: number | undefined): number {
+  return Number.isFinite(value) && Number(value) > 0
+    ? Math.floor(Number(value))
+    : DEFAULT_CAPTURE_JOB_TIMEOUT_MS;
+}
+
+function clearCaptureJobTimeout(job: InternalCaptureJob): void {
+  if (!job.timeout) return;
+  clearTimeout(job.timeout);
+  delete job.timeout;
 }
 
 function closeJobLog(job: InternalCaptureJob): void {

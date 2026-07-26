@@ -121,6 +121,27 @@ export function applyGarmentPatch(garments: Garment[], id: number, update: Parti
   return garments.map((item) => (item.id === id ? { ...item, ...update } : item));
 }
 
+const RECOMMENDATION_CONSTRAINT_GARMENT_FIELDS = [
+  "category",
+  "owned",
+  "confirmed",
+  "excluded",
+  "archivedAt",
+  "availabilityStatus"
+] as const satisfies readonly (keyof Garment)[];
+
+export function garmentPatchAffectsRecommendationConstraints(update: Partial<Garment>): boolean {
+  return RECOMMENDATION_CONSTRAINT_GARMENT_FIELDS.some((field) =>
+    Object.prototype.hasOwnProperty.call(update, field)
+  );
+}
+
+export function omitGarmentIds(ids: readonly number[], omittedIds: readonly number[]): number[] {
+  if (!omittedIds.length) return [...ids];
+  const omitted = new Set(omittedIds);
+  return ids.filter((id) => !omitted.has(id));
+}
+
 export function stringSetEquals(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   const normalized = new Set(left);

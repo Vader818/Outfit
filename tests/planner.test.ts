@@ -1,6 +1,5 @@
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { createDatabase, legacyBaseline0, migrate, type AppDatabase } from "../server/db";
+import { legacyBaseline0, migrate, type AppDatabase } from "../server/db";
 import {
   createWearEvent,
   deleteWearEvent,
@@ -14,9 +13,7 @@ import {
   markOutfitPlanWorn,
   updateOutfitPlan
 } from "../server/services/outfitPlanner";
-
-const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+import { createDatabase, TestDatabaseSync as DatabaseSync } from "./helpers/testDatabase";
 
 const weather = {
   date: "2026-07-14",

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   archiveGarment,
-  createDatabase,
   getWardrobeInsights,
   listRecentlyWornGarmentIds,
   type AppDatabase
 } from "../server/db";
 import { createWearEvent, deleteWearEvent, updateWearEvent } from "../server/services/wearEvents";
+import { createDatabase } from "./helpers/testDatabase";
 
 describe("M4 wardrobe insight event facts", () => {
   it("rolls counts and never-worn membership back immediately after event item edits and deletion", () => {

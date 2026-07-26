@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 import { finished } from "node:stream/promises";
-import archiver, { type Archiver } from "archiver";
+import * as archiverRuntime from "archiver";
+import type { Archiver, ArchiverOptions } from "archiver";
 import type {
   FeedbackReason,
   FeedbackVerdict,
@@ -37,6 +38,10 @@ import {
 } from "./garmentAssets";
 import { listSavedOutfits } from "./savedOutfits";
 import { listTrips } from "./tripPlanner";
+
+const ZipArchive = (archiverRuntime as unknown as {
+  ZipArchive: new (options?: ArchiverOptions) => Archiver;
+}).ZipArchive;
 
 export const OUTFIT_EXPORT_V2_FEATURES = [
   "versioned-migrations",
@@ -405,7 +410,7 @@ export async function writeOutfitExportZip(
   const exported = buildOutfitExportV2(db, options);
   const assetRoot = options.assetRoot ?? DEFAULT_GARMENT_ASSET_ROOT;
   const archiveDate = validArchiveDate(exported.exportedAt);
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const streamFailure = archiveFailure(archive, destination);
   archive.pipe(destination);
   const destinationFinished = finished(destination, { readable: false });
@@ -892,7 +897,7 @@ function listSavedOutfitsForExport(db: AppDatabase): SavedOutfit[] {
 function listRecommendationFeedbackForExport(db: AppDatabase): RecommendationFeedback[] {
   const rows = db.prepare(`
     SELECT id, candidate_id, verdict, rating, actually_worn, reason_codes_json,
-      comment, wore_instead_outfit_id, wear_log_id, created_at, updated_at
+      comment, wore_instead_outfit_id, wear_log_id, wear_event_id, created_at, updated_at
     FROM recommendation_feedback
     ORDER BY created_at ASC, id ASC
   `).all() as Array<{
@@ -905,6 +910,7 @@ function listRecommendationFeedbackForExport(db: AppDatabase): RecommendationFee
     comment: string;
     wore_instead_outfit_id: number | null;
     wear_log_id: number | null;
+    wear_event_id: number | null;
     created_at: string;
     updated_at: string;
   }>;
@@ -942,13 +948,16 @@ function listRecommendationFeedbackForExport(db: AppDatabase): RecommendationFee
       candidateId: row.candidate_id,
       ...(row.verdict === null ? {} : { verdict: row.verdict }),
       ...(row.rating === null ? {} : { rating: row.rating }),
-      actuallyWorn: Boolean(row.actually_worn),
+      actuallyWorn: Boolean(row.actually_worn) ||
+        row.wear_event_id !== null ||
+        row.wear_log_id !== null,
       reasonCodes: reasonCodes as FeedbackReason[],
       comment: row.comment,
       ...(row.wore_instead_outfit_id === null
         ? {}
         : { woreInsteadOutfitId: row.wore_instead_outfit_id }),
       ...(row.wear_log_id === null ? {} : { wearLogId: row.wear_log_id }),
+      ...(row.wear_event_id === null ? {} : { wearEventId: row.wear_event_id }),
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -1703,6 +1712,7 @@ function isRecommendationFeedbackShape(value: unknown): value is RecommendationF
     typeof value.comment === "string" &&
     hasOptionalPositiveSafeInteger(value, "woreInsteadOutfitId") &&
     hasOptionalPositiveSafeInteger(value, "wearLogId") &&
+    hasOptionalPositiveSafeInteger(value, "wearEventId") &&
     typeof value.createdAt === "string" &&
     value.createdAt.length > 0 &&
     typeof value.updatedAt === "string" &&

@@ -1,18 +1,21 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import { createDatabase as createAppDatabase, type AppDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
+import { clearTaobaoCaptureJobs } from "../server/services/taobaoCapture";
+import { clearVisionJobs } from "../server/services/vision";
 
 vi.mock("node:child_process", () => ({
   spawn: vi.fn()
 }));
 
 const servers: Array<{ close: (callback?: () => void) => void }> = [];
+const databases: AppDatabase[] = [];
 const spawnMock = vi.mocked(spawn);
 let nextTestUserId = 0;
 let spawnedChild: {
@@ -79,6 +82,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  clearTaobaoCaptureJobs();
+  clearVisionJobs();
   spawnMock.mockClear();
   delete process.env.OUTFIT_TAOBAO_ITEM_CAPTURE_ENGINE;
   vi.restoreAllMocks();
@@ -88,10 +93,19 @@ afterEach(async () => {
       (server) =>
         new Promise<void>((resolve) => {
           server.close(() => resolve());
-        })
+      })
     )
   );
+  for (const database of databases.splice(0)) {
+    database.close();
+  }
 });
+
+function createDatabase(databasePath = ":memory:"): AppDatabase {
+  const database = createAppDatabase(databasePath);
+  databases.push(database);
+  return database;
+}
 
 describe("API routes", () => {
   it("sets baseline browser security headers", async () => {
@@ -606,6 +620,187 @@ describe("API routes", () => {
         keptItems: 1
       }
     });
+    await fetch(`${baseUrl}/api/capture/jobs/${job.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+  });
+
+  it("keeps the capture lock until the child exits even when an artifact already exists", async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (...args: unknown[]) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; outputDir: string };
+    expect(startResponse.status).toBe(200);
+    const originalExitListener = listeners.get("exit");
+    expect(originalExitListener).toEqual(expect.any(Function));
+
+    mkdirSync(job.outputDir, { recursive: true });
+    writeFileSync(path.join(job.outputDir, "capture.json"), JSON.stringify({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: []
+    }), "utf8");
+    const artifactResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}/artifact`, {
+      headers: { cookie: authCookie }
+    });
+    expect(artifactResponse.status).toBe(200);
+
+    const statusBeforeExitResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    const statusBeforeExit = await statusBeforeExitResponse.json() as { status: string };
+    const blockedResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const blockedBody = await blockedResponse.json() as { id?: string; error?: { code?: string } };
+    if (blockedResponse.status === 200 && blockedBody.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${blockedBody.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+
+    originalExitListener?.(0, null);
+    const restartedResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const restarted = await restartedResponse.json() as { id?: string };
+    if (restartedResponse.status === 200 && restarted.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${restarted.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+
+    expect(statusBeforeExit.status).toBe("running");
+    expect(blockedResponse.status).toBe(409);
+    expect(blockedBody).toMatchObject({ error: { code: "CAPTURE_JOB_RUNNING" } });
+    expect(restartedResponse.status).toBe(200);
+  });
+
+  it("times out a hung capture job, preserves the timeout after exit, and releases the lock", async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (...args: unknown[]) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { taobaoCaptureJobTimeoutMs: 20 });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; status: string };
+    const originalExitListener = listeners.get("exit");
+    expect(startResponse.status).toBe(200);
+    expect(job.status).toBe("running");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const timedOutResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    const timedOutJob = await timedOutResponse.json() as { status: string; error?: string };
+
+    expect(timedOutJob).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+
+    originalExitListener?.(1, null);
+    const lateExitResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    expect(await lateExitResponse.json()).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+
+    const nextResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const nextJob = await nextResponse.json() as { id?: string };
+    if (nextResponse.status === 200 && nextJob.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${nextJob.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
+    expect(nextResponse.status).toBe(200);
+  });
+
+  it("keeps a completed capture artifact when terminating a hung job after timeout", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { taobaoCaptureJobTimeoutMs: 20 });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const startResponse = await fetch(`${baseUrl}/api/capture/jobs`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie),
+      body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
+    });
+    const job = await startResponse.json() as { id: string; outputDir: string };
+    expect(startResponse.status).toBe(200);
+    writeFileSync(path.join(job.outputDir, "capture.json"), JSON.stringify({
+      source: "taobao-selenium-order-list",
+      pageType: "order-list",
+      items: []
+    }), "utf8");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const statusResponse = await fetch(`${baseUrl}/api/capture/jobs/${job.id}`, {
+      headers: { cookie: authCookie }
+    });
+    const finishedJob = await statusResponse.json() as {
+      status: string;
+      artifactPath?: string;
+      message: string;
+      error?: string;
+    };
+
+    expect(finishedJob).toMatchObject({
+      status: "succeeded",
+      artifactPath: path.join(job.outputDir, "capture.json"),
+      message: expect.stringContaining("超时")
+    });
+    expect(finishedJob.error).toBeUndefined();
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
   });
 
   it("starts item-detail capture jobs with Selenium by default", async () => {
@@ -922,6 +1117,13 @@ describe("API routes", () => {
       headers: jsonHeaders(authCookie),
       body: JSON.stringify({ mode: "orders", maxPages: 1, loginWait: 30 })
     });
+    const nextJob = await nextResponse.json() as { id?: string };
+    if (nextResponse.status === 200 && nextJob.id) {
+      await fetch(`${baseUrl}/api/capture/jobs/${nextJob.id}/cancel`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      });
+    }
     expect(nextResponse.status).toBe(200);
   });
 
@@ -1756,6 +1958,34 @@ describe("API routes", () => {
     expect(invalidFormat.status).toBe(400);
     await expect(invalidFormat.json()).resolves.toMatchObject({
       error: { code: "INVALID_EXPORT_FORMAT" }
+    });
+  });
+
+  it("does not label a pre-stream ZIP export failure as a downloadable archive", async () => {
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        materials, patterns, tags
+      ) VALUES ('损坏导出衣物', 'top', 'black', 'medium', 'not-json', '[]', 'casual', '[]', '[]', '[]')
+    `).run();
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/export?format=zip`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toMatch(/application\/json/);
+    expect(response.headers.get("content-disposition")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "INTERNAL_ERROR" }
     });
   });
 
@@ -2611,12 +2841,12 @@ describe("API routes", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const value = String(url);
       if (value.includes("tiny")) {
-        return new Response(pngBody(91, 14), {
+        return new Response(await pngBody(91, 14), {
           status: 200,
           headers: { "content-type": "image/png" }
         });
       }
-      return new Response(pngBody(900, 700), {
+      return new Response(await pngBody(900, 700), {
         status: 200,
         headers: { "content-type": "image/png" }
       });
@@ -2674,10 +2904,10 @@ describe("API routes", () => {
     expect(refreshResponse.status).toBe(200);
     expect(refreshBody).toMatchObject({ scanned: 1, attemptedDownloads: 2, updated: 1 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-sample-item-1.png");
+    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-sample-item-1.webp");
     expect(unauthenticatedThumbnailResponse.status).toBe(401);
     expect(thumbnailResponse.status).toBe(200);
-    expect(thumbnailResponse.headers.get("content-type")).toContain("image/png");
+    expect(thumbnailResponse.headers.get("content-type")).toContain("image/webp");
   });
 
   it("returns selectable thumbnail candidates from the garment source and matching captures only", async () => {
@@ -2807,7 +3037,7 @@ describe("API routes", () => {
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl, realFetch);
-    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+    const fetchMock = vi.fn(async () => new Response(await pngBody(900, 700), {
       status: 200,
       headers: { "content-type": "image/png" }
     }));
@@ -2823,10 +3053,10 @@ describe("API routes", () => {
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledWith(fixture.detailUrl, expect.any(Object));
-    expect(body.imageUrl).toBe("/api/garment-thumbnails/garment-1-manual-shirt.png");
+    expect(body.imageUrl).toBe("/api/garment-thumbnails/garment-1-manual-shirt.webp");
     expect(body.cutoutImageUrl).toBeUndefined();
     expect(garments[0]).toMatchObject({
-      imageUrl: "/api/garment-thumbnails/garment-1-manual-shirt.png"
+      imageUrl: "/api/garment-thumbnails/garment-1-manual-shirt.webp"
     });
     expect(garments[0].cutoutImageUrl).toBeUndefined();
   });
@@ -2922,6 +3152,102 @@ describe("API routes", () => {
     );
     expect(spawnedChild.stdout.on).toHaveBeenCalledWith("data", expect.any(Function));
     expect(spawnedChild.stderr.on).toHaveBeenCalledWith("data", expect.any(Function));
+
+    clearVisionJobs();
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+    const clearedStatusResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const clearedStatus = await clearedStatusResponse.json() as { jobs: unknown[] };
+    expect(clearedStatus.jobs).toEqual([]);
+  });
+
+  it("does not report empty local vision model files as installed", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    const clipDir = path.join(modelRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), Buffer.alloc(0));
+    for (const file of [
+      "config.json",
+      "preprocessor_config.json",
+      "special_tokens_map.json",
+      "tokenizer.json",
+      "tokenizer_config.json",
+      "vocab.json",
+      "merges.txt"
+    ]) {
+      writeFileSync(path.join(clipDir, file), Buffer.alloc(0));
+    }
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), Buffer.alloc(0));
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: modelRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json() as { models: Array<{ id: string; installed: boolean }> };
+
+    expect(response.status).toBe(200);
+    expect(body.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rembg-isnet", installed: false }),
+      expect.objectContaining({ id: "clip-vit-base-patch32", installed: false })
+    ]));
+  });
+
+  it("does not report models through a linked model root as installed", async (context) => {
+    const outsideRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-outside-test-"));
+    const linkedRootParent = mkdtempSync(path.join(tmpdir(), "outfit-models-link-parent-test-"));
+    const linkedRoot = path.join(linkedRootParent, "linked-model-root");
+    const rembgDir = path.join(outsideRoot, "rembg");
+    const clipDir = path.join(outsideRoot, "huggingface", "Xenova", "clip-vit-base-patch32");
+    mkdirSync(path.join(clipDir, "onnx"), { recursive: true });
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-rembg", "utf8");
+    for (const file of [
+      "config.json",
+      "preprocessor_config.json",
+      "special_tokens_map.json",
+      "tokenizer.json",
+      "tokenizer_config.json",
+      "vocab.json"
+    ]) {
+      writeFileSync(path.join(clipDir, file), "{}", "utf8");
+    }
+    writeFileSync(path.join(clipDir, "merges.txt"), "", "utf8");
+    writeFileSync(path.join(clipDir, "onnx", "model_quantized.onnx"), "fake-clip", "utf8");
+    try {
+      symlinkSync(outsideRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code || "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, { visionModelRoot: linkedRoot });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json() as { models: Array<{ id: string; installed: boolean }> };
+
+    expect(response.status).toBe(200);
+    expect(body.models.every((model) => model.installed === false)).toBe(true);
   });
 
   it("defaults web-triggered vision verification jobs to explicit local GPU backends", async () => {
@@ -2958,6 +3284,62 @@ describe("API routes", () => {
       })
     );
     listeners.get("close")?.(0);
+  });
+
+  it("times out hung vision model jobs and preserves the timeout after a late close", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const listeners = new Map<string, (value?: number | Error) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (value?: number | Error) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApiApp(db, {
+      visionModelRoot: modelRoot,
+      visionModelJobTimeoutMs: 20
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/vision/models/clip-vit-base-patch32/download`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const startedJob = await response.json() as { id: string; status: string };
+    expect(startedJob.status).toBe("running");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const timedOutResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const timedOutStatus = await timedOutResponse.json() as {
+      models: Array<{ id: string; job?: { id: string; status: string; error?: string } }>;
+    };
+    const timedOutJob = timedOutStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job;
+
+    expect(timedOutJob).toMatchObject({
+      id: startedJob.id,
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+
+    listeners.get("close")?.(1);
+    const lateCloseResponse = await fetch(`${baseUrl}/api/vision/models`, {
+      headers: { cookie: authCookie }
+    });
+    const lateCloseStatus = await lateCloseResponse.json() as {
+      models: Array<{ id: string; job?: { id: string; status: string; error?: string } }>;
+    };
+    expect(lateCloseStatus.models.find((model) => model.id === "clip-vit-base-patch32")?.job).toMatchObject({
+      id: startedJob.id,
+      status: "failed",
+      error: expect.stringContaining("超时")
+    });
   });
 
   it("reuses running vision jobs and reports succeeded or failed jobs in model status", async () => {
@@ -3053,7 +3435,14 @@ describe("API routes", () => {
       thumbnailOutputDir,
       visionModelRoot: modelRoot,
       runRembg: async ({ outputPath }) => {
-        writeFileSync(outputPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        await sharp({
+          create: {
+            width: 32,
+            height: 32,
+            channels: 4,
+            background: { r: 255, g: 255, b: 255, alpha: 0 }
+          }
+        }).png().toFile(outputPath);
       }
     });
     const server = app.listen(0);
@@ -3071,9 +3460,11 @@ describe("API routes", () => {
     const garments = await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ cutoutImageUrl?: string; visionUpdatedAt?: string }>;
 
     expect(response.status).toBe(200);
-    expect(body.cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-shirt-cutout.png");
+    expect(body.cutoutImageUrl).toMatch(
+      /^\/api\/garment-thumbnails\/garment-1-shirt-cutout-[0-9a-f-]{36}\.png$/
+    );
     expect(garments[0]).toMatchObject({
-      cutoutImageUrl: "/api/garment-thumbnails/garment-1-shirt-cutout.png",
+      cutoutImageUrl: body.cutoutImageUrl,
       visionUpdatedAt: expect.any(String)
     });
   });
@@ -3124,7 +3515,14 @@ describe("API routes", () => {
       ""
     );
     const runRembg = vi.fn(async ({ outputPath }) => {
-      writeFileSync(outputPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      await sharp({
+        create: {
+          width: 32,
+          height: 32,
+          channels: 4,
+          background: { r: 255, g: 255, b: 255, alpha: 0 }
+        }
+      }).png().toFile(outputPath);
     });
     const app = createApiApp(db, {
       thumbnailOutputDir,
@@ -3138,7 +3536,7 @@ describe("API routes", () => {
     if (!address || typeof address === "string") throw new Error("missing test server address");
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const authCookie = await registerTestUser(baseUrl, realFetch);
-    const fetchMock = vi.fn(async () => new Response(pngBody(900, 700), {
+    const fetchMock = vi.fn(async () => new Response(await pngBody(900, 700), {
       status: 200,
       headers: { "content-type": "image/png" }
     }));
@@ -3155,11 +3553,13 @@ describe("API routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("https://gw.alicdn.com/bao/uploaded/i1/12345/O1CN01shirt.jpg", expect.any(Object));
     expect(runRembg).toHaveBeenCalledWith(expect.objectContaining({
-      inputPath: path.join(thumbnailOutputDir, "garment-1-remote-shirt.png")
+      inputPath: path.join(thumbnailOutputDir, "garment-1-remote-shirt.webp")
     }));
-    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt.png");
-    expect(body.cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt-cutout.png");
-    expect(garments[0].cutoutImageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt-cutout.png");
+    expect(garments[0].imageUrl).toBe("/api/garment-thumbnails/garment-1-remote-shirt.webp");
+    expect(body.cutoutImageUrl).toMatch(
+      /^\/api\/garment-thumbnails\/garment-1-remote-shirt-cutout-[0-9a-f-]{36}\.png$/
+    );
+    expect(garments[0].cutoutImageUrl).toBe(body.cutoutImageUrl);
   });
 
   it("runs the default rembg wrapper with Python for garment cutouts", async () => {
@@ -3169,12 +3569,20 @@ describe("API routes", () => {
     mkdirSync(rembgDir, { recursive: true });
     writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
     writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const validCutout = await sharp({
+      create: {
+        width: 32,
+        height: 32,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 0 }
+      }
+    }).png().toBuffer();
     spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
       if (event === "close") {
         const args = spawnMock.mock.calls.at(-1)?.[1] as string[] | undefined;
         const outputIndex = args?.indexOf("--output") ?? -1;
         if (args && outputIndex >= 0) {
-          writeFileSync(args[outputIndex + 1], Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+          writeFileSync(args[outputIndex + 1], validCutout);
         }
         callback(0);
       }
@@ -3210,6 +3618,106 @@ describe("API routes", () => {
       expect.arrayContaining(["scripts/vision_rembg.py", "--input", path.join(thumbnailOutputDir, "garment-1-shirt.png"), "--provider", "cuda"]),
       expect.objectContaining({ cwd: process.cwd() })
     );
+  });
+
+  it("rejects excessive output from the default local vision process", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    spawnedChild.stdout.on.mockImplementation((event: string, callback: (chunk: string) => void) => {
+      if (event === "data") callback("output-that-is-too-large");
+      return spawnedChild.stdout;
+    });
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number) => void) => {
+      if (event === "close") callback(0);
+      return spawnedChild;
+    });
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      visionProcessMaxOutputBytes: 8
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "VISION_PROCESS_OUTPUT_LIMIT" }
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out a default local vision process that never exits", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const listeners = new Map<string, (code?: number | null) => void>();
+    spawnedChild.on.mockImplementation((event: string, callback: (code?: number | null) => void) => {
+      listeners.set(event, callback);
+      return spawnedChild;
+    });
+    spawnedChild.kill.mockImplementation(() => {
+      listeners.get("close")?.(null);
+      return true;
+    });
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      visionProcessTimeoutMs: 10
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const responseOrPending = await Promise.race([
+      fetch(`${baseUrl}/api/garments/1/cutout`, {
+        method: "POST",
+        headers: jsonHeaders(authCookie)
+      }).then(async (response) => ({
+        status: response.status,
+        body: await response.json()
+      })),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 75))
+    ]);
+
+    expect(responseOrPending).not.toBe("pending");
+    expect(responseOrPending).toMatchObject({
+      status: 504,
+      body: { error: { code: "VISION_PROCESS_TIMEOUT" } }
+    });
+    expect(spawnedChild.kill).toHaveBeenCalledTimes(1);
   });
 
   it("runs the default CLIP wrapper with the requested local GPU device", async () => {
@@ -3305,6 +3813,47 @@ describe("API routes", () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({
       error: { code: "VISION_OUTPUT_MISSING", message: expect.stringContaining("去背景输出文件") }
+    });
+    expect(garments[0].cutoutImageUrl).toBeUndefined();
+  });
+
+  it("does not save a cutout URL when rembg writes a corrupt PNG", async () => {
+    const modelRoot = mkdtempSync(path.join(tmpdir(), "outfit-models-test-"));
+    const thumbnailOutputDir = mkdtempSync(path.join(tmpdir(), "outfit-thumbs-test-"));
+    const rembgDir = path.join(modelRoot, "rembg");
+    mkdirSync(rembgDir, { recursive: true });
+    writeFileSync(path.join(rembgDir, "isnet-general-use.onnx"), "fake-model", "utf8");
+    writeFileSync(path.join(thumbnailOutputDir, "garment-1-shirt.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO garments (
+        name, category, color, warmth, seasons, styles, formality,
+        image_url, owned, confirmed, excluded, confidence, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("白色衬衫", "top", "white", "light", JSON.stringify(["spring"]), JSON.stringify(["smart-casual"]), "smart-casual", "/api/garment-thumbnails/garment-1-shirt.png", 1, 1, 0, 0.9, "");
+    const app = createApiApp(db, {
+      thumbnailOutputDir,
+      visionModelRoot: modelRoot,
+      runRembg: async ({ outputPath }) => {
+        writeFileSync(outputPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      }
+    });
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl);
+
+    const response = await fetch(`${baseUrl}/api/garments/1/cutout`, {
+      method: "POST",
+      headers: jsonHeaders(authCookie)
+    });
+    const garments = await (await fetch(`${baseUrl}/api/garments`, { headers: { cookie: authCookie } })).json() as Array<{ cutoutImageUrl?: string }>;
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "VISION_OUTPUT_INVALID", message: expect.stringContaining("去背景输出文件无效") }
     });
     expect(garments[0].cutoutImageUrl).toBeUndefined();
   });
@@ -3450,6 +3999,112 @@ describe("API routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores a structurally invalid current weather cache entry", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      current: {
+        time: "2026-01-03T09:00",
+        temperature_2m: 6,
+        apparent_temperature: 4,
+        precipitation: 1,
+        weather_code: 61,
+        wind_speed_10m: 22
+      },
+      daily: {
+        time: ["2026-01-03"],
+        precipitation_probability_max: [78],
+        weather_code: [61]
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      "weather:39.9042:116.4074",
+      39.9042,
+      116.4074,
+      JSON.stringify({}),
+      new Date().toISOString()
+    );
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const response = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      date: "2026-01-03",
+      summary: "小雨"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a future-dated current weather cache row as fresh", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      current: {
+        time: "2026-01-03T09:00",
+        temperature_2m: 6,
+        apparent_temperature: 4,
+        precipitation: 1,
+        weather_code: 61,
+        wind_speed_10m: 22
+      },
+      daily: {
+        time: ["2026-01-03"],
+        precipitation_probability_max: [78],
+        weather_code: [61]
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    db.prepare(`
+      INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      "weather:39.9042:116.4074",
+      39.9042,
+      116.4074,
+      JSON.stringify({
+        date: "2099-01-01",
+        temperature: 99,
+        apparentTemperature: 99,
+        precipitationProbability: 0,
+        windSpeed: 0,
+        weatherCode: 0,
+        summary: "未来缓存"
+      }),
+      "2099-01-01T00:00:00.000Z"
+    );
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const response = await realFetch(`${baseUrl}/api/weather?latitude=39.9042&longitude=116.4074`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      date: "2026-01-03",
+      summary: "小雨"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("returns estimated weather when Open-Meteo fails before anything is cached", async () => {
     const realFetch = globalThis.fetch.bind(globalThis);
     const fetchMock = vi.fn(async () => new Response("Bad Gateway", { status: 502 }));
@@ -3571,6 +4226,160 @@ describe("API routes", () => {
     expect(db.prepare("SELECT cache_key FROM weather_cache").all()).toEqual([
       { cache_key: "weather-forecast:31.2000:121.4000:3" }
     ]);
+  });
+
+  it("ignores cached forecasts with impossible dates", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      daily: {
+        time: ["2026-07-13", "2026-07-14", "2026-07-15"],
+        temperature_2m_max: [30, 32, 34],
+        temperature_2m_min: [20, 22, 24],
+        apparent_temperature_max: [32, 34, 36],
+        apparent_temperature_min: [22, 24, 26],
+        precipitation_probability_max: [10, 20, 30],
+        weather_code: [0, 3, 61],
+        wind_speed_10m_max: [8, 10, 12]
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const invalidForecast = Array.from({ length: 3 }, () => ({
+      date: "2026-02-30",
+      temperature: 20,
+      apparentTemperature: 20,
+      precipitationProbability: 10,
+      windSpeed: 8,
+      weatherCode: 1,
+      summary: "无效缓存"
+    }));
+    db.prepare(`
+      INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      "weather-forecast:31.2000:121.4000:3",
+      31.2,
+      121.4,
+      JSON.stringify(invalidForecast),
+      new Date().toISOString()
+    );
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const response = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=3`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      expect.objectContaining({ date: "2026-07-13", summary: "晴" }),
+      expect.objectContaining({ date: "2026-07-14", summary: "多云" }),
+      expect.objectContaining({ date: "2026-07-15", summary: "小雨" })
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not revive a forecast cache row with an invalid fetch timestamp", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response("Bad Gateway", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const cachedForecast = Array.from({ length: 2 }, (_value, index) => ({
+      date: `2026-07-${String(index + 13).padStart(2, "0")}`,
+      temperature: 25,
+      apparentTemperature: 27,
+      precipitationProbability: 10,
+      windSpeed: 8,
+      weatherCode: 0,
+      summary: "不应复活"
+    }));
+    db.prepare(`
+      INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      "weather-forecast:31.2000:121.4000:2",
+      31.2,
+      121.4,
+      JSON.stringify(cachedForecast),
+      "not-a-timestamp"
+    );
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const response = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=2`, {
+      headers: { cookie: authCookie }
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toHaveLength(2);
+    expect(body.every((snapshot: { summary?: unknown }) => snapshot.summary === "估算天气")).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a future-dated forecast cache row as fresh", async () => {
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      daily: {
+        time: ["2026-07-13", "2026-07-14"],
+        temperature_2m_max: [30, 32],
+        temperature_2m_min: [20, 22],
+        apparent_temperature_max: [32, 34],
+        apparent_temperature_min: [22, 24],
+        precipitation_probability_max: [10, 20],
+        weather_code: [0, 3],
+        wind_speed_10m_max: [8, 10]
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const cachedForecast = Array.from({ length: 2 }, (_value, index) => ({
+      date: `2099-01-${String(index + 1).padStart(2, "0")}`,
+      temperature: 99,
+      apparentTemperature: 99,
+      precipitationProbability: 0,
+      windSpeed: 0,
+      weatherCode: 0,
+      summary: "未来缓存"
+    }));
+    db.prepare(`
+      INSERT INTO weather_cache (cache_key, latitude, longitude, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      "weather-forecast:31.2000:121.4000:2",
+      31.2,
+      121.4,
+      JSON.stringify(cachedForecast),
+      "2099-01-01T00:00:00.000Z"
+    );
+    const app = createApiApp(db);
+    const server = app.listen(0);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const authCookie = await registerTestUser(baseUrl, realFetch);
+
+    const response = await realFetch(`${baseUrl}/api/weather/forecast?latitude=31.2&longitude=121.4&days=2`, {
+      headers: { cookie: authCookie }
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      expect.objectContaining({ date: "2026-07-13", summary: "晴" }),
+      expect.objectContaining({ date: "2026-07-14", summary: "多云" })
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("exposes authenticated wear-event and outfit-plan CRUD with atomic mark-worn", async () => {
@@ -4080,7 +4889,14 @@ function makePng(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-function pngBody(width: number, height: number): ArrayBuffer {
-  const bytes = makePng(width, height);
+async function pngBody(width: number, height: number): Promise<ArrayBuffer> {
+  const bytes = await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 240, g: 240, b: 240 }
+    }
+  }).png().toBuffer();
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }

@@ -1,8 +1,13 @@
 import type { Server } from "node:http";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDatabase, createManualGarment, getGarmentById } from "../server/db";
+import {
+  createManualGarment,
+  getGarmentById,
+  updateGarment
+} from "../server/db";
 import { registerGarmentRoutes } from "../server/routes/garments";
+import { createDatabase } from "./helpers/testDatabase";
 
 const servers: Server[] = [];
 
@@ -13,6 +18,51 @@ afterEach(async () => {
 });
 
 describe("public garment update image boundary", () => {
+  it("keeps malformed but syntactically valid garment JSON from escaping as non-array DTO fields", () => {
+    const db = createDatabase(":memory:");
+    const garment = createManualGarment(db, {
+      name: "损坏数组衣物",
+      category: "top",
+      color: "black",
+      warmth: "medium",
+      seasons: ["autumn"],
+      styles: ["casual"],
+      formality: "casual"
+    });
+    db.prepare(`
+      UPDATE garments
+      SET seasons = '{}',
+        styles = '[1]',
+        materials = '"cotton"',
+        patterns = 'null',
+        tags = '[true]',
+        vision_tags = '{}'
+      WHERE id = ?
+    `).run(garment.id);
+
+    expect(getGarmentById(db, garment.id)).toMatchObject({
+      seasons: [],
+      styles: [],
+      materials: [],
+      patterns: [],
+      tags: [],
+      visionTags: undefined
+    });
+
+    updateGarment(db, garment.id, { notes: "触发安全回写" });
+    expect(db.prepare(`
+      SELECT seasons, styles, materials, patterns, tags
+      FROM garments
+      WHERE id = ?
+    `).get(garment.id)).toEqual({
+      seasons: "[]",
+      styles: "[]",
+      materials: "[]",
+      patterns: "[]",
+      tags: "[]"
+    });
+  });
+
   it.each([
     ["absolute path", "D:\\private\\wardrobe\\coat.jpg"],
     ["data URL", "data:image/png;base64,cHJpdmF0ZQ=="],

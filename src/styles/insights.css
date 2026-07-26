@@ -1,3 +1,7 @@
+.history-insights-view .page-intro__copy {
+  min-width: 12rem;
+}
+
 .history-subnav {
   display: flex;
   gap: var(--space-2);

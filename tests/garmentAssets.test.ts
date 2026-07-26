@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import type { AppDatabase } from "../server/db";
 import {
   DEFAULT_GARMENT_ASSET_ROOT,
   MAX_GARMENT_IMAGE_BYTES,
@@ -14,6 +14,7 @@ import {
   resolveGarmentAssetPath,
   saveGarmentImageAsset
 } from "../server/services/garmentAssets";
+import { createDatabase } from "./helpers/testDatabase";
 
 const FIRST_UUID = "11111111-1111-4111-8111-111111111111";
 const SECOND_UUID = "22222222-2222-4222-8222-222222222222";
@@ -345,6 +346,77 @@ describe("garment asset persistence and protected reads", () => {
       message: "衣物图片不存在",
       details: undefined
     });
+  });
+
+  it("rejects reads when the configured asset root itself is a link", async (context) => {
+    const db = createDatabase(":memory:");
+    const outsideRoot = await retainedTempDir();
+    const linkedRootParent = await retainedTempDir();
+    const linkedRoot = join(linkedRootParent, "linked-root");
+    const saved = await saveGarmentImageAsset(
+      db,
+      insertGarment(db, "链接根读取"),
+      await makeImage("png", 18, 19),
+      "image/png",
+      {
+        assetRoot: outsideRoot,
+        uuidFactory: () => FIRST_UUID
+      }
+    );
+    try {
+      await symlink(outsideRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(readActiveGarmentAsset(db, saved.asset.id, {
+      assetRoot: linkedRoot
+    })).rejects.toMatchObject({
+      name: "ApiError",
+      code: "GARMENT_ASSET_NOT_FOUND",
+      status: 404,
+      details: undefined
+    });
+  });
+
+  it("rejects writes when the configured asset root itself is a link", async (context) => {
+    const db = createDatabase(":memory:");
+    const garmentId = insertGarment(db, "链接根写入");
+    const outsideRoot = await retainedTempDir();
+    const linkedRootParent = await retainedTempDir();
+    const linkedRoot = join(linkedRootParent, "linked-root");
+    try {
+      await symlink(outsideRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+
+    await expect(saveGarmentImageAsset(
+      db,
+      garmentId,
+      await makeImage("png", 20, 21),
+      "image/png",
+      {
+        assetRoot: linkedRoot,
+        uuidFactory: () => SECOND_UUID
+      }
+    )).rejects.toMatchObject({
+      name: "ApiError",
+      code: "GARMENT_ASSET_STORAGE_CONFLICT",
+      status: 409
+    });
+    expect(existsSync(join(outsideRoot, `${SECOND_UUID}.webp`))).toBe(false);
+    expect(assetCount(db)).toBe(0);
   });
 });
 

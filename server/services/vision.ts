@@ -1,13 +1,15 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { basename, dirname, extname, join, normalize } from "node:path";
+import { lstat, readdir, realpath, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import sharp from "sharp";
 import type { Garment, VisionModelId, VisionModelJob, VisionModelStatus, VisionModelsResponse, VisionTagSuggestion } from "../../src/shared/types";
 import type { AppDatabase } from "../db";
 import { ensureGarmentLocalThumbnail, getGarmentById, saveGarmentVisionTags, updateGarmentCutoutImage } from "../db";
-import { ApiError } from "../validation";
+import { ApiError, GARMENT_CATEGORIES } from "../validation";
 import { normalizeGarmentEmbedding, upsertGarmentEmbedding } from "./garmentSimilarity";
-import { defaultThumbnailOutputDir } from "./thumbnails";
+import { defaultThumbnailOutputDir, MAX_THUMBNAIL_IMAGE_PIXELS } from "./thumbnails";
 
 export interface RembgRunInput {
   inputPath: string;
@@ -37,6 +39,9 @@ export interface VisionServiceOptions {
   thumbnailFetcher?: typeof fetch;
   visionDevice?: string;
   rembgProvider?: string;
+  visionModelJobTimeoutMs?: number;
+  visionProcessTimeoutMs?: number;
+  visionProcessMaxOutputBytes?: number;
   runRembg?: (input: RembgRunInput) => Promise<void>;
   inferVisionTags?: (input: VisionTagInput) => Promise<VisionTagInferenceResult>;
 }
@@ -68,6 +73,9 @@ const MODEL_DEFINITIONS: VisionModelDefinition[] = [
 const REMBG_MODEL_FALLBACKS = ["isnet-general-use", "u2netp", "silueta"];
 const DEFAULT_VISION_DEVICE = "dml";
 const DEFAULT_REMBG_PROVIDER = "cuda";
+const DEFAULT_VISION_MODEL_JOB_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_VISION_PROCESS_TIMEOUT_MS = 120_000;
+const DEFAULT_VISION_PROCESS_MAX_OUTPUT_BYTES = 1024 * 1024;
 const CLIP_REQUIRED_FILES = [
   "config.json",
   "preprocessor_config.json",
@@ -79,6 +87,8 @@ const CLIP_REQUIRED_FILES = [
 ];
 
 const visionJobs = new Map<string, VisionModelJob>();
+const visionProcesses = new Set<ChildProcess>();
+const visionModelJobCancellations = new Map<ChildProcess, () => void>();
 
 export function defaultVisionModelRoot(): string {
   return join(process.cwd(), "output", "models");
@@ -142,6 +152,38 @@ function startVisionModelJob(modelId: string, action: VisionModelJob["action"], 
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  visionProcesses.add(child);
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const finish = (status: VisionModelJob["status"], message: string, terminate = false): void => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    visionProcesses.delete(child);
+    visionModelJobCancellations.delete(child);
+    if (terminate) terminateVisionProcess(child);
+    updateJob(job.id, status, message);
+  };
+  const cancel = (): void => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    visionProcesses.delete(child);
+    visionModelJobCancellations.delete(child);
+    terminateVisionProcess(child);
+  };
+  const timeoutMs = positiveInteger(options.visionModelJobTimeoutMs, DEFAULT_VISION_MODEL_JOB_TIMEOUT_MS);
+  timeout = setTimeout(() => {
+    finish(
+      "failed",
+      action === "download"
+        ? "本地模型下载超时，请检查网络连接后重试。"
+        : "本地模型验证超时，请检查模型运行环境后重试。",
+      true
+    );
+  }, timeoutMs);
+  timeout.unref?.();
+  visionModelJobCancellations.set(child, cancel);
   child.stdout?.on("data", () => {
     // Drain output so long-running downloads cannot block on a full pipe.
   });
@@ -150,16 +192,28 @@ function startVisionModelJob(modelId: string, action: VisionModelJob["action"], 
   });
   job.pid = child.pid || undefined;
   child.on("error", (error) => {
-    updateJob(job.id, "failed", error.message);
+    finish("failed", error.message);
   });
   child.on("close", (code) => {
     if (code === 0) {
-      updateJob(job.id, "succeeded", action === "download" ? `本地模型已准备好：${definition.label}` : `本地模型验证通过：${definition.label}`);
+      finish("succeeded", action === "download" ? `本地模型已准备好：${definition.label}` : `本地模型验证通过：${definition.label}`);
     } else {
-      updateJob(job.id, "failed", action === "download" ? `模型下载失败，退出码 ${code ?? "unknown"}` : `模型验证失败，退出码 ${code ?? "unknown"}`);
+      finish("failed", action === "download" ? `模型下载失败，退出码 ${code ?? "unknown"}` : `模型验证失败，退出码 ${code ?? "unknown"}`);
     }
   });
   return job;
+}
+
+export function clearVisionJobs(): void {
+  for (const cancel of visionModelJobCancellations.values()) {
+    cancel();
+  }
+  visionModelJobCancellations.clear();
+  for (const child of visionProcesses) {
+    terminateVisionProcess(child);
+  }
+  visionProcesses.clear();
+  visionJobs.clear();
 }
 
 export async function createGarmentCutout(db: AppDatabase, id: number, options: VisionServiceOptions = {}): Promise<Garment> {
@@ -168,15 +222,15 @@ export async function createGarmentCutout(db: AppDatabase, id: number, options: 
   if (!status.installed) {
     throw missingModelError(status);
   }
-  const rembgModel = installedRembgModel(status.path) || "isnet-general-use";
+  const rembgModel = await installedRembgModel(status.path, modelRoot) || "isnet-general-use";
   const garment = getGarmentById(db, id);
   const thumbnailDir = options.thumbnailOutputDir || defaultThumbnailOutputDir();
   const inputPath = await resolveOriginalThumbnailPath(db, garment, thumbnailDir, options);
   if (!inputPath) {
     throw new ApiError("VISION_INPUT_NOT_FOUND", "未能自动生成这件衣物的本地缩略图，无法执行去背景。", 400);
   }
-  const outputPath = cutoutPath(inputPath);
-  const runner = options.runRembg || runRembgCli;
+  const outputPath = cutoutPath(inputPath, randomUUID());
+  const runner = options.runRembg || ((input: RembgRunInput) => runRembgCli(input, options));
   await runner({
     inputPath,
     outputPath,
@@ -187,6 +241,7 @@ export async function createGarmentCutout(db: AppDatabase, id: number, options: 
   if (!existsSync(outputPath)) {
     throw new ApiError("VISION_OUTPUT_MISSING", "去背景输出文件未生成，请检查本地视觉模型运行结果。", 500);
   }
+  await validateAndNormalizeCutoutOutput(outputPath);
   return updateGarmentCutoutImage(db, id, `/api/garment-thumbnails/${basename(outputPath)}`);
 }
 
@@ -199,7 +254,7 @@ export async function createGarmentVisionTags(db: AppDatabase, id: number, optio
   const garment = getGarmentById(db, id);
   const thumbnailDir = options.thumbnailOutputDir || defaultThumbnailOutputDir();
   const imagePath = await resolveVisionImagePath(db, garment, thumbnailDir, options);
-  const tagger = options.inferVisionTags || inferVisionTagsCli;
+  const tagger = options.inferVisionTags || ((input: VisionTagInput) => inferVisionTagsCli(input, options));
   const inference = await tagger({
     garment,
     imagePath: imagePath && existsSync(imagePath) ? imagePath : undefined,
@@ -226,10 +281,10 @@ export async function createGarmentVisionTags(db: AppDatabase, id: number, optio
 
 async function visionModelStatus(modelRoot: string, definition: VisionModelDefinition): Promise<VisionModelStatus> {
   const path = modelPath(modelRoot, definition);
-  const rembgModel = definition.id === "rembg-isnet" ? installedRembgModel(path) : undefined;
+  const rembgModel = definition.id === "rembg-isnet" ? await installedRembgModel(path, modelRoot) : undefined;
   const installed = definition.id === "rembg-isnet"
     ? Boolean(rembgModel)
-    : await clipModelReady(path);
+    : await clipModelReady(path, modelRoot);
   return {
     id: definition.id,
     label: definition.label,
@@ -240,13 +295,14 @@ async function visionModelStatus(modelRoot: string, definition: VisionModelDefin
   };
 }
 
-async function hasOnnxFile(root: string): Promise<boolean> {
+async function hasOnnxFile(root: string, trustedRoot = root): Promise<boolean> {
   try {
+    if (!await isSafeModelDirectory(root, trustedRoot)) return false;
     const entries = await readdir(root, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = join(root, entry.name);
-      if (entry.isDirectory() && await hasOnnxFile(fullPath)) return true;
-      if (entry.isFile() && entry.name.toLowerCase().endsWith(".onnx")) return true;
+      if (entry.isDirectory() && await hasOnnxFile(fullPath, trustedRoot)) return true;
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".onnx") && await isRegularNonEmptyFile(fullPath, trustedRoot)) return true;
     }
   } catch {
     return false;
@@ -330,20 +386,110 @@ function localThumbnailPath(value: string | undefined, thumbnailDir: string): st
   return fullPath.startsWith(normalizedRoot) ? fullPath : undefined;
 }
 
-function cutoutPath(inputPath: string): string {
+function cutoutPath(inputPath: string, outputId: string): string {
   const extension = extname(inputPath) || ".png";
-  return join(dirname(inputPath), `${basename(inputPath, extension)}-cutout.png`);
+  return join(dirname(inputPath), `${basename(inputPath, extension)}-cutout-${outputId}.png`);
 }
 
-function installedRembgModel(path: string): string | undefined {
-  return REMBG_MODEL_FALLBACKS.find((model) => existsSync(join(path, `${model}.onnx`)));
+async function validateAndNormalizeCutoutOutput(outputPath: string): Promise<void> {
+  try {
+    const fileStat = await lstat(outputPath);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+      throw new Error("cutout output is not a regular file");
+    }
+    const metadata = await sharp(outputPath, {
+      failOn: "error",
+      limitInputPixels: MAX_THUMBNAIL_IMAGE_PIXELS,
+      sequentialRead: true
+    }).metadata();
+    if (
+      metadata.format !== "png" ||
+      !metadata.width ||
+      !metadata.height ||
+      (metadata.pages ?? 1) !== 1
+    ) {
+      throw new Error("cutout output is not a single-page PNG");
+    }
+    const { data, info } = await sharp(outputPath, {
+      failOn: "error",
+      limitInputPixels: MAX_THUMBNAIL_IMAGE_PIXELS,
+      sequentialRead: true
+    })
+      .ensureAlpha()
+      .png({ compressionLevel: 9 })
+      .toBuffer({ resolveWithObject: true });
+    if (info.format !== "png" || info.width <= 0 || info.height <= 0 || data.byteLength <= 0) {
+      throw new Error("cutout output could not be normalized");
+    }
+    await writeFile(outputPath, data);
+  } catch {
+    throw new ApiError("VISION_OUTPUT_INVALID", "去背景输出文件无效，请检查本地视觉模型运行结果。", 500);
+  }
 }
 
-async function clipModelReady(path: string): Promise<boolean> {
-  return CLIP_REQUIRED_FILES.every((file) => existsSync(join(path, file))) && await hasOnnxFile(path);
+async function installedRembgModel(path: string, trustedRoot = path): Promise<string | undefined> {
+  for (const model of REMBG_MODEL_FALLBACKS) {
+    if (await isRegularNonEmptyFile(join(path, `${model}.onnx`), trustedRoot)) return model;
+  }
+  return undefined;
 }
 
-async function runRembgCli(input: RembgRunInput): Promise<void> {
+async function clipModelReady(path: string, trustedRoot = path): Promise<boolean> {
+  const requiredFilesReady = await Promise.all(
+    CLIP_REQUIRED_FILES.map((file) => isRegularModelFile(join(path, file), file === "merges.txt", trustedRoot))
+  );
+  return requiredFilesReady.every(Boolean) && await hasOnnxFile(path, trustedRoot);
+}
+
+async function isRegularNonEmptyFile(filePath: string, trustedRoot = dirname(filePath)): Promise<boolean> {
+  return isRegularModelFile(filePath, false, trustedRoot);
+}
+
+async function isRegularModelFile(filePath: string, allowEmpty: boolean, trustedRoot = dirname(filePath)): Promise<boolean> {
+  try {
+    const trustedRealRoot = await trustedModelRealRoot(trustedRoot);
+    if (!trustedRealRoot) return false;
+    const file = await lstat(filePath);
+    if (!file.isFile() || file.isSymbolicLink() || (!allowEmpty && file.size <= 0)) return false;
+    return isInsideRealRoot(trustedRealRoot, await realpath(filePath));
+  } catch {
+    return false;
+  }
+}
+
+async function isSafeModelDirectory(directoryPath: string, trustedRoot: string): Promise<boolean> {
+  try {
+    const trustedRealRoot = await trustedModelRealRoot(trustedRoot);
+    if (!trustedRealRoot) return false;
+    const directory = await lstat(directoryPath);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return false;
+    return isInsideRealRoot(trustedRealRoot, await realpath(directoryPath));
+  } catch {
+    return false;
+  }
+}
+
+async function trustedModelRealRoot(root: string): Promise<string | undefined> {
+  try {
+    const resolvedRoot = resolve(root);
+    const rootStat = await lstat(resolvedRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return undefined;
+    return realpath(resolvedRoot);
+  } catch {
+    return undefined;
+  }
+}
+
+function isInsideRealRoot(realRoot: string, candidate: string): boolean {
+  const relativePath = relative(realRoot, candidate);
+  return relativePath === "" || (
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+async function runRembgCli(input: RembgRunInput, options: VisionServiceOptions): Promise<void> {
   await runProcess(process.env.PYTHON || "python", [
     "scripts/vision_rembg.py",
     "--input",
@@ -356,10 +502,10 @@ async function runRembgCli(input: RembgRunInput): Promise<void> {
     input.modelDir,
     "--provider",
     input.provider
-  ]);
+  ], options);
 }
 
-async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagInferenceResult> {
+async function inferVisionTagsCli(input: VisionTagInput, options: VisionServiceOptions): Promise<VisionTagInferenceResult> {
   if (!input.imagePath) {
     throw new ApiError("VISION_INPUT_NOT_FOUND", "请先为这件衣物生成本地缩略图，再执行图片分析。", 400);
   }
@@ -371,8 +517,12 @@ async function inferVisionTagsCli(input: VisionTagInput): Promise<VisionTagInfer
     input.modelDir,
     "--device",
     input.device
-  ]);
-  return JSON.parse(stdout) as VisionTagInferenceResult;
+  ], options);
+  try {
+    return JSON.parse(stdout) as VisionTagInferenceResult;
+  } catch {
+    throw invalidVisionTagOutput("本地视觉模型输出不是有效 JSON");
+  }
 }
 
 function normalizeVisionDevice(value: string): string {
@@ -388,47 +538,173 @@ function normalizeRembgProvider(value: string): string {
   return ["auto", "cpu", "cuda", "dml"].includes(normalized) ? normalized : "auto";
 }
 
-async function runProcess(command: string, args: string[]): Promise<string> {
+async function runProcess(command: string, args: string[], options: VisionServiceOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
       stdio: ["ignore", "pipe", "pipe"]
     });
+    visionProcesses.add(child);
+    const timeoutMs = positiveInteger(options.visionProcessTimeoutMs, DEFAULT_VISION_PROCESS_TIMEOUT_MS);
+    const maxOutputBytes = positiveInteger(
+      options.visionProcessMaxOutputBytes,
+      DEFAULT_VISION_PROCESS_MAX_OUTPUT_BYTES
+    );
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout.trim());
+    let outputBytes = 0;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      fail(new ApiError(
+        "VISION_PROCESS_TIMEOUT",
+        "本地视觉模型处理超时，请稍后重试或检查模型运行环境。",
+        504
+      ), true);
+    }, timeoutMs);
+    timeout.unref?.();
+
+    const finish = (error?: Error, value?: string, terminate = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      visionProcesses.delete(child);
+      if (terminate) {
+        terminateVisionProcess(child);
+      }
+      if (error) {
+        reject(error);
         return;
       }
-      reject(new ApiError("VISION_PROCESS_FAILED", stderr.trim() || `视觉模型进程退出码 ${code ?? "unknown"}`, 500));
+      resolve(value ?? "");
+    };
+    const fail = (error: Error, terminate = false) => finish(error, undefined, terminate);
+    const appendOutput = (target: "stdout" | "stderr", chunk: unknown) => {
+      if (settled) return;
+      const text = String(chunk);
+      const byteLength = Buffer.isBuffer(chunk)
+        ? chunk.byteLength
+        : Buffer.byteLength(text);
+      if (outputBytes + byteLength > maxOutputBytes) {
+        fail(new ApiError(
+          "VISION_PROCESS_OUTPUT_LIMIT",
+          "本地视觉模型输出过多，处理已终止。",
+          500
+        ), true);
+        return;
+      }
+      outputBytes += byteLength;
+      if (target === "stdout") {
+        stdout += text;
+      } else {
+        stderr += text;
+      }
+    };
+
+    child.stdout?.on("data", (chunk) => appendOutput("stdout", chunk));
+    child.stderr?.on("data", (chunk) => appendOutput("stderr", chunk));
+    child.on("error", (error) => {
+      fail(new ApiError(
+        "VISION_PROCESS_FAILED",
+        "无法启动本地视觉模型进程，请检查运行环境。",
+        500
+      ));
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        finish(undefined, stdout.trim());
+        return;
+      }
+      fail(new ApiError(
+        "VISION_PROCESS_FAILED",
+        `本地视觉模型处理失败（退出码 ${code ?? "unknown"}）。`,
+        500
+      ));
     });
   });
 }
 
-function normalizeVisionTagSuggestion(value: VisionTagSuggestion): VisionTagSuggestion {
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) > 0
+    ? Math.floor(Number(value))
+    : fallback;
+}
+
+function terminateVisionProcess(child: ChildProcess): void {
+  const pid = child.pid;
+  try {
+    child.kill();
+  } catch {
+    // Best-effort cancellation continues with platform process-tree cleanup.
+  }
+  if (process.platform === "win32" && pid && !isTestRuntime()) {
+    try {
+      execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+    } catch {
+      // The child may already be gone.
+    }
+  }
+}
+
+function isTestRuntime(): boolean {
+  return Boolean(process.env.VITEST || process.env.VITEST_WORKER_ID || process.env.NODE_ENV === "test");
+}
+
+function normalizeVisionTagSuggestion(value: unknown): VisionTagSuggestion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidVisionTagOutput("标签结果必须是对象");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.category !== undefined &&
+    (typeof record.category !== "string" || !GARMENT_CATEGORIES.includes(
+      record.category as (typeof GARMENT_CATEGORIES)[number]
+    ))
+  ) {
+    throw invalidVisionTagOutput("category 不在允许范围内");
+  }
   return {
-    category: value.category,
-    styles: uniqueStrings(value.styles),
-    patterns: uniqueStrings(value.patterns),
-    tags: uniqueStrings(value.tags),
-    scores: Array.isArray(value.scores)
-      ? value.scores
-          .filter((score) => typeof score.label === "string" && Number.isFinite(score.score))
-          .slice(0, 12)
-          .map((score) => ({ label: score.label, score: Number(score.score.toFixed(4)) }))
-      : []
+    ...(record.category === undefined
+      ? {}
+      : { category: record.category as VisionTagSuggestion["category"] }),
+    styles: normalizeVisionStringArray(record.styles, "styles"),
+    patterns: normalizeVisionStringArray(record.patterns, "patterns"),
+    tags: normalizeVisionStringArray(record.tags, "tags"),
+    scores: normalizeVisionScores(record.scores)
   };
 }
 
-function uniqueStrings(values: unknown): string[] {
-  if (!Array.isArray(values)) return [];
+function normalizeVisionStringArray(values: unknown, field: string): string[] {
+  if (!Array.isArray(values) || !values.every((value) => typeof value === "string")) {
+    throw invalidVisionTagOutput(`${field} 必须是字符串数组`);
+  }
   return Array.from(new Set(values.map((value) => String(value).trim()).filter(Boolean))).slice(0, 16);
+}
+
+function normalizeVisionScores(values: unknown): VisionTagSuggestion["scores"] {
+  if (!Array.isArray(values)) {
+    throw invalidVisionTagOutput("scores 必须是数组");
+  }
+  const normalized = values.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw invalidVisionTagOutput("score 必须是对象");
+    }
+    const score = value as Record<string, unknown>;
+    if (typeof score.label !== "string" || !score.label.trim() ||
+      typeof score.score !== "number" || !Number.isFinite(score.score)) {
+      throw invalidVisionTagOutput("score 必须包含非空 label 和有限数值");
+    }
+    return {
+      label: score.label.trim(),
+      score: Number(score.score.toFixed(4))
+    };
+  });
+  return normalized.slice(0, 12);
+}
+
+function invalidVisionTagOutput(detail: string): ApiError {
+  return new ApiError(
+    "VISION_TAG_OUTPUT_INVALID",
+    `本地视觉模型返回的标签结果无效：${detail}`,
+    500
+  );
 }

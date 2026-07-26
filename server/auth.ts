@@ -39,14 +39,29 @@ export function createFirstUser(db: AppDatabase, input: { username: string; pass
   const salt = randomBytes(16).toString("base64url");
   const passwordHash = hashPassword(input.password, salt);
   const normalized = normalizeUsername(input.username);
-  const result = db.prepare(`
-    INSERT INTO users (username, username_normalized, password_hash, password_salt)
-    VALUES (?, ?, ?, ?)
-  `).run(input.username, normalized, passwordHash, salt);
-  return {
-    id: Number(result.lastInsertRowid),
-    username: input.username
-  };
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (hasAccount(db)) {
+      throw new ApiError("ACCOUNT_EXISTS", "已经创建过本地账号", 409);
+    }
+    const result = db.prepare(`
+      INSERT INTO users (username, username_normalized, password_hash, password_salt)
+      VALUES (?, ?, ?, ?)
+    `).run(input.username, normalized, passwordHash, salt);
+    db.exec("COMMIT");
+    return {
+      id: Number(result.lastInsertRowid),
+      username: input.username
+    };
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Preserve the original account creation error.
+    }
+    throw error;
+  }
 }
 
 export function authenticateUser(db: AppDatabase, input: { username: string; password: string }): AuthUser {

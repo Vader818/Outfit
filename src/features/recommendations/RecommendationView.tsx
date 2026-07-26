@@ -20,6 +20,7 @@ export type RecommendationViewProps = {
   longitude: string;
   busy: boolean;
   busyAction?: BusyAction | null;
+  cardActionBusy?: boolean;
   savingOutfitId?: string | null;
   feedbackBusyCandidateId?: string | null;
   schedulingOutfitId?: string | null;
@@ -73,6 +74,7 @@ export function RecommendationView(props: RecommendationViewProps) {
   const missingSlots = props.recommendations?.missingSlots ?? [];
   const generating = props.busyAction === "recommend";
   const fetchingWeather = props.busyAction === "weather";
+  const interactionBusy = props.busy || Boolean(props.cardActionBusy);
   const coreGarments = props.coreGarments ?? [];
 
   const emptyAction = missingSlots.length > 0 && pendingCount > 0 && props.onOpenWardrobe ? (
@@ -101,7 +103,7 @@ export function RecommendationView(props: RecommendationViewProps) {
       设置位置
     </Button>
   ) : (
-    <Button variant="primary" disabled={generating || availableCount === 0} aria-busy={generating || undefined} onClick={props.onGenerate}>
+    <Button variant="primary" disabled={interactionBusy || availableCount === 0} aria-busy={generating || undefined} onClick={props.onGenerate}>
       <Sparkles aria-hidden="true" />
       {generating ? "生成中" : "生成今日搭配"}
     </Button>
@@ -120,7 +122,7 @@ export function RecommendationView(props: RecommendationViewProps) {
         : "生成时会先获取天气，再结合本地衣橱给出搭配。";
 
   return (
-    <section className="recommendation-view view-shell" aria-labelledby="recommendation-title" aria-busy={props.busy || undefined}>
+    <section className="recommendation-view view-shell" aria-labelledby="recommendation-title" aria-busy={interactionBusy || undefined}>
       <PageIntro
         className="recommendation-intro"
         title={<span id="recommendation-title">今日推荐</span>}
@@ -150,7 +152,7 @@ export function RecommendationView(props: RecommendationViewProps) {
                   <span>{coreGarments.map((garment) => garment.name).join("、")}</span>
                 </div>
                 {props.onClearGarmentConstraints ? (
-                  <Button variant="ghost" size="sm" onClick={props.onClearGarmentConstraints}>
+                  <Button variant="ghost" size="sm" disabled={interactionBusy} onClick={props.onClearGarmentConstraints}>
                     清除核心单品
                   </Button>
                 ) : null}
@@ -185,6 +187,7 @@ export function RecommendationView(props: RecommendationViewProps) {
                     size="sm"
                     variant={props.occasion === value ? "primary" : "ghost"}
                     aria-pressed={props.occasion === value}
+                    disabled={interactionBusy}
                     onClick={() => props.onOccasion(value)}
                   >
                     {OCCASION_LABELS[value]}
@@ -195,11 +198,11 @@ export function RecommendationView(props: RecommendationViewProps) {
 
             {hasOutfits ? (
               <div className="decision-panel__actions flex flex-wrap gap-2">
-                <Button variant="ghost" disabled={fetchingWeather} aria-busy={fetchingWeather || undefined} onClick={props.onFetchWeather}>
+                <Button variant="ghost" disabled={interactionBusy} aria-busy={fetchingWeather || undefined} onClick={props.onFetchWeather}>
                   <RefreshCw aria-hidden="true" />
                   {fetchingWeather ? "更新中" : "更新天气"}
                 </Button>
-                <Button variant="primary" disabled={generating} aria-busy={generating || undefined} onClick={props.onGenerate}>
+                <Button variant="primary" disabled={interactionBusy} aria-busy={generating || undefined} onClick={props.onGenerate}>
                   <Sparkles aria-hidden="true" />
                   {generating ? "生成中" : "重新生成"}
                 </Button>
@@ -214,6 +217,7 @@ export function RecommendationView(props: RecommendationViewProps) {
               <OutfitStage
                 featured
                 outfit={outfits[0]}
+                actionBusy={interactionBusy}
                 recordingOutfitId={props.recordingOutfitId}
                 savingOutfitId={props.savingOutfitId}
                 feedbackBusyCandidateId={props.feedbackBusyCandidateId}
@@ -235,6 +239,7 @@ export function RecommendationView(props: RecommendationViewProps) {
                       <OutfitStage
                         key={outfit.id}
                         outfit={outfit}
+                        actionBusy={interactionBusy}
                         recordingOutfitId={props.recordingOutfitId}
                         savingOutfitId={props.savingOutfitId}
                         feedbackBusyCandidateId={props.feedbackBusyCandidateId}

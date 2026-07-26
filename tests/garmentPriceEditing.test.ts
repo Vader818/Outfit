@@ -2,13 +2,13 @@ import type { Server } from "node:http";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  createDatabase,
   importTaobaoBatchIntoDb,
   listGarments,
   type AppDatabase
 } from "../server/db";
 import { registerGarmentRoutes } from "../server/routes/garments";
 import { validateGarmentUpdate } from "../server/validation";
+import { createDatabase } from "./helpers/testDatabase";
 
 const servers: Server[] = [];
 

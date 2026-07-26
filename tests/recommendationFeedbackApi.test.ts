@@ -1,8 +1,9 @@
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { createDatabase, type AppDatabase } from "../server/db";
+import type { AppDatabase } from "../server/db";
 import { createApiApp } from "../server/routes";
 import { upsertRecommendationFeedback } from "../server/services/recommendationFeedback";
+import { createDatabase } from "./helpers/testDatabase";
 
 const CANDIDATE_WITH_FEEDBACK = "11111111-1111-4111-8111-111111111111";
 const CANDIDATE_WITHOUT_FEEDBACK = "22222222-2222-4222-8222-222222222222";
@@ -67,6 +68,31 @@ describe("recommendation feedback candidate API", () => {
     )).json() as { wearEventId: number };
     expect(db.prepare("SELECT COUNT(*) AS count FROM wear_events").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM wear_logs").get()).toEqual({ count: 0 });
+
+    const clearTextOnly = await fetch(`${baseUrl}/api/recommendation-feedback`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: authCookie,
+        origin: baseUrl
+      },
+      body: JSON.stringify({
+        candidateId: CANDIDATE_WITH_FEEDBACK,
+        reasonCodes: [],
+        comment: ""
+      })
+    });
+    expect(clearTextOnly.status).toBe(200);
+    await expect(clearTextOnly.json()).resolves.toMatchObject({
+      feedback: {
+        candidateId: CANDIDATE_WITH_FEEDBACK,
+        verdict: "disliked",
+        rating: 2,
+        actuallyWorn: true,
+        reasonCodes: [],
+        comment: ""
+      }
+    });
 
     const clearedFields = await fetch(`${baseUrl}/api/recommendation-feedback`, {
       method: "POST",
